@@ -664,9 +664,31 @@ class VehicleService
 
         $last = [];
         try {
+            /**
+             * ⚠⚠ ONE JOB MUST NOT COUNT TWICE (Sep-3). When a manager records a service AND
+             *    files its bill in one go, the pair is linked by `t_fleet_service_log.request_id`.
+             *    Both halves would otherwise arrive here as independent evidence, and since
+             *    beatsEvidence() keeps the HIGHEST meter per type, a one-kilometre disagreement
+             *    between them would silently pick a winner with nothing saying they were the
+             *    same job. The LOG is the half we keep — it is the record of the work, and it
+             *    counts from the moment it is written rather than waiting for approval.
+             * ⚠ Schema-guarded: before the link column exists this is an empty set and the
+             *   whole thing is a no-op.
+             */
+            /**
+             * ⚠⚠ ONLY A **LIVE** LINK HIDES A CLAIM (review, 3-Sep). This used to hide any
+             *    linked claim whatever its status, so a REJECTED bill stayed invisible while
+             *    its log still read as billed — money that never cleared, presented as paid.
+             *    `liveBillLinks()` counts a link only while the claim is pending or approved,
+             *    and it is the ONE reader of that rule, shared with the history list below.
+             */
+            $billedByLog = ServiceRecordService::liveBillLinks();
+
             foreach ($this->allClaimsFor($vehicleId) as $c) {
                 if (($c['category'] ?? '') !== 'Maintenance') continue;
                 if (($c['status'] ?? '') !== 'approved')      continue;
+                // ⚠ Its own service log already speaks for this job — see the note above.
+                if (isset($c['id']) && isset($billedByLog[(int) $c['id']])) continue;
                 if (empty($c['maintenance_type_id']) || $c['meter'] === null) continue;
                 // ⚠ The reading's OWN date rides along — its verdict must never
                 //   change as the bike ages (see plausibleServiceMeter).
@@ -2282,7 +2304,35 @@ class VehicleService
                 ->whereNotIn('status', ['cancelled', 'rejected'])
                 ->max('meter_at_fill');
 
-            $best = max($byVehicle, $byFill);
+            /**
+             * ⭐ A RECORDED SERVICE IS A READING TOO (owner ruling Q4, 3-Sep — found NOT built
+             *   while re-checking). Until now only attendance meters and claims' `meter_at_fill`
+             *   moved the odometer, so a manager recording a service at 28,100 km on a bike last
+             *   seen at 27,986 moved the countdown but left "current km" behind — two definitions
+             *   of the bike's km. A service log is attributed to the machine the SAME way the
+             *   countdowns attribute it (who held which bike on that date) and takes the same
+             *   plausibility floor. A typo is correctable via Edit, and the mirror keeps a linked
+             *   pair equal, so this can never disagree with the claim's own `meter_at_fill`.
+             */
+            $byService = 0;
+            try {
+                if (self::hasTbl('t_fleet_service_log')) {
+                    $res = new VehicleResolver();
+                    foreach (DB::table('t_fleet_service_log')->whereNotNull('meter')
+                                ->where('meter', '>', $floor)
+                                ->orderByDesc('meter')->limit(60)
+                                ->get(['user_id', 'meter', 'service_date']) as $sl) {
+                        $d = substr((string) $sl->service_date, 0, 10);
+                        if ((int) $res->vehicleForDay((int) $sl->user_id, $d) !== $vehicleId) continue;
+                        $byService = (int) $sl->meter;
+                        break;   // ordered by meter desc — the first row on THIS machine is its highest
+                    }
+                }
+            } catch (\Throwable $e) {
+                $byService = 0;
+            }
+
+            $best = max($byVehicle, $byFill, $byService);
 
             // 2. Reconstruct from who held it when.
             foreach ($this->assignmentWindows($vehicleId) as $w) {
@@ -2947,18 +2997,163 @@ class VehicleService
      * Deliberately NOT limited to clock-resetting types: a manager reading a bike's
      * history wants the punctures and the brake shoes too.
      */
-    public function serviceHistoryFor(int $vehicleId, int $limit = 24): array
+    /**
+     * ⭐⭐ WHAT HAS THIS MACHINE COST — the question the vehicle page could not answer.
+     *
+     * ⚠⚠ WHY IT EXISTS. The page showed ONE month, and lumped every non-fuel claim under a
+     *    single "maintenance" figure. So "what is my scheduled upkeep costing me versus things
+     *    breaking, this month and over the machine's life" could not be read off the screen at
+     *    all — it had to be added up by hand from a list capped at 24 rows.
+     *
+     * THE BUCKETS (owner ruling, 3-Sep):
+     *   • REGULAR  — a named type whose bucket is `regular`; legacy untyped rows whose
+     *                `service_type` is `oil_change`.
+     *   • REPAIRS  — a named type whose bucket is `repair`; legacy `repair` / `general`.
+     *   • FUEL     — kept SEPARATE, never folded in: the machine's Rs/km averages are computed
+     *                from it (owner: "I need this to calculate the machine average").
+     *   • UNCLASSIFIED — a maintenance claim that names neither. 109 of the 140 legacy rows are
+     *                these. ⚠ Shown as its own figure, NEVER silently folded into a bucket:
+     *                a total that quietly absorbs what it could not identify is a lie.
+     *
+     * ⚠ APPROVED money only in the bucket totals; anything still `pending` is reported
+     *   alongside as `waiting_rs` so an unapproved bill can never read as money spent.
+     *   Rejected and cancelled are excluded entirely.
+     *
+     * @return array{windows: array<string, array<string, mixed>>}
+     */
+    /**
+     * Which bucket a claim's money belongs to. ⚠ ONE definition, used by the cost tiles and by
+     * the history rows — two copies would let a row be counted as Repairs in the total and
+     * shown as Regular in the list.
+     */
+    private static function bucketOfClaim(array $c, array $bucketMap): string
+    {
+        if (($c['category'] ?? '') === 'Petrol') return 'fuel';
+        $tid = $c['maintenance_type_id'] ?? null;
+        $b   = $tid && isset($bucketMap[$tid]) ? $bucketMap[$tid] : null;
+        if ($b === 'regular') return 'regular';
+        if ($b === 'repair')  return 'repairs';
+        $st = $c['service_type'] ?? null;                       // legacy, pre-picker rows
+        if ($st === 'oil_change')                          return 'regular';
+        if (in_array($st, ['repair', 'general'], true))    return 'repairs';
+        return 'unclassified';
+    }
+
+    /**
+     * @param string|null $month 'YYYY-MM' — which month the 'month' window covers.
+     *
+     * ⚠⚠ The 'month' window used to be hard-wired to the CURRENT calendar month whatever
+     *    month was being viewed. Once the vehicle panel gained its own month stepper that
+     *    became a lie you could see: a tile headed “August 2026 — Nothing filed” sitting
+     *    directly above August rows worth Rs 400. The window now follows the month asked for,
+     *    and a PAST month is closed at both ends — open-ended would quietly make it
+     *    “August onwards” and double-count September.
+     */
+    public function costSummaryFor(int $vehicleId, ?string $month = null): array
+    {
+        $blank = ['regular_rs' => 0.0, 'repairs_rs' => 0.0, 'fuel_rs' => 0.0,
+                  'unclassified_rs' => 0.0, 'waiting_rs' => 0.0, 'count' => 0];
+        $today  = Carbon::today();
+        $mStart = ($month && preg_match('/^\d{4}-\d{2}$/', $month))
+            ? Carbon::createFromFormat('Y-m-d', $month . '-01')->startOfDay()
+            : $today->copy()->startOfMonth();
+        // Only a past month needs closing; the running month ends at today by definition.
+        $mEnd = $mStart->copy()->endOfMonth();
+        $ends = ['month' => $mEnd->format('Y-m-d')];
+        $starts = [
+            'month'    => $mStart,
+            'quarter'  => $today->copy()->subMonthsNoOverflow(2)->startOfMonth(),
+            'year'     => $today->copy()->startOfYear(),
+            'lifetime' => null,                      // everything this machine has ever carried
+        ];
+        $out = [];
+        foreach ($starts as $k => $_) $out[$k] = $blank;
+
+        try {
+            // ⚠ Buckets come from the manager's own type list — never from the type NAME.
+            $buckets = [];
+            if (self::hasTbl('t_fleet_maintenance_types')) {
+                $buckets = DB::table('t_fleet_maintenance_types')->pluck('bucket', 'id')->all();
+            }
+            // ⚠ A claim already spoken for by a service log is NOT skipped here — unlike the
+            //   history list, this is about MONEY, and the money is on the claim. Skipping it
+            //   would under-report the machine's cost by every bill filed with its service.
+            foreach ($this->allClaimsFor($vehicleId) as $c) {
+                $status = (string) ($c['status'] ?? '');
+                if (!in_array($status, ['approved', 'pending'], true)) continue;   // rejected/cancelled never count
+                $amt = (float) ($c['amount'] ?? 0);
+                if ($amt <= 0) continue;
+                $date = substr((string) ($c['date'] ?? ''), 0, 10);
+                if ($date === '') continue;
+
+                // ⚠ THE SAME classifier the history rows use — see bucketOfClaim. Two copies
+                //   would let one row be a Repair in the total and Regular in the list.
+                $field = self::bucketOfClaim($c, $buckets) . '_rs';
+
+                foreach ($starts as $k => $from) {
+                    if ($from !== null && $date < $from->format('Y-m-d')) continue;
+                    if (isset($ends[$k]) && $date > $ends[$k]) continue;   // see the note on $mEnd
+                    if ($status === 'pending') {
+                        $out[$k]['waiting_rs'] += $amt;
+                    } else {
+                        $out[$k][$field] += $amt;
+                    }
+                    $out[$k]['count']++;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('costSummaryFor failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+        }
+
+        foreach ($out as $k => $w) {
+            foreach (['regular_rs', 'repairs_rs', 'fuel_rs', 'unclassified_rs', 'waiting_rs'] as $f) {
+                $out[$k][$f] = round($w[$f], 2);
+            }
+            // What a manager actually asks: upkeep + breakage, fuel read separately.
+            $out[$k]['maintenance_rs'] = round($w['regular_rs'] + $w['repairs_rs'] + $w['unclassified_rs'], 2);
+        }
+        return ['windows' => $out];
+    }
+
+    /**
+     * ⚠ `$allTime` lifts the 24-month window (owner ask, 3-Sep: "I can't see lifetime").
+     *   Still capped by `$limit` — a machine with hundreds of rows must not blow the payload —
+     *   and still newest-first, so "All time" means "as far back as this many rows reach".
+     */
+    public function serviceHistoryFor(int $vehicleId, int $limit = 24, bool $allTime = false): array
     {
         if (!$this->available()) return [];
 
         try {
             // Far enough back to be a history, cheap enough to stay one query set.
-            $from = Carbon::now()->subMonths(24)->startOfMonth()->format('Y-m-d');
+            // ⚠ 24 months by default; the whole life of the machine when asked for.
+            $from = $allTime
+                ? '2000-01-01'
+                : Carbon::now()->subMonths(24)->startOfMonth()->format('Y-m-d');
             $to   = Carbon::now()->endOfMonth()->format('Y-m-d');
+
+            /**
+             * ⚠⚠ A CLAIM THAT ITS SERVICE LOG ALREADY SPEAKS FOR IS DROPPED HERE (Sep-3) —
+             *    otherwise a manager who recorded the work and its bill in one action would
+             *    see his single job listed twice, once as "recorded · no bill" and once as an
+             *    Rs row, with no way to tell they were the same thing. The log row survives
+             *    and now carries the money (see `bill_amount` below), so nothing is lost.
+             */
+            // ⚠ Same rule as the evidence engine above — a REJECTED bill is not hidden, it is
+            //   shown, because the manager has to see that it did not clear.
+            $billed = ServiceRecordService::liveBillLinks();
+
+            // The manager's own bucket list — one lookup, shared by both row kinds below so
+            // the filter chips and the cost tiles can never classify the same row differently.
+            $bucketMap = [];
+            if (self::hasTbl('t_fleet_maintenance_types')) {
+                $bucketMap = DB::table('t_fleet_maintenance_types')->pluck('bucket', 'id')->all();
+            }
 
             $rows = array_values(array_filter(
                 $this->claimsForVehicle($vehicleId, $from, $to),
                 fn ($c) => $c['category'] === 'Maintenance'
+                        && !(isset($c['id']) && isset($billed[(int) $c['id']]))
             ));
 
             $out = array_map(fn ($c) => [
@@ -2972,7 +3167,114 @@ class VehicleService
                 // false = attributed by who held the bike, not stamped at filing.
                 'stamped'  => $c['stamped'],
                 'assumed'  => $c['assumed'],
+                'log_id'   => null,      // not a service log — see `req_id` below
+                /**
+                 * ⭐ THE CLAIM'S OWN ID (Sep-3). Its reading can now be corrected in place —
+                 *   approved or not — through FleetFuelController::correctClaimReading, which
+                 *   touches ONLY the odometer and which job it was. The money fields are still
+                 *   editClaim's, and still refused once approved.
+                 * ⚠ Until this shipped the row reached the screen with no identity at all, so
+                 *   the panel could show "Oil Change 767 km overdue" off a typo nobody could
+                 *   reach. `log_id` vs `req_id` is what tells the UI which door to open.
+                 */
+                'req_id'   => isset($c['id']) ? (int) $c['id'] : null,
+                /**
+                 * ⭐ WHICH KIND OF SPEND THIS IS (owner ask, 3-Sep) — so the page can separate
+                 *   scheduled upkeep from things breaking, and the filter chips have something
+                 *   to filter on. Derived exactly as costSummaryFor does it, from the manager's
+                 *   own type list, never from the type name.
+                 * ⚠ `unclassified` is a real answer, not a fallback to hide behind: 109 legacy
+                 *   rows genuinely say nothing about which kind of work they paid for.
+                 */
+                'bucket'   => self::bucketOfClaim($c, $bucketMap),
             ], $rows);
+
+            /**
+             * ⭐⭐ MANUALLY RECORDED SERVICES BELONG IN THIS LIST TOO (owner ask, 3-Sep).
+             *
+             * ⚠⚠ They were nowhere in the product. A "Record service" row fed every countdown
+             *    but appeared on NO screen, so a wrong one could not be spotted, let alone
+             *    fixed — which is exactly how log #8 sat misfiled and needed hand-written SQL
+             *    to find. A record the system acts on must be a record somebody can see.
+             *
+             * `log_id` is what makes a row correctable: the renderer offers Edit / Remove only
+             * where it is present, because a CLAIM carries money and is amended through the
+             * claims flow instead.
+             *
+             * ⚠ Attributed to this machine by the SAME rule the countdowns use
+             *   (`vehicleForDay` on the service date), so the list and the schedule can never
+             *   disagree about which bike a record belongs to.
+             */
+            if (self::hasTbl('t_fleet_service_log')) {
+                $resolver = new VehicleResolver();
+                $manualQ = DB::table('t_fleet_service_log as l')
+                    ->leftJoin('t_fleet_maintenance_types as t', 't.id', '=', 'l.maintenance_type_id')
+                    ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.created_by')
+                    ->whereDate('l.service_date', '>=', $from);
+
+                /**
+                 * ⚠⚠ ONE SELECT LIST, BUILT UP — NEVER addSelect() BEFORE get([...]).
+                 *    Laravel keeps the columns already on the builder and DISCARDS the ones
+                 *    passed to get(), so an addSelect here silently reduced the query to the
+                 *    three bill columns: `user_id` came back null, every row failed the
+                 *    machine check below, and the whole Past-services list rendered EMPTY.
+                 *    Caught end-to-end, not by a linter.
+                 */
+                $cols = ['l.id', 'l.user_id', 'l.meter', 'l.service_date', 'l.note',
+                         'l.maintenance_type_id', 't.type_name', 'u.fullname as by_name'];
+                // The bill, when the manager filed one with the service. LEFT-joined so a
+                // bill-less record is unaffected, and schema-guarded so this is inert
+                // before the link column exists.
+                if (Schema::hasColumn('t_fleet_service_log', 'request_id')) {
+                    $manualQ = $manualQ->leftJoin('t_req_master as rq', 'rq.id', '=', 'l.request_id');
+                    $cols[] = 'l.request_id';
+                    $cols[] = 'rq.amount as bill_amount';
+                    $cols[] = 'rq.status as bill_status';
+                }
+                $manual = $manualQ->get($cols);
+                foreach ($manual as $m) {
+                    $d = substr((string) $m->service_date, 0, 10);
+                    if ($resolver->vehicleForDay((int) $m->user_id, $d) !== $vehicleId) continue;
+                    $out[] = [
+                        'date'    => $d,
+                        /**
+                         * ⭐ THE BILL, WHEN THERE IS ONE (Sep-3). These rows used to be
+                         *   bill-less by definition. A manager can now record the work and its
+                         *   cost in one action, and when he does, the claim half is dropped
+                         *   from this list (see `$billed` above) — so this row has to carry
+                         *   the money, or it would vanish from the history entirely.
+                         */
+                        'amount'  => isset($m->bill_amount) ? (float) $m->bill_amount : 0.0,
+                        'status'  => isset($m->bill_status) && $m->bill_status
+                                        ? (string) $m->bill_status : 'recorded',
+                        'kind'    => $m->type_name ?: 'Service',
+                        'type'    => $m->maintenance_type_id ? (int) $m->maintenance_type_id : null,
+                        'meter'   => $m->meter !== null ? (int) $m->meter : null,
+                        'by_name' => $m->by_name,
+                        'stamped' => true,
+                        'assumed' => false,
+                        'manual'  => true,
+                        'note'    => $m->note,
+                        'log_id'  => (int) $m->id,      // ← correctable
+                        // ⚠ Same shape both ways: a consumer must never have to know which
+                        //   branch produced a row to read a key off it.
+                        'req_id'  => null,
+                        // ⭐ Its bill, if one was filed with it — what makes the pair one row.
+                        'bill_id' => isset($m->request_id) && $m->request_id ? (int) $m->request_id : null,
+                        // ⚠ WHOSE service this is. A bill belongs to a requester, so "Add the
+                        //   bill" cannot open the form without it — and the machine's keeper
+                        //   today may not be the man the work was recorded against.
+                        'rider_id' => (int) $m->user_id,
+                        // A recorded service is scheduled work by definition unless its type
+                        // says otherwise — same map, so the chips agree with the cost tiles.
+                        'bucket'  => $m->maintenance_type_id && isset($bucketMap[$m->maintenance_type_id])
+                                        ? $bucketMap[$m->maintenance_type_id] : 'regular',
+                    ];
+                }
+            }
+
+            // Newest first across BOTH kinds, so the list reads as one history.
+            usort($out, fn ($a, $b) => strcmp((string) $b['date'], (string) $a['date']));
 
             return array_slice($out, 0, $limit);
         } catch (\Throwable $e) {
@@ -3441,6 +3743,41 @@ class VehicleService
                 if ((int) $sb > 0) $floorC[] = (int) $sb;
                 $sa = $stampedQ()->whereRaw('COALESCE(expense_date, DATE(created_at)) > ?', [$date])->min('meter_at_fill');
                 if ((int) $sa > self::MIN_METER) $ceilC[] = (int) $sa;
+            }
+
+            /**
+             * ⭐ SERVICE RECORDS ARE READINGS TOO (3-Sep). The odometer already counts them;
+             *   this window — the typo-guard every claim is judged by — did not. So a bike
+             *   whose only recent reading came from a recorded service was measured against a
+             *   stale floor, and an honest claim could be refused as "far above this bike's
+             *   last km". Same date anchor as every source here: strictly before / after.
+             *
+             * ⚠ MACHINE-KEYED, like the block above: each log is attributed by `vehicleForDay`,
+             *   the same rule the countdowns use. A service log is rider-keyed in the table, so
+             *   attributing it any other way would let a two-machine rider's van reading bound
+             *   his own bike — the leak the $riskFloorC split above exists to contain.
+             * ⚠ Bounded scan and fails soft: a guard must never be why a real claim is refused.
+             */
+            if (self::hasTbl('t_fleet_service_log')) {
+                try {
+                    $resolver = new VehicleResolver();
+                    $svcBefore = 0; $svcAfter = null;
+                    foreach (DB::table('t_fleet_service_log')
+                                ->whereNotNull('meter')->where('meter', '>', self::MIN_METER)
+                                ->orderByDesc('meter')->limit(120)
+                                ->get(['user_id', 'meter', 'service_date']) as $sl) {
+                        $d = substr((string) $sl->service_date, 0, 10);
+                        if ((int) $resolver->vehicleForDay((int) $sl->user_id, $d) !== $vehicleId) continue;
+                        if ($d < $date) { if ((int) $sl->meter > $svcBefore) $svcBefore = (int) $sl->meter; }
+                        elseif ($d > $date) {
+                            if ($svcAfter === null || (int) $sl->meter < $svcAfter) $svcAfter = (int) $sl->meter;
+                        }
+                    }
+                    if ($svcBefore > 0) $floorC[] = $svcBefore;
+                    if ($svcAfter !== null && $svcAfter > self::MIN_METER) $ceilC[] = $svcAfter;
+                } catch (\Throwable $e) {
+                    // leave the window as the other sources built it
+                }
             }
 
             // ── STEP C — readings STAMPED to this machine, whoever the rider was and whatever

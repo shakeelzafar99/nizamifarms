@@ -494,9 +494,17 @@
       ? '<strong>booked</strong> · '+rsS(cur.delivered_pieces)+' delivered so far'
       : deltaChip(cur.kg,prev.kg)+' · + '+rsS(cur.pieces)+' <strong>pc items</strong>';
     var revLabel = isQb ? 'Booked revenue' : 'Delivered revenue';
+    // Sep-2026 — revenue is what the window EARNED, so it already carries two
+    // adjustments: account balance customers spent is added back (the invoice
+    // shrank, the sale did not) and tips from the cutoff on are taken out (they
+    // are held in the Tips Fund). Shown here so the figure explains itself.
+    var revAdj = [];
+    if ((cur.balance_used||0) > 0)  revAdj.push('+'+rs(cur.balance_used)+' from balance');
+    if ((cur.tips_excluded||0) > 0) revAdj.push('−'+rs(cur.tips_excluded)+' tips');
+    var revAdjTxt = revAdj.length ? ' · '+revAdj.join(' · ') : '';
     var revSub   = isQb
       ? deltaChip(cur.revenue,prev.revenue)+' vs last season · '+rs(cur.delivered_revenue)+' delivered'
-      : deltaChip(cur.revenue,prev.revenue)+' '+cmp;
+      : deltaChip(cur.revenue,prev.revenue)+' '+cmp+revAdjTxt;
     var ordLabel = isQb ? 'Orders booked' : 'Orders delivered';
     var ordSub   = isQb
       ? deltaChip(cur.orders,prev.orders)+' · '+rsS(cur.delivered_orders)+' delivered · AOV '+rs(dv.aov)
@@ -604,7 +612,7 @@
       var a=w.assets||{count:0,value:0,units:[]};
       var assetRows=(a.units||[]).map(function(u){return '<div class="row"><span>'+esc(u.unit)+' ('+u.count+')</span><span>'+rsS(u.value)+'</span></div>';}).join('');
       html+=
-        '<div class="card click" tabindex="0" role="button" onclick="hqDrill(\'payables\')"><div class="k-label">Payables'+iBtn('pay')+'<span class="drill">›</span></div><div class="k-val">'+rs(w.payables)+'</div><div class="k-sub">owed to vendors</div></div>'+
+        '<div class="card click" tabindex="0" role="button" onclick="hqDrill(\'payables\')"><div class="k-label">Payables'+iBtn('pay')+'<span class="drill">›</span></div><div class="k-val">'+rs(w.payables)+'</div><div class="k-sub">'+((w.payables_tips||0)>0?'vendors + '+rs(w.payables_tips)+' tips held':'owed to vendors')+'</div></div>'+
         '<div class="card click" tabindex="0" role="button" onclick="hqDrill(\'assets\')"><div class="k-label">Fixed assets'+iBtn('assets')+'<span class="drill">›</span></div><div class="k-val">'+rs(a.value)+'</div>'+
           (assetRows?'<div class="banklist">'+assetRows+'</div>':'<div class="k-sub">'+a.count+' active assets</div>')+'</div>';
     }
@@ -666,7 +674,9 @@
         ['Why booked','Qurbani is pre-sold with costs bought upfront — the season’s business is what was <span class="var">booked</span>, matched against season costs'],
         ['Delivered so far','<span class="var">'+rs(cur.delivered_revenue)+'</span> of it delivered ('+rsS(cur.delivered_orders)+' orders); the rest is booked, awaiting the Eid days'],
         ['Excludes','Cancelled orders']]} : {t:'Delivered revenue',v:rs(cur.revenue),r:[
-        ['Formula','Sum of invoice totals of orders <span class="var">delivered</span> in the window'],
+        ['Formula','Sum of invoice totals of orders <span class="var">delivered</span> in the window, <span class="var">plus</span> account balance spent, <span class="var">minus</span> tips'],
+        ['Paid from balance','<span class="var">'+rs(cur.balance_used||0)+'</span> — the invoice shrank because the customer paid with money we already held for them. The sale did not shrink, so it is added back'],
+        ['Tips','<span class="var">'+rs(cur.tips_excluded||0)+'</span> taken out — a tip is the rider’s, not ours. It is held in the Tips Fund until it is paid out'],
         ['Window','Delivered <span class="var">'+win+'</span>'],
         ['Date used','<code>latest time status became “delivered”</code> (status history), not order date'],
         ['Unit rule',unitRule],
@@ -783,7 +793,9 @@
           ['Overdue','<span class="var">'+rs(R.overdue)+'</span> of the regular pending is older than 30 days'],
           ['Note','Cash orders are counted via rider balance, not here — no double count']]};
         D.pay={t:'Payables',v:rs(w.payables),r:[
-          ['Formula','Sum of vendor account balances (their bills − our payments)'],
+          ['Formula','Vendor account balances (their bills − our payments) <span class="var">+</span> tips we are holding for staff'],
+          ['Vendors','<span class="var">'+rs(w.payables_vendors!=null?w.payables_vendors:w.payables)+'</span>'],
+          ['Tips held','<span class="var">'+rs(w.payables_tips||0)+'</span> — the cash is already counted in the tills and banks above, so it is subtracted here or we would be claiming money we only hold'],
           ['As of','<span class="var">now</span>']]};
         D.assets={t:'Fixed assets',v:rs((w.assets||{}).value||0),r:[
           ['Formula','Book value of <span class="var">active</span> assets in the assets register ('+(((w.assets||{}).count)||0)+' assets), split by business unit. Click › for the asset list'],
@@ -866,7 +878,7 @@
       cols:['Day','Orders','Kg','Pcs','Revenue'],map:function(r){return [fmtDay(r.day),rsS(r.orders),rsS(r.kg),rsS(r.pcs||0),rsS(r.revenue)];},
       raw:function(r){return r;},total:function(rows){var o=0,k=0,p=0,v=0;rows.forEach(function(r){o+=r.orders;k+=r.kg;p+=(r.pcs||0);v+=r.revenue;});return ['Total',rsS(o),rsS(k),rsS(p),rsS(v)];},
       l2:{crumb:function(r){return fmtDay(r.day);},url:function(r){return '/hq/drill/revenue-orders?unit='+state.unit+'&date='+r.day;},
-        cols:['Order #','Customer','Qty','Amount','Paid'],map:function(r){return [esc(r.order_number),esc(r.customer),r.kg,rsS(r.amount),pill(r.paid)];}}},
+        cols:['Order #','Customer','Qty','Amount','Paid'],map:function(r){return [esc(r.order_number),esc(r.customer),r.kg,rsS(r.amount)+(r.invoice?' <span style="color:var(--ink3,#888);font-size:11px">(invoice '+rsS(r.invoice)+')</span>':''),pill(r.paid)];}}},
     vendor:{crumb:['Gross profit','Vendor purchases'],url:function(){return '/hq/drill/vendors'+qs();},
       cols:['Vendor','Bills','Purchases','Balance'],map:function(r){return [esc(r.vendor),rsS(r.bills),rsS(r.purchases),rsS(r.balance)];},
       raw:function(r){return r;},total:function(rows){var b=0,p=0;rows.forEach(function(r){b+=r.bills;p+=r.purchases;});return ['Total',rsS(b),rsS(p),''];},

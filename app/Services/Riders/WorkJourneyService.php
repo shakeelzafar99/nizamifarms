@@ -348,43 +348,14 @@ class WorkJourneyService
         //
         // ⚠ DATE-scoped (`vehicleForDay`), because a report judges history — the
         //   live gates use `currentVehicleFor` for the opposite reason.
-        $prev = null;
-        $label = null;
-        $transferDay = false;
-        try {
-            $resolver = new VehicleResolver();
-            if ($resolver->rulesEnabled() && $resolver->available()) {
-                $vid = $resolver->vehicleForDay($userId, $date);
-                if ($vid) {
-                    // ⭐ A HANDOVER DAY IS NOT A BREACH. He collected the bike from
-                    //   wherever it was — from the other rider's home, from the
-                    //   workshop — and that travel is legitimate. Suppressing here
-                    //   matches what `workIssueDays` and `DayChecksService` already
-                    //   do for the same days; this surface simply never learned it.
-                    $transferDay = $resolver->isTransferDay($vid, $date);
-                    $win   = (new VehicleService())->meterWindowFor($vid, $date);
-                    $floor = $win['floor'] ?? null;
-                    if ($floor !== null) {
-                        $prev  = ['value' => (int) $floor, 'date' => null];
-                        $label = $resolver->labelFor($vid);
-                    }
-                }
-                // He held nothing that day: there is no machine to check against.
-                if (!$vid && $resolver->hasRiderProfile($userId)) return null;
-            }
-        } catch (\Throwable $e) {
-            Log::warning('continuity fell back to the rider chain', [
-                'user' => $userId, 'date' => $date, 'error' => $e->getMessage(),
-            ]);
-            $prev = null;
-        }
-
-        if (!$prev) {
-            $prev = $this->lastClosingMeter($userId, $date);
-        }
-        if (!$prev) {
+        $base = $this->closingBaseline($userId, $date);
+        // He held nothing that day: there is no machine to check against.
+        if ($base['holds_nothing'] || $base['value'] === null) {
             return null;
         }
+        $prev = ['value' => $base['value'], 'date' => $base['date']];
+        $label = $base['label'];
+        $transferDay = $base['transfer_day'];
 
         $gap = (int) $start - $prev['value'];
         $source = (string) ($g('meter_start_source') ?? '');
@@ -412,6 +383,87 @@ class WorkJourneyService
                 'prev_date' => $prev['date'] ?? null,
                 // So the sheet can say WHY it is not complaining.
                 'transfer_day' => $transferDay, 'label' => $label];
+    }
+
+    /**
+     * ⭐⭐ ONE ANSWER TO "WHAT DID HIS MACHINE READ BEFORE TODAY?" (Sep-2026).
+     *
+     * WHY IT EXISTS. This lookup had **five** implementations. `continuity()` (above) learned in
+     * Aug-2026 to ask the MACHINE; the four surfaces that print *"start 20,240 − last night
+     * 20,186"* never did, and each carried its own `MAX(attendance_date) per user_id` with **no
+     * vehicle predicate** — the attendance day view, its detail modal, the mobile store list and
+     * the rider review. On a day a rider changed machines they subtracted one odometer from
+     * another and printed the difference as an accusation: the Aug-22 note records this exact chip
+     * showing Rajab *"overnight −100 km"* for a Van/own-bike split. Extracted from `continuity()`
+     * unchanged, so the verdict and the number under it can no longer drift apart.
+     *
+     * @return array{value:?int, date:?string, label:?string, vtype:?string, source:string,
+     *               transfer_day:bool, holds_nothing:bool}
+     *
+     *   value          the reading to measure today against; null = nothing to compare with
+     *   label          the machine's plate when the answer came from the registry (so a surface
+     *                  can say WHICH machine), null on the rider fallback
+     *   source         'vehicle' | 'rider' — which chain answered
+     *   transfer_day   the machine changed hands that day
+     *   holds_nothing  he is a rider holding NO machine: the question must not be asked at all,
+     *                  which is different from "no baseline" (⭐ callers must honour this)
+     *
+     * ⚠ SAFETY, and this is the whole design: it never returns a WORSE answer than the rider
+     *   chain it replaces. Registry off, unavailable, or throwing ⇒ the old rider-keyed lookup,
+     *   byte for byte. A machine the registry knows but has no readings for ⇒ also the rider
+     *   chain, so a brand-new bike does not silently hide a real overnight gap. Nothing here
+     *   blocks, locks or refuses anything — every caller prints a chip with it.
+     */
+    public function closingBaseline(int $userId, string $date): array
+    {
+        $date = substr($date, 0, 10);
+        $out = ['value' => null, 'date' => null, 'label' => null, 'vtype' => null,
+                'source' => 'rider', 'transfer_day' => false, 'holds_nothing' => false];
+
+        try {
+            $resolver = new VehicleResolver();
+            if ($resolver->rulesEnabled() && $resolver->available()) {
+                $vid = $resolver->vehicleForDay($userId, $date);
+                if ($vid) {
+                    // ⭐ A HANDOVER DAY IS NOT A BREACH. He collected the bike from
+                    //   wherever it was — from the other rider's home, from the
+                    //   workshop — and that travel is legitimate. Suppressing here
+                    //   matches what `workIssueDays` and `DayChecksService` already
+                    //   do for the same days; this surface simply never learned it.
+                    $out['transfer_day'] = $resolver->isTransferDay($vid, $date);
+                    $win   = (new VehicleService())->meterWindowFor($vid, $date);
+                    $floor = $win['floor'] ?? null;
+                    if ($floor !== null) {
+                        $out['value']  = (int) $floor;
+                        $out['label']  = $resolver->labelFor($vid);
+                        $out['source'] = 'vehicle';
+                        // Free: `vehicle()` is memoised and already holds the whole row, so the
+                        // chip can draw a van as a van instead of guessing from is_company.
+                        $veh = $resolver->vehicle($vid);
+                        $out['vtype'] = ((string) ($veh->vtype ?? '')) === 'van' ? 'van' : 'bike';
+                        return $out;
+                    }
+                } elseif ($resolver->hasRiderProfile($userId)) {
+                    // He held nothing that day: there is no machine to check against.
+                    $out['holds_nothing'] = true;
+                    return $out;
+                }
+            }
+        } catch (\Throwable $e) {
+            // ⚠ `transfer_day` is deliberately NOT reset here — if the resolver answered that
+            //   much before failing, a handover is still a handover, and the safer verdict is
+            //   the quieter one.
+            Log::warning('closingBaseline fell back to the rider chain', [
+                'user' => $userId, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        $prev = $this->lastClosingMeter($userId, $date);
+        if ($prev) {
+            $out['value'] = (int) $prev['value'];
+            $out['date']  = $prev['date'] ?? null;
+        }
+        return $out;
     }
 
     /** Is a manager check-in unlock active on this row right now? */

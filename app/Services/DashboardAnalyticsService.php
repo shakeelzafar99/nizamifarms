@@ -408,11 +408,14 @@ class DashboardAnalyticsService
         // orders + Qurbani-tagged ledger rows so it agrees with the
         // Monthly Reports tab. Bumping the cache key version forces
         // a fresh recompute everywhere this is consumed.
-        $cacheKey = "monthly_delivered_orders_v8_{$months}";
+        // ⚠ v9 — Sep-2026: revenue changed meaning (profit-revenue rule), so the
+        // key is bumped or a cached v8 payload would keep serving the old number.
+        $cacheKey = "monthly_delivered_orders_v9_{$months}";
 
         return Cache::remember($cacheKey, 600, function () use ($months) {
             $endDate = Carbon::now()->endOfMonth();
             $startDate = $endDate->copy()->subMonths($months)->startOfMonth();
+            $rev = \App\Services\FIN\ProfitRevenueSql::revenue('o', 'h.delivered_at');
 
             // PRIMARY SOURCE: Delivered orders grouped by delivery date.
             // Qurbani orders are stripped here (and from the ledger
@@ -426,29 +429,37 @@ class DashboardAnalyticsService
                         $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
                     );
                 })
+                ->tap(function ($q) {
+                    // Sep-2026 — account-balance spend per order, added back below.
+                    \App\Services\FIN\ProfitRevenueSql::join($q, 'o');
+                })
                 ->select(
                     DB::raw("DATE_FORMAT(h.delivered_at, '%Y-%m') as month_key"),
                     DB::raw("DATE_FORMAT(h.delivered_at, '%b %Y') as month_name"),
-                    // Delivered order totals
-                    DB::raw("SUM(o.total_price) as invoice_total"),
+                    // Delivered order totals.
+                    // Sep-2026 — every revenue figure in this chart uses the ONE
+                    // profit-revenue rule (balance spent added back, post-cutoff
+                    // tips removed). Applied to the splits too, not just the
+                    // headline, or the parts would stop adding up to the whole.
+                    DB::raw("SUM($rev) as invoice_total"),
                     DB::raw("COUNT(DISTINCT o.id) as invoice_count"),
                     // Unique customers
                     DB::raw("COUNT(DISTINCT o.customer_id) as unique_customers"),
                     // Online/Cash split from ORDER's payment_method field
-                    DB::raw("SUM(CASE WHEN o.payment_method IN ('online', 'Online', 'ONLINE', 'card', 'Card') THEN o.total_price ELSE 0 END) as online_total"),
+                    DB::raw("SUM(CASE WHEN o.payment_method IN ('online', 'Online', 'ONLINE', 'card', 'Card') THEN $rev ELSE 0 END) as online_total"),
                     DB::raw("SUM(CASE WHEN o.payment_method IN ('online', 'Online', 'ONLINE', 'card', 'Card') THEN 1 ELSE 0 END) as online_count"),
-                    DB::raw("SUM(CASE WHEN o.payment_method NOT IN ('online', 'Online', 'ONLINE', 'card', 'Card') OR o.payment_method IS NULL THEN o.total_price ELSE 0 END) as cash_total"),
+                    DB::raw("SUM(CASE WHEN o.payment_method NOT IN ('online', 'Online', 'ONLINE', 'card', 'Card') OR o.payment_method IS NULL THEN $rev ELSE 0 END) as cash_total"),
                     DB::raw("SUM(CASE WHEN o.payment_method NOT IN ('online', 'Online', 'ONLINE', 'card', 'Card') OR o.payment_method IS NULL THEN 1 ELSE 0 END) as cash_count"),
                     // Shopify/Manual split (based on order_number)
-                    DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN o.total_price ELSE 0 END) as shopify_total"),
+                    DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN $rev ELSE 0 END) as shopify_total"),
                     DB::raw("SUM(CASE WHEN o.order_number LIKE 'SH%' OR o.order_number LIKE 'sh%' THEN 1 ELSE 0 END) as shopify_count"),
-                    DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN o.total_price ELSE 0 END) as manual_total"),
+                    DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN $rev ELSE 0 END) as manual_total"),
                     DB::raw("SUM(CASE WHEN o.order_number NOT LIKE 'SH%' AND o.order_number NOT LIKE 'sh%' THEN 1 ELSE 0 END) as manual_count"),
                     // New vs Returning customers (based on first_delivery_date - pre-computed for performance)
                     // New = customer's first delivery was in this month
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN o.total_price ELSE 0 END) as new_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN $rev ELSE 0 END) as new_customer_revenue"),
                     DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') = DATE_FORMAT(h.delivered_at, '%Y-%m') THEN 1 ELSE 0 END) as new_customer_orders"),
-                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') OR c.first_delivery_date IS NULL THEN o.total_price ELSE 0 END) as returning_customer_revenue"),
+                    DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') OR c.first_delivery_date IS NULL THEN $rev ELSE 0 END) as returning_customer_revenue"),
                     DB::raw("SUM(CASE WHEN DATE_FORMAT(c.first_delivery_date, '%Y-%m') != DATE_FORMAT(h.delivered_at, '%Y-%m') OR c.first_delivery_date IS NULL THEN 1 ELSE 0 END) as returning_customer_orders")
                 )
                 ->where(function($q) {
@@ -1165,10 +1176,15 @@ class DashboardAnalyticsService
                     $q, 'o', \App\Services\QurbaniFinanceFilter::MODE_EXCLUDE
                 );
             })
+            ->tap(function ($q) {
+                // Sep-2026 — carries each order's account-balance spend so the
+                // revenue below can add it back.
+                \App\Services\FIN\ProfitRevenueSql::join($q, 'o');
+            })
             ->selectRaw("
                 o.payment_method,
                 COALESCE(l.approval_status, 'pending') as approval_status,
-                SUM(o.total_price) as total,
+                SUM(" . \App\Services\FIN\ProfitRevenueSql::revenue('o', 'h.delivered_at') . ") as total,
                 COUNT(DISTINCT o.id) as count
             ")
             ->groupBy('o.payment_method', DB::raw("COALESCE(l.approval_status, 'pending')"))

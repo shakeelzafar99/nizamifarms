@@ -2496,7 +2496,17 @@ document.addEventListener('DOMContentLoaded', function(){
   };
 
   window.nfApprovalsIgnore = function(id){
-    if(!confirm('Ignore this Shopify order? It will be marked ignored and no invoice is created.')) return;
+    // The plain confirm() is replaced by the three-way picker (quietly / outside the
+    // delivery area / customer asked to cancel). Cancelling it calls nothing back, so
+    // the button below is only touched once a choice has actually been made.
+    var o = byId[id] || {};
+    window.nfPickIgnoreReason({
+      orderNumber: o.order_number || '',
+      onPick: function(reason){ nfadDoIgnore(id, reason); }
+    });
+  };
+
+  function nfadDoIgnore(id, reason){
     var card = document.getElementById('nfad-card-'+id);
     // MUST be button.nfad-no. The order-number div used to share this class, so
     // querySelector('.nfad-no') matched IT first: clicking Ignore overwrote the
@@ -2505,11 +2515,29 @@ document.addEventListener('DOMContentLoaded', function(){
     // qualifier keeps this correct even if a class is reused again later.
     var btn = card ? card.querySelector('button.nfad-no') : null;
     if(btn){ btn.disabled = true; btn.textContent = '…'; }
-    fetch('/orders/'+id+'/ignore', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() }, credentials:'same-origin' })
+    fetch('/orders/'+id+'/ignore', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'X-CSRF-TOKEN': csrf() },
+      credentials:'same-origin',
+      body: JSON.stringify({ reason: reason || 'none' })
+    })
       .then(function(r){ return r.json(); })
-      .then(function(data){ if(data.success){ removeCard(id); } else { alert('Could not ignore: '+(data.message||'Unknown error')); if(btn){ btn.disabled=false; btn.textContent='Ignore'; } } })
+      .then(function(data){
+        if(data.success){
+          // The ignore succeeded even when the message did not — say so rather than
+          // letting the card vanish and the operator assume the customer was told.
+          var m = data.messaging;
+          if(m && m.status && m.status !== 'sent' && reason && reason !== 'none'){
+            alert('Order ignored, but the customer was NOT messaged.\n\n' + (m.detail || ''));
+          }
+          removeCard(id);
+        } else {
+          alert('Could not ignore: '+(data.message||'Unknown error'));
+          if(btn){ btn.disabled=false; btn.textContent='Ignore'; }
+        }
+      })
       .catch(function(){ alert('Ignore failed — please try again.'); if(btn){ btn.disabled=false; btn.textContent='Ignore'; } });
-  };
+  }
 
   window.nfApprovalsOpenFull = function(id){
     // Full Shopify view for this staging order (source-scoped URL — never the prod twin).
@@ -2793,6 +2821,9 @@ document.addEventListener('DOMContentLoaded', function(){
 </div>
 
 @include('pages.orders.partials.import-modal')
+{{-- Ignore-reason picker. Included unconditionally: the approvals drawer is gated on
+     $canViewShopify but the Shopify table's own Ignore button is not, and both use it. --}}
+@include('pages.orders.partials.ignore-reason-modal')
 
 @endsection
 
@@ -5177,21 +5208,28 @@ function convertOrder(orderId) {
 }
 
 function ignoreOrder(orderId) {
-    if (!confirm('Are you sure you want to ignore this Shopify order? This will mark it as ignored and no invoice will be created.')) {
-        return;
-    }
-    
+    // Three-way picker instead of a yes/no confirm — see partials/ignore-reason-modal.
+    // Cancelling calls nothing back, so nothing below runs unless a choice was made.
+    window.nfPickIgnoreReason({
+        onPick: function (reason) { doIgnoreOrder(orderId, reason); }
+    });
+}
+
+function doIgnoreOrder(orderId, reason) {
     fetch(`/orders/${orderId}/ignore`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-        }
+        },
+        body: JSON.stringify({ reason: reason || 'none' })
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Order marked as ignored successfully!');
+            // `message` already carries the messaging outcome when a reason was picked,
+            // so the operator learns here if the WhatsApp did not go out.
+            alert(data.message || 'Order marked as ignored successfully!');
             // Refresh the page to show updated data
             window.location.reload();
         } else {

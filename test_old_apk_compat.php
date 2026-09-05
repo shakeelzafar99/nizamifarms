@@ -150,6 +150,55 @@ $vres2 = json_decode($vc->index($vreq2)->getContent(), true);
 ok('an old app sending no status still gets active-only (unchanged)',
    count($vres2['vendors']), DB::table('t_fin_vendors')->where('is_active', 1)->count());
 
+// ─────────────────────────────────────────────────────────────────────────────
+head('§4 ⚠⚠ THE ONE DELIBERATE EXCEPTION — Record service needs the new APK');
+
+/**
+ * ⚠⚠ READ THIS BEFORE SHIPPING WEB-ONLY. Everything above says "the installed app
+ *    keeps working". Since 2-Sep-2026 that is NO LONGER TRUE for ONE action.
+ *
+ * Owner ruling: a "Record service" carrying an odometer but no `maintenance_type_id`
+ * is REJECTED rather than guessed (it used to be filed against the shortest
+ * clock-resetting type, which silently misfiled `t_fleet_service_log` #8). Every APK
+ * built before the FleetScreen type picker posts exactly that payload.
+ *
+ * So the deploy order is: build the APK, upload the web files, install the APK. In
+ * the gap, a manager records a service from the WEB (which has always asked for the
+ * type). Nothing else on the phone is affected — the refusal is scoped to this one
+ * endpoint, and only when a meter is sent.
+ *
+ * This section asserts the exception EXISTS and stays scoped, so a future session
+ * reading "ALL GREEN" cannot conclude that web-only is safe for this batch.
+ */
+$typeSvc = app(\App\Services\Riders\MaintenanceTypeService::class);
+$scheduled = array_filter($typeSvc->options(), fn ($t) => (int) ($t['interval_km'] ?? 0) > 0);
+ok('this database HAS scheduled maintenance types (so the rule is live)',
+   count($scheduled) > 0, true);
+
+$fcSrc = file_get_contents(__DIR__ . '/app/Http/Controllers/CRM/FleetFuelController.php');
+// ⚠ The refusal itself lives in ServiceRecordService since Phase 3 — three callers with
+//   different permission gates share the rule. Assert it wherever it is.
+$recSrc = file_get_contents(__DIR__ . '/app/Services/Riders/ServiceRecordService.php');
+ok('an untyped meter is refused, not guessed',
+   str_contains($recSrc, 'Choose which service was done'), true);
+ok('  …and the message tells the user to update the app',
+   (bool) preg_match('/update the app/i', $recSrc), true);
+ok('  …and the old substitute-type lookup is gone',
+   str_contains($fcSrc, 'no service type given, treated as the routine service'), false);
+
+// Scope: the SCHEDULE-only call (⚙️ This bike) carries no type and must still work
+// for an old APK — it never recorded a service, so the ruling does not touch it.
+$fsPos = strpos($fcSrc, 'public function markServiced');
+$fsEnd = strpos($fcSrc, 'public function setDefaultInterval');
+$body  = substr($fcSrc, $fsPos, max(0, $fsEnd - $fsPos));
+ok('the type is demanded ONLY when a meter is sent',
+   (bool) preg_match('/if\s*\(\$request->filled\(.meter.\)\)\s*\{[^}]*?THE TYPE IS REQUIRED/s', $body), true);
+ok('  …so an old APK can still set a bike\'s schedule',
+   (bool) preg_match('/filled\(.interval_km.\)/', $body), true);
+
 echo "\n" . str_repeat('─', 60) . "\n";
 echo ($fail === 0 ? "ALL GREEN" : "FAILURES") . " — passed {$pass}, failed {$fail}\n";
+if ($fail === 0) {
+    echo "\n⚠ NOTE: §4 — this batch is NOT web-only. Build and install the APK with it.\n";
+}
 exit($fail === 0 ? 0 : 1);

@@ -123,7 +123,11 @@ class SalaryCostService
      * Per-employee breakdown for the drills. Advance rows are labelled so the drill
      * explains itself instead of showing an unexplained figure next to the paid ones.
      *
-     * @return array<int,array{employee:string,amount:float,is_khaas:bool,kind:string,date:?string,note:?string}>
+     * `user_id` (Sep-2026) lets a caller group these rows per EMPLOYEE without matching on the
+     * display name — two staff can share a name, and a renamed user must not split into two people.
+     * It is nullable only in the theoretical case of an orphaned row; callers fall back to the name.
+     *
+     * @return array<int,array{user_id:?int,employee:string,amount:float,is_khaas:bool,kind:string,date:?string,note:?string}>
      */
     public function detailForWindow($start, $end, int $khaasBuId): array
     {
@@ -132,6 +136,7 @@ class SalaryCostService
 
         foreach ($this->paidRows($months, $khaasBuId, true) as $r) {
             $out[] = [
+                'user_id'  => $r->user_id !== null ? (int) $r->user_id : null,
                 'employee' => $r->fullname ?: ('User ' . $r->user_id),
                 'amount'   => round((float) $r->amt, 2),
                 'is_khaas' => ((int) $r->bu === $khaasBuId),
@@ -142,6 +147,7 @@ class SalaryCostService
         }
         foreach ($this->unrecoveredAdvances($months, $khaasBuId, true) as $r) {
             $out[] = [
+                'user_id'  => $r->user_id !== null ? (int) $r->user_id : null,
                 'employee' => $r->fullname ?: ('User ' . $r->user_id),
                 'amount'   => round((float) $r->amt, 2),
                 'is_khaas' => ((int) $r->bu === $khaasBuId),
@@ -255,6 +261,7 @@ class SalaryCostService
                     Carbon::parse($end)->endOfDay(),
                 ])->get() as $s) {
                 $out[] = [
+                    'user_id'  => $s->user_id !== null ? (int) $s->user_id : null,
                     'employee' => $s->employee ? $s->employee->fullname : ('User ' . $s->user_id),
                     'amount'   => round((float) $s->net_salary, 2),
                     'is_khaas' => false,

@@ -73,6 +73,26 @@ class LocationService
     }
 
     /**
+     * ⚠ Does this database know which locations are WORKSHOPS yet? (Phase 4)
+     *
+     *   Same shape and the same reason as hasHandoverPointColumn above: a workshop
+     *   shares this table with the offices but is NOT a place of work — it is somewhere
+     *   a rider is sent for one morning. Schema-guarded, so every caller is a no-op
+     *   before the Phase-4 batch is applied.
+     */
+    public static function hasWorkshopColumn(): bool
+    {
+        static $hasWs = null;
+        if ($hasWs !== null) return $hasWs;
+        try {
+            $hasWs = \Illuminate\Support\Facades\Schema::hasColumn('t_ops_company_locations', 'is_workshop');
+        } catch (\Throwable $e) {
+            $hasWs = false;
+        }
+        return $hasWs;
+    }
+
+    /**
      * May this location be assigned as somebody's WORK location?
      *
      * ⚠ A van meet-up point may not. Stops share this table with offices, and an
@@ -86,10 +106,26 @@ class LocationService
     public static function isAssignableOffice(?int $locationId): bool
     {
         if (!$locationId) return false;
-        if (!self::hasHandoverPointColumn()) return true;
+        $hasHandover = self::hasHandoverPointColumn();
+        $hasWorkshop = self::hasWorkshopColumn();
+        if (!$hasHandover && !$hasWorkshop) return true;
         try {
+            /**
+             * ⚠⚠ A WORKSHOP IS BARRED HERE FOR THE SAME REASON A MEET-UP POINT IS (Sep-3).
+             *    It is somewhere a rider is sent for ONE MORNING, never his standing base —
+             *    and because an assigned location is honoured by the check-in rules, making
+             *    one permanent would let him clock in at the workshop any day of the week.
+             * ⭐ A workshop still reaches his day, but only through the ONE-DAY override that
+             *   scheduling a visit writes (WorkshopVisitService::applyShiftLocation), which
+             *   removes itself when the visit is cancelled.
+             */
             return !DB::table('t_ops_company_locations')
-                ->where('id', $locationId)->where('is_handover_point', 1)->exists();
+                ->where('id', $locationId)
+                ->where(function ($w) use ($hasHandover, $hasWorkshop) {
+                    if ($hasHandover) $w->orWhere('is_handover_point', 1);
+                    if ($hasWorkshop) $w->orWhere('is_workshop', 1);
+                })
+                ->exists();
         } catch (\Throwable $e) {
             return true;
         }

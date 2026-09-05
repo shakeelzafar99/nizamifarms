@@ -173,7 +173,7 @@ class OvertimeService
     {
         if ($this->targetHoursMemo === null) {
             try {
-                $v = DB::table('t_fin_config')->where('config_key', 'SHIFT_TARGET_HOURS')->value('config_value');
+                $v = \App\Services\HR\ConfigMemo::get('SHIFT_TARGET_HOURS');
                 $this->targetHoursMemo = ($v !== null && $v !== '') ? (float) $v : 9.0;
             } catch (\Throwable $e) {
                 $this->targetHoursMemo = 9.0;
@@ -335,6 +335,31 @@ class OvertimeService
         if ($overtimeMinutes <= 0) { return 0; }
         $perDay = max(1, (int) round($this->targetHours() * 60));
         return (int) floor($overtimeMinutes / $perDay);
+    }
+
+    /**
+     * Bonus days for ONE employee's month, CARRY-AWARE — the number every screen must show.
+     *
+     * `bonusLeaves()` above is the raw converter (floor of minutes ÷ target). Since Sep-2026
+     * the minutes left under the line CARRY into the next month (OvertimeCarryService), so a
+     * month's real bonus days = floor((carried-in + own) ÷ target). Payroll grants from that;
+     * the attendance month tab, the report tile and the rider's phone read THIS so they can
+     * never disagree with the payslip — the owner's "one engine" rule.
+     *
+     * A range that is not exactly one calendar month (a custom report window) has no carry
+     * semantics, so it falls back to the raw conversion. The open month is fine: its end is
+     * clipped to today, still inside the month.
+     */
+    public function bonusLeavesFor(int $userId, string $start, string $end, int $overtimeMinutes): int
+    {
+        $s = substr((string) $start, 0, 10);
+        $e = substr((string) $end, 0, 10);
+        $month = substr($s, 0, 7);
+        $wholeMonth = $s === ($month . '-01') && substr($e, 0, 7) === $month;
+        if ($wholeMonth) {
+            return (new OvertimeCarryService())->preview($userId, $month, $overtimeMinutes)['days'];
+        }
+        return $this->bonusLeaves($overtimeMinutes);
     }
 
     /** Minutes still to run before the NEXT bonus day (0 when none are being earned). */

@@ -89,20 +89,41 @@ class MyVehicleController extends Controller
             //   entirely, so the card costs a couple of cheap reads no matter how
             //   often the attendance screen refreshes. The full screen asks for
             //   everything.
+            /**
+             * 🔧 HIS NEXT WORKSHOP ERRAND (owner ask, Sep-2026) — "shown in the attendance
+             * with the bike, so he knows clearly".
+             *
+             * ⚠ Rides on the BRIEF payload too: the Attendance screen fetches `brief=1` for
+             *   its MY VEHICLE line, and that line is precisely where the owner asked for
+             *   the date to appear. Leaving it out of brief would have meant building the
+             *   feature and then not showing it in the one place he named.
+             * ⚠ Self-scoped like the rest of this controller — it resolves the caller.
+             * ⚠ Additive and guarded: null before the SQL runs, and an older app ignores it.
+             */
+            $nextWorkshop = null;
+            try {
+                $nextWorkshop = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->nextForUser($uid);
+            } catch (\Throwable $e) {
+                $nextWorkshop = null;
+            }
+
             if ($request->boolean('brief')) {
                 unset($v['photos']);
                 return response()->json([
-                    'success'     => true,
-                    'has_vehicle' => true,
-                    'brief'       => true,
-                    'vehicle'     => $v,
+                    'success'       => true,
+                    'has_vehicle'   => true,
+                    'brief'         => true,
+                    'vehicle'       => $v,
+                    'next_workshop' => $nextWorkshop,
                 ]);
             }
 
             return response()->json([
-                'success'     => true,
-                'has_vehicle' => true,
-                'month'       => $month,
+                'success'       => true,
+                'has_vehicle'   => true,
+                'month'         => $month,
+                'next_workshop' => $nextWorkshop,
                 'vehicle'     => $v,
                 'assignment'  => $this->assignmentFor($vehicleId, $uid),
                 // HIS running cost per km — the manager's Bikes figure, unchanged.

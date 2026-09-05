@@ -473,6 +473,7 @@ class RiderReportsController extends Controller
 
             $names = DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id');
             $has = fn ($v) => $v !== null && $v !== '';
+            $wjBase = new \App\Services\Riders\WorkJourneyService();
 
             foreach ($today as $uid => $att) {
                 $checkedIn  = $has($att->login_time);
@@ -489,20 +490,44 @@ class RiderReportsController extends Controller
                     $noMeter = ['missing' => $missStart && $missEnd ? 'both' : ($missStart ? 'start' : 'end')];
                 }
 
-                // Grace: needs a start meter today + a prior end meter to compare against.
+                // Grace: needs a start meter today + a prior reading to compare against.
+                // ⭐⭐ The baseline is THE MACHINE's last reading (`closingBaseline()` — the same
+                //    brain the attendance sheet and the red meter-gap verdict use). Keyed to the
+                //    rider, this accused a man who simply changed machines of the difference
+                //    between two odometers. Falls back to the batch rider lookup if the registry
+                //    is off or cannot answer, so a report is never emptied by this.
                 $grace = null;
-                if ($hasStart && isset($prevEnd[$uid])) {
+                $baseVal = isset($prevEnd[$uid]) ? (float) $prevEnd[$uid]['end'] : null;
+                $baseDate = $prevEnd[$uid]['date'] ?? null;
+                $baseLabel = null;
+                $baseHandover = false;
+                if ($hasStart) {
+                    try {
+                        $mb = $wjBase->closingBaseline((int) $uid, $date);
+                        $baseHandover = (bool) $mb['transfer_day'];
+                        if ($mb['holds_nothing']) {
+                            $baseVal = null; $baseDate = null;
+                        } elseif ($mb['value'] !== null) {
+                            $baseVal = (float) $mb['value'];
+                            $baseDate = $mb['date'];
+                            $baseLabel = $mb['label'];
+                        }
+                    } catch (\Throwable $e) { /* keep the batch answer */ }
+                }
+                // A handover day is not judged: the baseline may belong to the other rider, so
+                // a km allowance is the wrong shape (see WorkJourneyService::continuity).
+                if ($hasStart && $baseVal !== null && !$baseHandover) {
                     $start = (float) $att->meter_start;
-                    $pend  = (float) $prevEnd[$uid]['end'];
                     $g     = $graceByUser[$uid] ?? $defaultGrace;
-                    $over  = $start - $pend;
+                    $over  = $start - $baseVal;
                     if ($over > $g) {
                         $grace = [
                             'overnight_km'   => (int) round($over),
                             'grace_km'       => (int) round($g),
                             'meter_start'    => (int) round($start),
-                            'prev_meter_end' => (int) round($pend),
-                            'prev_date'      => $prevEnd[$uid]['date'],
+                            'prev_meter_end' => (int) round($baseVal),
+                            'prev_date'      => $baseDate,
+                            'prev_label'     => $baseLabel,
                         ];
                     }
                 }

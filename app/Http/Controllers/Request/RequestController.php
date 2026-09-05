@@ -201,6 +201,12 @@ class RequestController extends Controller
             // never reset the bike's service clock on approval. Whitelisted to the two
             // values the mobile picker offers; blank = not bike-related (unchanged).
             'service_type' => 'nullable|in:oil_change,repair',
+            /**
+             * 🧾 WHICH ALREADY-RECORDED SERVICE THIS BILL IS FOR (owner ruling, 3-Sep) —
+             *    chosen from the requester's own un-billed readings, never matched by
+             *    meter or date. Absent = a new service, i.e. today's behaviour.
+             */
+            'service_log_id' => 'nullable|integer',
             // The named type. When present the server derives service_type from its
             // bucket and ignores whatever the client sent for it.
             'maintenance_type_id' => 'nullable|integer',
@@ -282,7 +288,22 @@ class RequestController extends Controller
                 }
             } else {
                 // Check if date is too far in the past
-                $daysDiff = $today->diffInDays($expenseDate);
+                /**
+                 * ⚠⚠ abs() — THE CAP HAS NEVER ACTUALLY FIRED (found 3-Sep).
+                 *
+                 *    On Carbon 2 `$today->diffInDays($past)` returned an absolute value; on
+                 *    Carbon 3 (this codebase runs 3.8.4) it returns a SIGNED float, so a past
+                 *    date gives −20.0 and `−20 > 14` is false. Every backdate was allowed, for
+                 *    everyone, however old — measured: a 400-day-old expense passed a 14-day
+                 *    window. The message even printed the negative number.
+                 *
+                 * ⚠ Fixing this TIGHTENS a control that has been open, so it can newly refuse
+                 *   people who were filing old dates unchallenged. The two managers who record
+                 *   maintenance are moved to 14 days in the same batch
+                 *   (`fleet_backdate_windows_sep3_2026.sql`) so this does not take away work
+                 *   they do today.
+                 */
+                $daysDiff = (int) abs($today->diffInDays($expenseDate));
                 if ($daysDiff > $maxBackdateDays) {
                     return response()->json([
                         'success' => false,
@@ -412,6 +433,17 @@ class RequestController extends Controller
                     // (including legacy/junk values) is stored as 'planned'.
                     $posted = strtolower(trim((string) ($validated['leave_type'] ?? '')));
                     $policyLeaveType = $posted === 'emergency' ? 'emergency' : 'planned';
+                    // 🚫 Owner ruling (Sep-3 2026): a balance may not go below zero, and a
+                    // manager filing the leave on someone's behalf is not an exception —
+                    // that was one of the two doors to a −1 balance.
+                    try {
+                        $dLeave = \Carbon\Carbon::parse($validated['leave_start_date'])
+                            ->diffInDays(\Carbon\Carbon::parse($validated['leave_end_date'])) + 1;
+                        $refusal = (new \App\Services\HR\LeavePolicyService())->overQuotaRefusal($forUserId, (float) $dLeave);
+                        if ($refusal !== null) {
+                            return response()->json(['success' => false, 'message' => $refusal], 422);
+                        }
+                    } catch (\Throwable $e) { /* a parse failure must not block the request */ }
                 }
             }
         }
@@ -499,6 +531,41 @@ class RequestController extends Controller
                 $validated['service_type'] ?? null
             );
 
+            // ⭐⭐ ONE RULE FOR "WHICH SERVICE?" (owner, 3-Sep) — see the same block in
+            //    API\RiderController::createRequest. A Maintenance claim with an odometer must
+            //    name a type when the list exists; the rule lives in ServiceRecordService.
+            /**
+             * 🧾 THE BILL IS FOR A SERVICE ALREADY RECORDED — see the twin block in
+             *    API\RiderController::createRequest. The claim inherits that reading, so the
+             *    manager never retypes a meter the rider already gave; and if the chosen
+             *    service already carries a live bill this REFUSES, which is what stops the
+             *    same receipt being filed twice from two different screens.
+             * ⚠ Keyed to $requesterId — the service belongs to the rider the claim is FOR,
+             *   never to the manager filing it.
+             */
+            $svcLink = app(\App\Services\Riders\ServiceRecordService::class)
+                ->validateBillTarget($validated['service_log_id'] ?? null, (int) $requesterId);
+            if (!$svcLink['ok']) {
+                return response()->json(['success' => false, 'message' => $svcLink['message']], 422);
+            }
+            if (!empty($svcLink['inherit'])) {
+                $validated['meter_at_fill']       = $svcLink['inherit']['meter'];
+                $validated['expense_date']        = $svcLink['inherit']['date'];
+                $validated['maintenance_type_id'] = $svcLink['inherit']['maintenance_type_id'];
+                $svcResolved = app(\App\Services\Riders\MaintenanceTypeService::class)->resolve(
+                    $svcLink['inherit']['maintenance_type_id'], $validated['service_type'] ?? null
+                );
+            }
+
+            if (($validated['expense_category'] ?? null) === 'Maintenance') {
+                $typeGate = app(\App\Services\Riders\ServiceRecordService::class)
+                    // ⚠ "has a meter" = a positive reading, the same test the rider door applies.
+                    ->requireTypeForClaim($svcResolved[1], (int) ($validated['meter_at_fill'] ?? 0) > 0);
+                if (!$typeGate['ok']) {
+                    return response()->json(['success' => false, 'message' => $typeGate['message']], 422);
+                }
+            }
+
             // ⭐ FUEL / MAINTENANCE RULES — the SAME service the rider's own app calls
             //    (API\RiderController::createRequest). This path used to enforce none
             //    of them, so a manager filing for a rider bypassed the company-bike
@@ -513,6 +580,9 @@ class RequestController extends Controller
                     'expense_date'  => $validated['expense_date'] ?? null,
                     'meter_at_fill' => $validated['meter_at_fill'] ?? null,
                     'service_type'  => $svcResolved[0],
+                    // ⚠ The meter came FROM an accepted service record, so it is not being
+                    //   asserted here — see FuelClaimRules. Ordinary claims are judged as before.
+                    'meter_from_service_log' => !empty($svcLink['inherit']),
                     // ⭐ Aug-27 2026: this path CAN now create the self-auditing metered
                     //   row — a manager filing a rider's own-bike kilometres files the
                     //   same kind of claim the rider's own screen would, and it is judged
@@ -696,6 +766,13 @@ class RequestController extends Controller
                 'submitted_at' => now(),
                 'created_by' => $loggedInUser->id,
             ]);
+
+            // 🧾 Tie the bill to the service that was chosen for it, before anything else
+            //    reads the pair — the approval hook below can post to the ledger immediately.
+            if (!empty($validated['service_log_id'])) {
+                app(\App\Services\Riders\ServiceRecordService::class)
+                    ->attachBillToService((int) $validated['service_log_id'], (int) $requestModel->id);
+            }
 
             // 🏍️ Record which machine this claim was for (Aug-2026). Keyed to the
             // REQUESTER, never the manager filing it — same rule FuelClaimRules

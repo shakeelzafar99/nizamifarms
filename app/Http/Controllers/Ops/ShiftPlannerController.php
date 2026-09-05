@@ -138,6 +138,24 @@ class ShiftPlannerController extends Controller
             }
         } catch (\Throwable $e) { /* table not deployed → no tags */ }
 
+        /**
+         * 🔧 WORKSHOP VISITS for the visible week (owner ask, Sep-2026): "whoever is
+         * planning the shift should know that on this date the rider has to go".
+         *
+         * ⚠⚠ A visit is NOT a day tag. It does not change pay, absence or the shift —
+         *    it is an errand on a normal paid working day (owner ruling). So it is
+         *    painted ON TOP of whatever the cell already says, and the cell keeps its
+         *    shift times. Batched for the whole week in ONE query, like the tags above.
+         */
+        $workshop = [];
+        try {
+            $uids = $users->pluck('user_id')->all();
+            if (!empty($uids)) {
+                $workshop = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->mapForRange($uids, $dateList[0], $dateList[6]);
+            }
+        } catch (\Throwable $e) { /* table not deployed → no visits */ }
+
         $riders = [];
         foreach ($users as $u) {
             $uid = (int) $u->user_id;
@@ -176,6 +194,9 @@ class ShiftPlannerController extends Controller
                     'is_holiday' => $isHoliday,
                     'is_override' => $isOverride,
                     'not_needed' => $notNeeded,
+                    // 🔧 The workshop errand for this rider on this day, or null.
+                    // Additive: an older planner blade simply ignores the key.
+                    'workshop' => $workshop[$uid . '|' . $d] ?? null,
                 ];
             }
 
@@ -267,6 +288,13 @@ class ShiftPlannerController extends Controller
         $locations = DB::table('t_ops_company_locations')->where('is_active', 1)
             ->when(\App\Services\LocationService::hasHandoverPointColumn(), fn ($q) => $q->where(function ($w) {
                 $w->where('is_handover_point', 0)->orWhereNull('is_handover_point');
+            }))
+            // ⚠⚠ AND NEITHER IS A WORKSHOP (Sep-3). Same hole, same shape: it is somewhere a
+            //   rider is sent for one morning, so it must never be offered as his standing
+            //   place of work. The Phase-4 SQL said this filter existed; it did not.
+            //   A workshop reaches his day only through the one-day visit override.
+            ->when(\App\Services\LocationService::hasWorkshopColumn(), fn ($q) => $q->where(function ($w) {
+                $w->where('is_workshop', 0)->orWhereNull('is_workshop');
             }))
             ->orderByDesc('is_primary')->orderBy('location_name')
             ->get(['id', 'location_name', 'is_primary'])

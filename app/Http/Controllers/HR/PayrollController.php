@@ -96,13 +96,144 @@ class PayrollController extends Controller
             'leave_actions' => $svc->leaveActionsMonth($month),
             'funding' => $svc->fundingOptions(),
             'schedule_available' => $svc->scheduleTaggingAvailable(),
+            // Minutes in one bonus-leave day. SHIFT_TARGET_HOURS is configurable, so the grid
+            // must never hardcode 540 — it would quietly print a formula that isn't the rule.
+            'ot_per_day' => (new \App\Services\HR\OvertimeService())->minutesPerBonusDay(),
+            'ot_carry_on' => (new \App\Services\HR\OvertimeCarryService())->enabled(),
             'khaas_available' => $svc->khaasTaggingAvailable() && $this->canViewKhaas(),
             'khaas_bu_id' => $svc->khaasBuIdValue(),
             'can_void_advance' => $this->canVoidAdvance(),
             // Drives the "you have something waiting" banner + the strip card. Counts every
             // pending request, including staff who are not on this grid.
             'advance_summary' => $svc->pendingAdvanceSummary(),
+            // Closed months whose absences nobody has decided about, and days still owed.
+            // Drives the banner + card — this app has no push notifications, so the nag
+            // lives where the person who can act on it already is.
+            'absence_summary' => $svc->pendingAbsenceSummary($month),
         ]);
+    }
+
+    /**
+     * The Employee tab — everything about ONE person, and nothing about anyone else.
+     *
+     * This is the privacy view: a manager can hand the laptop to an employee here without
+     * exposing the roster, because the tab replaces the grid rather than overlaying it.
+     * `user_id` is optional — with none, only the name picker is returned, so simply landing
+     * on the tab shows no money at all.
+     */
+    public function employeeDetail(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'nullable|integer|exists:t_sys_user,id',
+            'month'   => ['nullable', 'regex:/^\d{4}-\d{2}$/'],
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $month = $request->month ?: now()->format('Y-m');
+        $svc = new PayrollService();
+        try {
+            $out = ['success' => true, 'month' => $month, 'employees' => $svc->employeePickList($month)];
+            if ($request->filled('user_id')) {
+                $out += $svc->employeeDetail((int) $request->user_id, $month);
+                $out['can_void_advance'] = $this->canVoidAdvance();
+                $out['funding'] = $svc->fundingOptions();
+                // A custom-schedule employee's card is the Custom tab's card, so it needs the
+                // same flags customData() sends — otherwise landing here first would render it
+                // with boot defaults (khata controls hidden, calendar mis-dated).
+                $out['balance_available']  = $svc->balanceTrackingAvailable();
+                $out['can_void_payment']   = $this->canVoidPayment();
+                $out['today']              = now()->format('Y-m-d');
+                $out['schedule_available'] = $svc->scheduleTaggingAvailable();
+                $out['khaas_available']    = $svc->khaasTaggingAvailable() && $this->canViewKhaas();
+                $out['khaas_bu_id']        = $svc->khaasBuIdValue();
+            }
+            return response()->json($out);
+        } catch (\Throwable $e) {
+            \Log::error('Employee payroll detail failed', [
+                'user_id' => $request->user_id, 'month' => $month, 'error' => $e->getMessage(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Could not load this employee.'], 500);
+        }
+    }
+
+    /**
+     * Forfeit an employee's carried overtime (owner ruling: carried minutes end only by being
+     * used, or by someone deciding they are not valid). A reason is required — this removes
+     * overtime the employee actually worked.
+     */
+    public function forfeitCarry(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'reason'  => 'required|string|max:255',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new \App\Services\HR\OvertimeCarryService())
+            ->forfeitAll((int) $request->user_id, (string) $request->reason, (int) auth()->id());
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /**
+     * Settle days that were PARKED in an earlier month — charge them, forgive them, or take
+     * them out of the employee's own leave balance.
+     *
+     * These are the "decide later" half of parking. They are separate from the decide endpoint
+     * because they act on a month that is already closed and often already paid, and they need
+     * to say WHICH month's pay carries a charge.
+     */
+    public function settleAbsence(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'month'   => ['required', 'regex:/^\d{4}-\d{2}$/'],      // the month the days were parked in
+            'action'  => 'required|in:charge,excuse,use_leave',
+            // charge: which month's pay carries it (defaults to the one on screen) and the
+            // amount, which the manager may override — the owner's call, not a formula's.
+            'in_month' => ['nullable', 'regex:/^\d{4}-\d{2}$/'],
+            'amount'   => 'nullable|numeric|min:0',
+            'days'     => 'nullable|numeric|min:0.5',                 // use_leave: how many to take
+            'note'     => 'nullable|string|max:255',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $res = (new PayrollService())->settleParkedAbsence(
+            (int) $request->user_id, (string) $request->month, (string) $request->action,
+            $request->in_month, $request->amount === null ? null : (float) $request->amount,
+            $request->days === null ? null : (float) $request->days,
+            $request->note, (int) auth()->id()
+        );
+        return response()->json($res, !empty($res['success']) ? 200 : 422);
+    }
+
+    /**
+     * Wave away the absence banner — per user, per month, exactly like the home-meter banner.
+     * One manager dismissing it must not hide it from the other, and it comes back next month.
+     */
+    public function dismissAbsenceAlert(Request $request)
+    {
+        if ($deny = $this->denyIfNotAllowed()) { return $deny; }
+        $v = Validator::make($request->all(), ['alert_key' => 'required|string|max:64']);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                DB::table('t_ops_alert_dismissal')->updateOrInsert(
+                    ['user_id' => auth()->id(), 'alert_key' => (string) $request->alert_key],
+                    ['dismissed_at' => now()]
+                );
+            }
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Could not dismiss.'], 500);
+        }
     }
 
     /** The Custom tab: date-range / weekly employees + their coverage for the month. */
@@ -503,8 +634,10 @@ class PayrollController extends Controller
         $v = Validator::make($request->all(), [
             'user_id'  => 'required|integer',
             'month'    => ['required', 'regex:/^\d{4}-\d{2}$/'],
-            'kind'     => 'required|in:overtime,late_penalty',
-            'decision' => 'required|in:apply,waive',
+            'kind'     => 'required|in:overtime,late_penalty,absence',
+            // Absence has three outcomes rather than two; the service rejects the wrong
+            // pairing (e.g. kind=overtime with decision=park) with a readable message.
+            'decision' => 'required|in:apply,waive,cut,park,excuse',
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
@@ -608,6 +741,10 @@ class PayrollController extends Controller
             'items.*.skip_overtime' => 'nullable|boolean',
             'items.*.skip_late_leave' => 'nullable|boolean',
             'items.*.defer_leave_actions' => 'nullable|boolean',
+            // What to do when deductions exceed the salary: 'carry' recovers only what
+            // this month can absorb and leaves the rest open (default), 'writeoff' forgives
+            // it. The manager answers this on the pay dialog; it is never assumed silently.
+            'items.*.shortfall' => 'nullable|in:carry,writeoff',
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);

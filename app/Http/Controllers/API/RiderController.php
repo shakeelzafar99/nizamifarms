@@ -8802,7 +8802,9 @@ class RiderController extends Controller
                             try {
                                 (new \App\Services\FirebaseService())->notifyUser(
                                     (int) $user->id,
-                                    ['title' => "You're home", 'body' => 'Record your meter reading now to finish the day.'],
+                                    // 🗣 Roman Urdu — a rider must act on this (owner ruling).
+                                    ['title' => '🏠 Aap ghar pahunch gaye',
+                                     'body'  => 'Din khatam karne ke liye abhi apna meter reading daal dein.'],
                                     ['type' => 'home_arrival'],
                                     'shift_notifications'
                                 );
@@ -12164,10 +12166,25 @@ class RiderController extends Controller
                     }
                 }
 
+                // ⚠⚠ ABSENT MUST COME FROM THE ONE ENGINE, even on this fallback path.
+                // `workingDays − present − leave` is NOT the company definition of absent: it
+                // counts 'not needed' days (paid as present) as absences, and it lets a leave
+                // that fell on an off day cancel a real working day. A rider whose base salary
+                // is not set lands here, so he was shown a DIFFERENT absent count from the one
+                // payroll deducts against — the exact split-brain this fallback is supposed to
+                // avoid. AttendanceYearService is the same source the manager's page and
+                // computeRow() use; only if it throws do we fall back to arithmetic.
+                $absentDays = null;
+                try {
+                    $absentDays = count((new \App\Services\HR\AttendanceYearService())
+                        ->absentWorkingDates($user->id, $shiftService, $startDate, $effectiveEndDate));
+                } catch (\Throwable $eAbs) {
+                    \Log::warning('Rider month: canonical absent count failed', ['user_id' => $user->id, 'error' => $eAbs->getMessage()]);
+                }
                 $summary = [
                     'working_days' => $workingDays,
                     'present_days' => $presentDays,
-                    'absent_days' => max(0, $workingDays - $presentDays - $leaveDays),
+                    'absent_days' => $absentDays !== null ? $absentDays : max(0, $workingDays - $presentDays - $leaveDays),
                     'leave_days' => $leaveDays,
                     'late_minutes' => $totalLateMinutes,
                 ];
@@ -12334,6 +12351,9 @@ class RiderController extends Controller
                         'vehicle_id'   => $l['vehicle_id'],
                         'label'        => $l['label'],
                         'is_company'   => (bool) $l['is_company'],
+                        // 'bike' | 'van' — the phone draws the machine from this, not from
+                        // is_company (which is about whose fuel it is). See RiderDayLegs.
+                        'vtype'        => $l['vtype'] ?? 'bike',
                         'km'           => $l['km'],
                         'meter_start'  => $l['meter_start'],
                         'meter_end'    => $l['meter_end'],
@@ -12667,6 +12687,13 @@ class RiderController extends Controller
                 'service_type' => 'nullable|string|max:30',
                 // Named maintenance type; when present the server derives service_type from it.
                 'maintenance_type_id' => 'nullable|integer',
+                /**
+                 * 🧾 WHICH ALREADY-RECORDED SERVICE THIS BILL IS FOR (owner ruling, 3-Sep).
+                 *    The filer PICKS it from his own un-billed readings — nothing is matched
+                 *    by meter or date, because guessing is what misfiled service log #8.
+                 *    Absent = "a new service", which is exactly today's behaviour.
+                 */
+                'service_log_id' => 'nullable|integer',
                 'attendance_id' => 'nullable|integer',
                 'leave_start_date' => 'nullable|date',
                 'leave_end_date' => 'nullable|date|after_or_equal:leave_start_date',
@@ -12737,6 +12764,53 @@ class RiderController extends Controller
                 $request->input('service_type')
             );
 
+            /**
+             * ⭐⭐ ONE RULE FOR "WHICH SERVICE?" (owner, 3-Sep). A Maintenance claim carrying an
+             *    odometer must name a type when the list exists — the same refusal a manager
+             *    gets on Record service. Until now this path filed a legacy "Regular service"
+             *    untyped, and the evidence engine then ignored it for every countdown.
+             *    The rule lives in ServiceRecordService so this and the web path cannot drift.
+             */
+            /**
+             * 🧾 THE BILL IS FOR A SERVICE HE ALREADY RECORDED (owner ruling, 3-Sep).
+             *
+             * ⭐ He picked it, so the claim INHERITS that reading — its odometer, its job and
+             *   its date — and he never retypes a meter he has already entered. That was the
+             *   owner's whole reason for asking.
+             * ⚠⚠ And this is the double-money guard: if the chosen service already carries a
+             *    live bill, the claim is REFUSED. Without it, a manager recording the service
+             *    with the receipt and the rider filing the same receipt sends money out twice.
+             */
+            $svcLink = app(\App\Services\Riders\ServiceRecordService::class)
+                ->validateBillTarget($request->input('service_log_id'), (int) $user->id);
+            if (!$svcLink['ok']) {
+                return response()->json(['success' => false, 'message' => $svcLink['message']], 422);
+            }
+            if (!empty($svcLink['inherit'])) {
+                $request->merge([
+                    'meter_at_fill'       => $svcLink['inherit']['meter'],
+                    'expense_date'        => $svcLink['inherit']['date'],
+                    'maintenance_type_id' => $svcLink['inherit']['maintenance_type_id'],
+                ]);
+                $validated['meter_at_fill']       = $svcLink['inherit']['meter'];
+                $validated['expense_date']        = $svcLink['inherit']['date'];
+                $validated['maintenance_type_id'] = $svcLink['inherit']['maintenance_type_id'];
+                // ⚠ Re-resolve: the inherited type decides service_type, which the rules below judge.
+                $svcResolved = app(\App\Services\Riders\MaintenanceTypeService::class)->resolve(
+                    $svcLink['inherit']['maintenance_type_id'], $request->input('service_type')
+                );
+            }
+
+            if ($request->input('expense_category') === 'Maintenance') {
+                $typeGate = app(\App\Services\Riders\ServiceRecordService::class)
+                    // ⚠ "has a meter" = a positive reading, on BOTH doors — filled('0') is not one.
+                    ->requireTypeForClaim($svcResolved[1], (int) $request->input('meter_at_fill') > 0);
+                if (!$typeGate['ok']) {
+                    // No transaction is open yet at this point — same as the early returns above.
+                    return response()->json(['success' => false, 'message' => $typeGate['message']], 422);
+                }
+            }
+
             $fuelRules = (new \App\Services\Riders\FuelClaimRules())->check(
                 (int) $user->id,
                 $request->input("expense_category"),
@@ -12745,6 +12819,9 @@ class RiderController extends Controller
                     "expense_date"  => $request->input("expense_date"),
                     "meter_at_fill" => $request->input("meter_at_fill"),
                     "service_type"  => $svcResolved[0],
+                    // ⚠ Inherited from an accepted service record — see the twin note in
+                    //   Request\RequestController::store and FuelClaimRules.
+                    "meter_from_service_log" => !empty($svcLink['inherit']),
                     "attendance_id" => $request->input("attendance_id"),
                     // ⭐ The per-km claim is judged against the kilometres actually
                     //   recorded on the machine it names. `vehicle_id` is optional —
@@ -12793,7 +12870,10 @@ class RiderController extends Controller
                         ->max('r.expense_backdate_days') ?? 0;
 
                     // Check if date is too far in the past
-                    $daysDiff = $today->diffInDays($expenseDate);
+                    // ⚠⚠ abs() — see the twin note in Request\RequestController::store. On
+                    //    Carbon 3 this returns a SIGNED value, so the cap never fired and any
+                    //    backdate was accepted. Same bug, same fix, both doors.
+                    $daysDiff = (int) abs($today->diffInDays($expenseDate));
                     if ($daysDiff > $maxBackdateDays) {
                         return response()->json([
                             'success' => false,
@@ -12868,7 +12948,20 @@ class RiderController extends Controller
             if (isset($validated['leave_start_date']) && isset($validated['leave_end_date'])) {
                 $start = \Carbon\Carbon::parse($validated['leave_start_date']);
                 $end = \Carbon\Carbon::parse($validated['leave_end_date']);
-                $leaveDays = $end->diffInDays($start) + 1;
+                /**
+                 * ⚠⚠ THE ARGUMENTS WERE THE WRONG WAY ROUND (found 3-Sep). On Carbon 3 —
+                 *    this codebase runs 3.8.4 — `diffInDays` returns a SIGNED value, so
+                 *    `$end->diffInDays($start)` gives −2 and a 3-day leave stored **−1**.
+                 *    9 live rows carry a negative count (−10, −7, −5×3, −1×4). Single-day
+                 *    leaves were right (start == end → 0 + 1), which is why it went unseen.
+                 *
+                 * ⚠ Payroll is NOT affected — it counts leave from ATTENDANCE dates, not from
+                 *   this column. The damage was the attendance leave panel, which reads
+                 *   `$r->leave_days ?: fallback` and takes a negative as truthy.
+                 *
+                 * ⭐ abs() as well as the right order, so neither mistake can return.
+                 */
+                $leaveDays = (int) abs($start->diffInDays($end)) + 1;
             }
 
             // Server-side payment source validation.
@@ -12999,6 +13092,13 @@ class RiderController extends Controller
                 //    is what stops own-bike money landing on the van.
                 $claimVehicleId ? (int) $claimVehicleId : null
             );
+
+            // 🧾 Tie the bill to the service he chose. Inside the transaction, so a claim can
+            //    never exist un-linked when he explicitly said which service it was for.
+            if ($request->filled('service_log_id')) {
+                app(\App\Services\Riders\ServiceRecordService::class)
+                    ->attachBillToService((int) $request->input('service_log_id'), (int) $newRequest->id);
+            }
 
             DB::commit();
 
@@ -19007,6 +19107,98 @@ class RiderController extends Controller
      * NF LEDGER - Get all accounts with balances (for mobile)
      * Shows both company accounts and employee accounts
      */
+    /**
+     * GET /rider/nf-ledger/tips — what the tip pool holds and who may spend it.
+     *
+     * Tips ride inside the invoice, so the invoice books them as revenue; the
+     * pool holds them until they are handed over. This powers the payout sheet
+     * on the NF Ledger screen. Reading is open to anyone who can see the NF
+     * Ledger; SPENDING is gated below, server-side, because hiding a button is
+     * not a permission check.
+     */
+    public function getTipsFund(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        $user = Auth::user();
+
+        if (!$user->hasMobilePermission('view_nf_ledger')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to view NF Ledger',
+            ], 403);
+        }
+
+        if (!$tips->ready()) {
+            return response()->json([
+                'success' => true,
+                'ready'   => false,
+                'message' => 'The Tips Fund is not set up yet.',
+            ]);
+        }
+
+        $canPay = app(\App\Services\CustomerCreditService::class)->userCanAutoApproveGrant($user);
+
+        // Only real money can pay a tip out — the pool itself, vendor payables
+        // and expense accounts are never options.
+        $accounts = \App\Models\FIN\AccountModel::where('is_active', 1)
+            ->whereIn('account_category', [
+                \App\Models\FIN\AccountModel::CATEGORY_CASH,
+                \App\Models\FIN\AccountModel::CATEGORY_BANK,
+                \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH,
+            ])
+            ->visibleTo($user)
+            ->orderBy('account_category')->orderBy('account_name')
+            ->get(['id', 'account_name', 'account_code', 'account_category']);
+
+        return response()->json([
+            'success'  => true,
+            'ready'    => true,
+            'summary'  => $tips->summary(),
+            'can_pay'  => $canPay,
+            'accounts' => $accounts,
+            'banks'    => \DB::table('t_fin_online_receiving_accounts')
+                ->where('is_active', 1)->orderBy('name')->get(['id', 'name']),
+        ]);
+    }
+
+    /**
+     * POST /rider/nf-ledger/tips/payout — hand tip money over.
+     *
+     * Same service, same validation and the same refusals as the web Ledger Hub,
+     * so the two clients can never disagree about what a payout is.
+     */
+    public function payTipsOut(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        $user = Auth::user();
+
+        if (!app(\App\Services\CustomerCreditService::class)->userCanAutoApproveGrant($user)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Paying tips out needs Shabib or Taimur.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'amount'               => 'required|numeric|min:1',
+            'from_account_id'      => 'required|integer',
+            'receiving_account_id' => 'nullable|integer',
+            'reason'               => 'required|string|max:255',
+            'given_to'             => 'nullable|string|max:120',
+            'date'                 => 'nullable|date',
+        ]);
+
+        try {
+            $row = $tips->payout($data, (int) $user->id);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Rs ' . number_format((float) $row->amount, 2) . ' paid out of the tip pool.',
+            'balance' => $tips->balance(),
+        ]);
+    }
+
     public function getNFLedgerAccounts(Request $request)
     {
         try {
@@ -19050,10 +19242,20 @@ class RiderController extends Controller
                     }
                 }
             } else {
-                // Standard NF mode: show company + employee accounts
+                // Standard NF mode: show company + employee accounts, plus the
+                // Tips Fund (Sep-2026).
+                //
+                // ⚠⚠ The Tips Fund is NOT cash or bank on purpose — that is what
+                // keeps it out of every pool, the payment-source picker and the
+                // employee-cash formulas. It is named EXPLICITLY here because
+                // this screen is one of the two places it SHOULD be readable.
                 $query->where(function($q) {
                     $q->where('account_category', \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH)
-                      ->orWhereIn('account_category', [\App\Models\FIN\AccountModel::CATEGORY_CASH, \App\Models\FIN\AccountModel::CATEGORY_BANK]);
+                      ->orWhereIn('account_category', [
+                          \App\Models\FIN\AccountModel::CATEGORY_CASH,
+                          \App\Models\FIN\AccountModel::CATEGORY_BANK,
+                          \App\Models\FIN\AccountModel::CATEGORY_TIPS_FUND,
+                      ]);
                 });
             }
             
@@ -19068,10 +19270,11 @@ class RiderController extends Controller
             
             // Order: Company accounts first, then employee accounts (alphabetically)
             $accounts = $query
-                ->orderByRaw("CASE 
-                    WHEN account_category IN ('cash', 'bank') THEN 1 
-                    WHEN account_category = 'employee_cash' THEN 2 
-                    ELSE 3 
+                ->orderByRaw("CASE
+                    WHEN account_category IN ('cash', 'bank') THEN 1
+                    WHEN account_category = 'employee_cash' THEN 2
+                    WHEN account_category = 'tips_fund' THEN 3
+                    ELSE 4
                 END")
                 ->orderBy('account_name', 'asc')
                 ->get();
@@ -19115,6 +19318,7 @@ class RiderController extends Controller
             // Separate into company and employee accounts
             $companyAccounts = [];
             $employeeAccounts = [];
+            $fundAccounts = [];   // held for staff (tips) — not spendable company cash
             
             foreach ($accounts as $account) {
                 // Use effective balance: calculated for employee_cash, stored for others
@@ -19133,15 +19337,24 @@ class RiderController extends Controller
                 
                 if ($account->account_category === \App\Models\FIN\AccountModel::CATEGORY_EMPLOYEE_CASH) {
                     $employeeAccounts[] = $accountData;
+                } elseif ($account->account_category === \App\Models\FIN\AccountModel::CATEGORY_TIPS_FUND) {
+                    // ⚠ Its OWN group, never inside company accounts. The tip pool
+                    // is money we are HOLDING, not money we can spend, and the
+                    // cash behind it is already counted in the tills and banks.
+                    // Listing it beside them would invite double-counting.
+                    $fundAccounts[] = $accountData;
                 } else {
                     $companyAccounts[] = $accountData;
                 }
             }
-            
+
             return response()->json([
                 'success' => true,
                 'company_accounts' => $companyAccounts,
                 'employee_accounts' => $employeeAccounts,
+                // New in Sep-2026. An APK that predates it simply does not render
+                // the section — no crash, and nothing misfiled into company cash.
+                'fund_accounts' => $fundAccounts,
             ]);
             
         } catch (\Exception $e) {
@@ -19689,14 +19902,41 @@ class RiderController extends Controller
             }
 
             // Add previous meter info and leaves_taken_year to each employee
+            // ⭐⭐ "Last night's meter" is a fact about the MACHINE, so it comes from the same
+            //    `closingBaseline()` the web sheet and the red meter-gap verdict use. This screen
+            //    was the third rider-keyed copy of the lookup (flagged in the Aug-21 note §7.2):
+            //    on a machine-switch day it printed the difference between two odometers as
+            //    "+N km overnight". Field names are unchanged, so no APK is needed.
+            //    ⚠ Only for a company-machine rider who actually has a start reading — that is
+            //      exactly when the phone shows the line, and it keeps the resolver walk off
+            //      every other employee in the list.
+            $wjBase = new \App\Services\Riders\WorkJourneyService();
             foreach ($formattedData as &$employee) {
                 $prev = $previousMeterEnds[$employee['user_id']] ?? null;
                 $employee['prev_meter_end'] = $prev ? $prev['meter_end'] : null;
                 $employee['prev_meter_date'] = $prev ? $prev['date'] : null;
-                
+                $employee['prev_meter_label'] = null;
+                $employee['prev_meter_source'] = 'rider';
+
+                if (!empty($employee['is_company_bike']) && !empty($employee['meter_start'])) {
+                    try {
+                        $mb = $wjBase->closingBaseline((int) $employee['user_id'], $selectedDate);
+                        // holds_nothing = on no machine today ⇒ nothing to measure against.
+                        $employee['prev_meter_end']    = $mb['holds_nothing'] ? null : $mb['value'];
+                        $employee['prev_meter_date']   = $mb['holds_nothing'] ? null : $mb['date'];
+                        $employee['prev_meter_label']  = $mb['holds_nothing'] ? null : $mb['label'];
+                        $employee['prev_meter_source'] = $mb['holds_nothing'] ? 'none' : $mb['source'];
+                        // A handover day is not judged — the baseline may be the other man's.
+                        if (!empty($mb['transfer_day'])) {
+                            $employee['prev_meter_end'] = null;
+                            $employee['prev_meter_source'] = 'handover';
+                        }
+                    } catch (\Throwable $e) { /* keep the rider-keyed answer above */ }
+                }
+
                 $employee['meter_gap'] = null;
-                if ($prev && $employee['meter_start']) {
-                    $gap = (int)$employee['meter_start'] - (int)$prev['meter_end'];
+                if ($employee['prev_meter_end'] !== null && $employee['meter_start']) {
+                    $gap = (int)$employee['meter_start'] - (int)$employee['prev_meter_end'];
                     $employee['meter_gap'] = $gap;
                 }
 
@@ -20204,7 +20444,8 @@ class RiderController extends Controller
                     // Same shape the web popup returns — hours earned and the bonus days they
                     // buy, from the one service payroll grants on.
                     'overtime_minutes' => $otMinutesDet,
-                    'overtime_bonus_leaves' => $otSvcDet->bonusLeaves($otMinutesDet),
+                    // Carry-aware (Sep-2026): identical to the web grid and the payslip.
+                    'overtime_bonus_leaves' => $otSvcDet->bonusLeavesFor($userId, $startDate, $endDate, $otMinutesDet),
                     'overtime_minutes_per_bonus' => $otSvcDet->minutesPerBonusDay(),
                     'total_hours' => round($totalHours, 1),
                     'total_orders_delivered' => $totalOrdersDelivered,
@@ -20483,7 +20724,8 @@ class RiderController extends Controller
                 $otSvcMob = new \App\Services\HR\OvertimeService();
                 $overtimeTargetMinutes = $otSvcMob
                     ->overtimeMinutes($user->user_id, $startDate, $effectiveEndDate);
-                $overtimeBonusLeaves = $otSvcMob->bonusLeaves($overtimeTargetMinutes);
+                // Carry-aware (Sep-2026): identical to the web grid and the payslip.
+                $overtimeBonusLeaves = $otSvcMob->bonusLeavesFor($user->user_id, $startDate, $effectiveEndDate, $overtimeTargetMinutes);
 
                 // Calculate working days using ShiftResolutionService (same as web app),
                 // only up to today for the current month.
@@ -31965,6 +32207,24 @@ class RiderController extends Controller
             ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
             ->where('p.active', 1)->where('u.is_active', 1)
             ->orderBy('u.fullname')->get(['u.id', 'u.fullname', 'p.phone']);
+
+        // 🔧 Next workshop errand per rider — ONE query for the whole list, never per row.
+        // Guarded: before workshop_visits_sep2026.sql this is simply empty.
+        $workshopByUser = [];
+        try {
+            $wv = app(\App\Services\Riders\WorkshopVisitService::class);
+            foreach ($wv->listVisits(['from' => $today, 'limit' => 200]) as $v) {
+                // listVisits is ordered by date, so the FIRST one per rider is his next.
+                if (!isset($workshopByUser[$v['user_id']])) {
+                    $workshopByUser[$v['user_id']] = [
+                        'id' => $v['id'], 'visit_date' => $v['visit_date'], 'visit_time' => $v['visit_time'],
+                        'vehicle_name' => $v['vehicle_name'], 'workshop' => $v['workshop'],
+                        'accepted' => $v['accepted'], 'accepted_on_behalf' => $v['accepted_on_behalf'],
+                    ];
+                }
+            }
+        } catch (\Throwable $e) { /* not deployed → no visits */ }
+
         $out = [];
         foreach ($riders as $r) {
             $primary = $svc->getUserShift($r->id, $today);
@@ -31985,6 +32245,18 @@ class RiderController extends Controller
                 'default_location_id' => $def['location_id'],
                 'default_location_name' => $def['location_name'],
                 'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end'], 'location_name' => $primary['location_name'] ?? null],
+                /**
+                 * 🔧 His next workshop errand (owner ask, Sep-2026): "whoever is planning
+                 * the shift should know that on this date the rider has to go".
+                 *
+                 * ⚠ The web planner is a 7-day GRID and paints this on the day cell; this
+                 *   screen is a rider LIST, so the honest equivalent is his next one. It
+                 *   changes nothing about the shift — a workshop day is a normal paid
+                 *   working day (owner ruling) — it is here so the planner can set that
+                 *   day's times around the appointment.
+                 * ⚠ Additive: an older app ignores the key.
+                 */
+                'workshop' => $workshopByUser[(int) $r->id] ?? null,
                 'changes' => $changes];
         }
         // Active office locations (for the assign screen's location bubbles).

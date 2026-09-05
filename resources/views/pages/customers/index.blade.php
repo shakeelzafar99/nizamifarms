@@ -1875,8 +1875,14 @@ function buildCustomerInvoiceRow(order, isShop) {
     const approvalBadge = apState
         ? `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:12px;font-size:12px;font-weight:600;background-color:${apColor}20;color:${apColor};">${apLabels[apState] || apState}</span>`
         : '<span style="color:#9ca3af;">—</span>';
+    // A hint under the payment badge when this invoice's money arrived as part
+    // of ONE transfer that also paid other invoices. Deliberately not a new
+    // column — the header and the empty-state colspan stay as they are.
+    const bulkHint = custInvReceivedAs(order).filter(r => r.bulk).map(r =>
+        `<div style="font-size:10.5px;color:#6b7280;margin-top:3px;white-space:nowrap;" title="${custInvEsc(r.text + (r.by ? ' — entered by ' + r.by : ''))}">🔗 ${custInvEsc(r.head)}</div>`
+    ).join('');
     const extraCells = isShop
-        ? `<td style="padding:12px;text-align:center;">${paymentBadge}</td><td style="padding:12px;text-align:right;">${balanceCell}</td>`
+        ? `<td style="padding:12px;text-align:center;">${paymentBadge}${bulkHint}</td><td style="padding:12px;text-align:right;">${balanceCell}</td>`
         : `<td style="padding:12px;text-align:center;">${approvalBadge}</td>`;
 
     const actionButtons = isHistoryOrder
@@ -2047,6 +2053,45 @@ function custInvTotals(rows) {
         t.pending += Number(o.pending_amount) || 0;
     });
     return t;
+}
+
+// ---- "Received as" -------------------------------------------------------
+// A shop can clear several invoices with ONE bank transfer. The system splits
+// that transfer across the invoices and stores a payment row per invoice, so
+// read back per invoice it looks like several separate payments — the exact
+// thing a manager questions when the bank shows one debit.
+//
+// The grouping is NOT guessed here: the server tags every payment row with the
+// entry batch it belongs to (see PaymentBatchService) and this only formats it.
+// Shared by the table, the print sheet and the CSV so the three can't disagree.
+function custInvReceivedAs(order) {
+    const list = Array.isArray(order.payments) ? order.payments : [];
+    const money = v => 'PKR ' + Math.round(Number(v) || 0).toLocaleString();
+    return list.map(p => {
+        const when = p.payment_date ? window.formatDateLocal(p.payment_date) : '';
+        const bank = p.bank || '';
+        const size = Number(p.batch_size) || 1;
+        const bulk = !!p.is_bulk;
+        return {
+            bulk: bulk,
+            size: size,
+            // Batches are identified by who entered them and when, which is what
+            // the server grouped on — two transfers can share an amount.
+            key: (p.entered_by || '?') + '@' + (p.entered_at || p.id),
+            head: bulk ? (money(p.batch_total) + ' · ' + size + ' invoices') : 'Single payment',
+            sub: [when, bank].filter(Boolean).join(' · '),
+            // The printed column is the width-critical one — 10 columns only
+            // just fit on A4 — so it stacks SHORT lines instead of one long
+            // phrase. The bank code is dropped there and kept in the CSV and
+            // the payments dialog, where there is room for it.
+            printLines: bulk ? [money(p.batch_total), size + ' invoices', when].filter(Boolean)
+                             : ['Single payment', when].filter(Boolean),
+            by: p.entered_by || '',
+            text: (bulk ? ('Bulk ' + money(p.batch_total) + ' across ' + size + ' invoices')
+                        : 'Single payment')
+                  + (when ? ' on ' + when : '') + (bank ? ' via ' + bank : ''),
+        };
+    });
 }
 
 function filterCustomerInvoices(status) {
@@ -2295,11 +2340,17 @@ window.printCustomerStatement = function() {
         ? box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Paid', money(t.paid)) + box('Outstanding', money(t.outstanding), t.outstanding > 0.01)
         : box('Invoices', String(t.count)) + box('Total value', money(t.value)) + box('Pending approval (L1)', money(t.pending), t.pending > 0.01);
 
-    // NOTE: 'Total' is now index 5 (the delivery-date column shifted it), and the
-    // money columns from there on are right-aligned.
-    const head = ['Order #', 'Order date', 'Delivery date', 'Status', 'Products', 'Total']
-        .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval'])
-        .map((h, i) => `<th class="${i >= 5 ? 'r' : ''}">${e(h)}</th>`).join('');
+    // Alignment is declared PER COLUMN ([label, rightAligned]) rather than by
+    // position. The old rule was "index >= 5 is right-aligned", which silently
+    // re-aligned every later column the moment one was inserted — it had
+    // already drifted once when the delivery-date column was added.
+    // NOTE: 'Payment' and 'Approval' keep the right-aligned heading they have
+    // always had (the old positional rule gave every column from index 5 on the
+    // 'r' class). Only the NEW column is left-aligned, so nothing that prints
+    // today shifts.
+    const head = [['Order #'], ['Order date'], ['Delivery date'], ['Status'], ['Products'], ['Total', 1]]
+        .concat(isShop ? [['Payment', 1], ['Paid', 1], ['Received as'], ['Balance', 1]] : [['Approval', 1]])
+        .map(([h, right]) => `<th class="${right ? 'r' : ''}">${e(h)}</th>`).join('');
 
     const bodyRows = rows.map(o => {
         const cells = [
@@ -2313,6 +2364,16 @@ window.printCustomerStatement = function() {
         if (isShop) {
             cells.push(`<td>${e(payLabels[o.payment_status] || '—')}</td>`);
             cells.push(`<td class="r">${o.total_paid === null || o.total_paid === undefined ? '—' : e(money(Number(o.total_paid)))}</td>`);
+            // How the money actually arrived: one transfer of its own, or one
+            // slice of a single transfer that also paid other invoices.
+            const rec = custInvReceivedAs(o);
+            cells.push(`<td class="rcv">${rec.length
+                ? rec.map(r => `<div class="rcvline">`
+                    + r.printLines.map((ln, i) => i === 0
+                        ? (r.bulk ? `<b>${e(ln)}</b>` : e(ln))
+                        : `<div class="muted">${e(ln)}</div>`).join('')
+                    + `</div>`).join('')
+                : '<span class="muted">—</span>'}</td>`);
             const bal = Number(o.balance_remaining) || 0;
             cells.push(`<td class="r${bal > 0.01 ? ' red' : ''}">${bal > 0.01 ? e(money(bal)) : '—'}</td>`);
         } else {
@@ -2321,8 +2382,42 @@ window.printCustomerStatement = function() {
         return '<tr>' + cells.join('') + '</tr>';
     }).join('');
 
+    // A shop statement carries 10 columns and needs ~50px more than A4 gives at
+    // the default cell padding. Tighten the gutters for shops ONLY, so the
+    // 7-column regular statement keeps exactly the spacing it has today.
+    // Everything in here is SHOP-ONLY: the 7-column regular statement has room
+    // to spare and must print byte-for-byte as it does today. td.rcv keeps its
+    // own white-space rule (higher specificity), so only the new column wraps.
+    const shopDense = isShop
+        ? 'td { white-space: nowrap; } th, td { padding-left: 6px; padding-right: 6px; }'
+          + ' body { padding-left: 18px; padding-right: 18px; }'
+          // The new column is the only one allowed to wrap, and it stacks short
+          // lines — each kept whole so an amount never breaks as "PKR"/"24,000".
+          + ' td.rcv { white-space: normal; font-size: 10.5px; line-height: 1.3; }'
+          + ' td.rcv b, td.rcv .muted { white-space: nowrap; }'
+          + ' .rcvline + .rcvline { margin-top: 4px; padding-top: 4px; border-top: 1px dotted #e5e7eb; }'
+        : '';
+
+    // Footnote only when a bulk payment is actually on the page, so a statement
+    // that has none prints exactly as it did before this column existed.
+    let bulkNote = '';
+    if (isShop) {
+        const rcvAll = rows.map(o => custInvReceivedAs(o));
+        const shown = {};
+        rcvAll.forEach(l => l.forEach(r => { if (r.bulk) shown[r.key] = (shown[r.key] || 0) + 1; }));
+        if (Object.keys(shown).length) {
+            // A transfer that also settled invoices outside this period is the
+            // normal reason Paid here is smaller than the transfer itself.
+            const partial = rcvAll.some(l => l.some(r => r.bulk && shown[r.key] < r.size));
+            bulkNote = " · 'Received as' shows the one transfer a payment arrived in."
+                + (partial ? ' Where a transfer lists more invoices than appear above, it also paid invoices outside this period.' : '');
+        }
+    }
+
+    // colspan(5) + Total + Payment + Paid + Received as + Balance = the 10
+    // shop columns above (7 for a regular customer).
     const totalCells = isShop
-        ? `<td class="r">${e(money(t.value))}</td><td></td><td class="r">${e(money(t.paid))}</td><td class="r">${e(money(t.outstanding))}</td>`
+        ? `<td class="r">${e(money(t.value))}</td><td></td><td class="r">${e(money(t.paid))}</td><td></td><td class="r">${e(money(t.outstanding))}</td>`
         : `<td class="r">${e(money(t.value))}</td><td></td>`;
 
     const addr = [c.address1, c.address2, c.city].filter(Boolean).join(', ');
@@ -2352,6 +2447,10 @@ window.printCustomerStatement = function() {
   tr { page-break-inside: avoid; }
   .r { text-align: right; }
   .muted { color: #9ca3af; font-size: 10.5px; }
+  /* The extra column costs width, and without this the dates and money in the
+     older columns start wrapping onto two lines on A4. Pin every cell to one
+     line and let ONLY the new column wrap, so the rest prints as it always did. */
+  ${shopDense}
   tfoot td { border-top: 2px solid #111827; border-bottom: none; font-weight: 800; padding-top: 8px; }
   .foot { margin-top: 16px; color: #9ca3af; font-size: 10.5px; border-top: 1px solid #e5e7eb; padding-top: 8px; }
   .noprint { margin-bottom: 14px; }
@@ -2384,7 +2483,7 @@ window.printCustomerStatement = function() {
   <tbody>${bodyRows}</tbody>
   <tfoot><tr><td colspan="5">TOTAL — ${e(t.count)} invoice${t.count === 1 ? '' : 's'}</td>${totalCells}</tr></tfoot>
 </table>
-<div class="foot">Generated ${e(new Date().toLocaleString())}${isShop ? ' · Outstanding = delivered online invoices not yet settled.' : ' · Pending approval = invoices awaiting L1 approval.'} Figures cover the invoices listed above.</div>
+<div class="foot">Generated ${e(new Date().toLocaleString())}${isShop ? ' · Outstanding = delivered online invoices not yet settled.' : ' · Pending approval = invoices awaiting L1 approval.'} Figures cover the invoices listed above.${bulkNote}</div>
 <script>window.onload = function() { setTimeout(function() { window.focus(); window.print(); }, 350); };<\/script>
 </body></html>`;
 
@@ -2413,7 +2512,8 @@ window.exportCustomerStatementCsv = function() {
                    'Filter', custInvStatusLabel(), 'Order status', custInvOrderStatusLabel()]));
     out.push('');
     out.push(line(['Order #', 'Order date', 'Delivery date', 'Status', 'Products', 'Total']
-        .concat(isShop ? ['Payment', 'Paid', 'Balance'] : ['Approval', 'Pending amount'])));
+        .concat(isShop ? ['Payment', 'Paid', 'Received as', 'Entered by', 'Balance']
+                       : ['Approval', 'Pending amount'])));
     rows.forEach(o => {
         const base = [
             '#' + (o.order_number || o.id) + (o.source_type === 'history' ? ' (legacy)' : ''),
@@ -2423,9 +2523,14 @@ window.exportCustomerStatementCsv = function() {
             o.line_items_count || 0,
             Math.round(Number(o.total_price) || 0)
         ];
+        // One invoice can be touched by more than one transfer (a part payment
+        // then a top-up), so both the description and the person are joined.
+        const rec = custInvReceivedAs(o);
         out.push(line(base.concat(isShop
             ? [payLabels[o.payment_status] || '',
                (o.total_paid === null || o.total_paid === undefined) ? '' : Math.round(Number(o.total_paid)),
+               rec.map(r => r.text).join(' | '),
+               [...new Set(rec.map(r => r.by).filter(Boolean))].join(' | '),
                (o.balance_remaining === null || o.balance_remaining === undefined) ? '' : Math.round(Number(o.balance_remaining))]
             : [apLabels[o.approval_state] || '',
                (o.pending_amount === null || o.pending_amount === undefined) ? '' : Math.round(Number(o.pending_amount))])));

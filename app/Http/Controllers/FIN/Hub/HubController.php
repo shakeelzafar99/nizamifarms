@@ -249,7 +249,8 @@ class HubController extends Controller
                     'out'     => $applied([$acc->id], 'out'),
                 ];
             }
-            return ['qurbani' => $cards, 'tills' => null, 'online' => null, 'riders' => null, 'vendors' => null];
+            return ['qurbani' => $cards, 'tills' => null, 'online' => null, 'riders' => null,
+                    'vendors' => null, 'tips' => null];
         }
 
         $buIds = $scope === 'nf' ? [1] : ($scope === 'khaas' ? [2] : [1, 2]);
@@ -312,6 +313,23 @@ class HubController extends Controller
             ];
         }
 
+        // --- Tips held for staff (liability, NF-level) ---
+        $tipsPosition = null;
+        if ($scope !== 'khaas') {
+            $tipsSvc = app(\App\Services\FIN\TipsFundService::class);
+            if ($tipsSvc->ready()) {
+                $s = $tipsSvc->summary(
+                    \Carbon\Carbon::parse($startDate)->startOfDay(),
+                    \Carbon\Carbon::parse($endDate)->endOfDay()
+                );
+                // Hide the tile entirely until the pool has seen any activity, so
+                // the Overview does not grow an empty card on deploy day.
+                if ($s['balance'] > 0.005 || $s['collected'] > 0.005 || $s['paid_out'] > 0.005) {
+                    $tipsPosition = $s;
+                }
+            }
+        }
+
         return [
             'qurbani' => null,
             'tills'   => [
@@ -328,6 +346,10 @@ class HubController extends Controller
             ],
             'riders'  => $riders,
             'vendors' => $vendors,
+            // 💵 Tips held for staff. A liability like vendors owed, not money we
+            // can spend — so it sits beside them, never inside the cash or bank
+            // pools. NF-level only (Khaas has no delivery tips).
+            'tips'    => $tipsPosition,
         ];
     }
 
@@ -2274,6 +2296,202 @@ class HubController extends Controller
             'showHistory' => $showHistory, 'preCount' => $preCount,
             'preShown' => count(array_filter($pre, fn ($p) => empty($p['pre_same_day']))),
         ]);
+    }
+
+    // =================================================================
+    //  💵 TIPS FUND  (Sep-2026)
+    // =================================================================
+    //
+    // Tips ride inside the invoice, so every profit figure used to count them
+    // as ours. They are not: they are held for the staff until they are handed
+    // over. This page is where that pool is read and spent.
+    //
+    // ⭐ The pool is ONE number, not a set of buckets. Tips arrive in whatever
+    // account the customer paid into; a payout draws the whole amount from
+    // whichever real account is chosen. The "how it arrived" split on this page
+    // is there to explain the number, never to constrain a payout.
+
+    /** Tab — Tips: the pool, its statement, and the two money actions. */
+    public function tips(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        [$scope, $canSeeKhaas, $canSeeMulti] = $this->resolveScope($request);
+
+        // Same window defaults as every other Hub tab. When the user picked a
+        // month, the statement is narrowed to it too; otherwise it shows all.
+        $hasWindow = (bool) ($request->start_date || $request->end_date);
+        $startDate = $request->start_date ?: now()->startOfMonth()->format('Y-m-d');
+        $endDate   = $request->end_date ?: now()->endOfMonth()->format('Y-m-d');
+        $winStart  = \Carbon\Carbon::parse($startDate)->startOfDay();
+        $winEnd    = \Carbon\Carbon::parse($endDate)->endOfDay();
+
+        return view('fin.hub.tips', [
+            'months'       => $tips->monthly(),
+            'hasWindow'    => $hasWindow,
+            'rows'         => $hasWindow ? $tips->statement($winStart, $winEnd) : $tips->statement(),
+            'active'       => 'tips',
+            'scope'        => $scope,
+            'canSeeKhaas'  => $canSeeKhaas,
+            'canSeeMulti'  => $canSeeMulti,
+            'ready'        => $tips->ready(),
+            'summary'      => $tips->summary(
+                \Carbon\Carbon::parse($startDate)->startOfDay(),
+                \Carbon\Carbon::parse($endDate)->endOfDay()
+            ),
+            'allTime'      => $tips->summary(),
+            'payAccounts'  => $this->tipsPayoutAccounts(),
+            'banks'        => \DB::table('t_fin_online_receiving_accounts')
+                                ->where('is_active', 1)->orderBy('name')->get(['id', 'name']),
+            'canPay'       => $this->canSpendTips(),
+            'canOpen'      => $this->isTaimur(),
+            'startDate'    => $startDate,
+            'endDate'      => $endDate,
+        ]);
+    }
+
+    /** POST — record a payout. */
+    public function tipsPayout(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        if (!$this->canSpendTips()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Paying tips out needs Shabib or Taimur.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'amount'               => 'required|numeric|min:1',
+            'from_account_id'      => 'required|integer',
+            'receiving_account_id' => 'nullable|integer',
+            'reason'               => 'required|string|max:255',
+            'given_to'             => 'nullable|string|max:120',
+            'date'                 => 'nullable|date',
+        ]);
+
+        try {
+            $row = $tips->payout($data, (int) auth()->id());
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success'    => true,
+            'message'    => 'Rs ' . number_format((float) $row->amount, 2) . ' paid out of the tip pool.',
+            'ledger_id'  => $row->id,
+            'balance'    => $tips->balance(),
+        ]);
+    }
+
+    /** POST — the pool's starting balance. Taimur, once. */
+    public function tipsOpening(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        if (!$this->isTaimur()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Setting the opening balance is Taimur only.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'amount' => 'required|numeric|min:1',
+            'note'   => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $tips->setOpeningBalance((float) $data['amount'], (int) auth()->id(), $data['note'] ?? null);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Opening balance set. The pool now holds Rs ' . number_format($tips->balance(), 2) . '.',
+            'balance' => $tips->balance(),
+        ]);
+    }
+
+    /** POST — undo a payout entered wrongly. Taimur only, like every other money correction here. */
+    public function tipsUndoPayout(Request $request, int $id, \App\Services\FIN\TipsFundService $tips)
+    {
+        if ($deny = $this->requireTaimurJson('undo a tip payout')) {
+            return $deny;
+        }
+
+        try {
+            $tips->undoPayout($id, (int) auth()->id());
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payout undone — the money is back in the pool.',
+            'balance' => $tips->balance(),
+        ]);
+    }
+
+    /**
+     * POST — collect every tip the pool should already hold. Taimur only.
+     *
+     * Production has no shell, so `php artisan tips:backfill` cannot be run
+     * there; this is the same idempotent sync behind a button. Run it once
+     * after deploying, and any time the cutoff date is moved.
+     */
+    public function tipsBackfill(Request $request, \App\Services\FIN\TipsFundService $tips)
+    {
+        if ($deny = $this->requireTaimurJson('collect missing tips')) {
+            return $deny;
+        }
+
+        try {
+            $r = $tips->backfill(false);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        $msg = $r['changed'] > 0
+            ? 'Collected Rs ' . number_format($r['moved'], 2) . ' from ' . $r['changed'] . ' invoice(s). The pool now holds Rs ' . number_format($r['balance'], 2) . '.'
+            : 'Nothing to collect — the pool already holds every tip it should (' . $r['already'] . ' invoice(s) checked).';
+        if ($r['pending'] > 0) {
+            $msg .= ' Rs ' . number_format($r['pending'], 2) . ' is still waiting on invoice approvals.';
+        }
+        if ($r['failed'] > 0) {
+            $msg .= ' ' . $r['failed'] . ' invoice(s) failed — see the log.';
+        }
+
+        return response()->json(['success' => $r['failed'] === 0, 'message' => $msg, 'result' => $r]);
+    }
+
+    /**
+     * Who may spend tip money.
+     *
+     * Deliberately the SAME set already trusted with customer-balance money
+     * (CustomerCreditService::userCanAutoApproveGrant): Level 2, or the
+     * Shabib/Taimur pair by role or configured email. ⚠ The email leg is not
+     * redundant — Shabib's login holds the shared "Management" role and no
+     * Level 2, so only his email identifies him.
+     */
+    private function canSpendTips(): bool
+    {
+        return app(\App\Services\CustomerCreditService::class)
+            ->userCanAutoApproveGrant(auth()->user());
+    }
+
+    /**
+     * Real accounts a tip can be paid out of. The tip pool itself, vendor
+     * payables and expense accounts are not money and never appear here.
+     */
+    private function tipsPayoutAccounts()
+    {
+        return AccountModel::where('is_active', 1)
+            ->whereIn('account_category', [
+                AccountModel::CATEGORY_CASH,
+                AccountModel::CATEGORY_BANK,
+                AccountModel::CATEGORY_EMPLOYEE_CASH,
+            ])
+            ->visibleTo(auth()->user())
+            ->orderBy('account_category')
+            ->orderBy('account_name')
+            ->get(['id', 'account_name', 'account_code', 'account_category']);
     }
 
     /** Tab 5 — Health. Built in the next phase (H4). */

@@ -64,7 +64,13 @@ analytics-sandbox/  <- SANDBOX ONLY for analytics work (see AGENTS.md)
 - `ShopifyService.php`, `WooCommerceService.php`, `WhatsAppService.php`, `FirebaseService.php`,
   `GeocodingService.php` / `Location/*` (Google Maps).
 - `DashboardAnalyticsService.php`, `API/ReportsController.php` — **revenue is ORDER-based**
-  (delivered orders' `total_price`), **not** ledger-based. Ledger-flow changes don't move revenue.
+  (delivered orders), **not** ledger-based. Ledger-flow changes don't move revenue.
+  ⚠ Sep-2026: it is no longer plain `total_price`. `Services/FIN/ProfitRevenueSql` is the ONE
+  definition — `total_price` **+ account balance the customer spent − tips** (deliveries on/after
+  `TIPS_FUND_START_DATE`). Applied by Reports, HQ `ExecutiveClosingService`, the Ledger Hub sales
+  card and the Dashboard. Receivables, Qurbani booked revenue and the sales-volume analytics keep
+  raw `total_price`. Tips move into the `TIPS_FUND` liability — see `Services/FIN/TipsFundService`,
+  hooked into `BalancePostingService::apply()/reverse()`.
 
 ---
 

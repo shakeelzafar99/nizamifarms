@@ -1544,6 +1544,20 @@ async function openShopPaymentsList(orderId, orderNumber) {
     }
 }
 
+// When a payment was KEYED IN (not the date the money moved — a transfer
+// received on the 31st is often entered a day or two later).
+// Parsed part-by-part for the same reason formatDate() does it: handing the
+// raw string to Date() can shift the day on a machine behind UTC+5.
+function formatEnteredAt(ts) {
+    const m = String(ts).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    if (!m) return formatDate(ts);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let h = parseInt(m[4], 10);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${months[parseInt(m[2], 10) - 1]} ${parseInt(m[3], 10)}, ${m[1]} at ${h}:${m[5]} ${ampm}`;
+}
+
 function buildShopPaymentsHtml(orderId, orderNumber, data) {
     const payments = data.payments || [];
     let html = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1562,12 +1576,31 @@ function buildShopPaymentsHtml(orderId, orderNumber, data) {
     html += '<div style="display:flex; flex-direction:column; gap:8px;">';
     payments.forEach(p => {
         const bank = p.receiving_account_name ? ` • ${escapeHtml(p.receiving_account_name)}` : '';
-        html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid #E5E7EB; border-radius:8px;">
-            <div>
+        // Where this money came from. A bulk payment is stored as one row per
+        // invoice, so on its own this slice looks like a standalone payment and
+        // never matches the single debit on the bank statement. The server says
+        // which entry it belonged to (PaymentBatchService); nothing is guessed.
+        const others = (p.batch_orders || []).filter(n => n !== orderNumber);
+        const bulkLine = p.is_bulk
+            ? `<div style="font-size:12px; color:#4338CA; background:#EEF2FF; border:1px solid #E0E7FF; border-radius:6px; padding:4px 8px; margin-top:5px;"
+                    title="${escapeHtml(others.join(', '))}">
+                 🔗 One slice of a <b>Rs. ${numberFormat(p.batch_total)}</b> payment covering
+                 ${p.batch_size} invoices${others.length ? ' (also ' + escapeHtml(others.slice(0, 4).join(', ')) + (others.length > 4 ? ' +' + (others.length - 4) + ' more' : '') + ')' : ''}
+               </div>`
+            : '';
+        // Who keyed it in and when — the entry timestamp, which is NOT the
+        // payment date (a transfer received on the 31st can be entered later).
+        const entered = p.created_by_name
+            ? `<div style="font-size:11.5px; color:#9CA3AF; margin-top:4px;">Entered by ${escapeHtml(p.created_by_name)}${p.created_at ? ' • ' + formatEnteredAt(p.created_at) : ''}</div>`
+            : '';
+        html += `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid #E5E7EB; border-radius:8px;">
+            <div style="min-width:0;">
                 <div style="font-weight:700;">Rs. ${numberFormat(p.amount)}</div>
                 <div style="font-size:12px; color:#6B7280;">📅 ${formatDate(p.payment_date)}${bank}${p.reference ? ' • Ref: ' + escapeHtml(p.reference) : ''}</div>
+                ${bulkLine}
+                ${entered}
             </div>
-            <button onclick="voidShopPayment(${orderId}, ${p.id}, '${escapeHtml(orderNumber)}')" style="border:1px solid #FECACA; background:#FEF2F2; color:#B91C1C; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px;">Void</button>
+            <button onclick="voidShopPayment(${orderId}, ${p.id}, '${escapeHtml(orderNumber)}')" style="flex:none; border:1px solid #FECACA; background:#FEF2F2; color:#B91C1C; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px;">Void</button>
         </div>`;
     });
     html += '</div>';

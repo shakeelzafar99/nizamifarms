@@ -249,6 +249,38 @@
   .pr-radio-row { display: flex; gap: 8px; }
   .pr-radio { flex: 1; border: 1px solid #e5e7eb; border-radius: 9px; padding: 9px 12px; cursor: pointer; text-align: center; font-size: 12.5px; font-weight: 600; color: #6b7280; }
   .pr-radio.active { border-color: #16a34a; background: #f0fdf4; color: #047857; }
+/* ── Employee tab (the privacy view) ─────────────────────────────────────── */
+.pr-emp-pick{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
+.pr-emp-pick .pr-input{height:38px;min-width:240px;}
+.pr-emp-hint{font-size:11.5px;color:#9ca3af;}
+.pr-emp-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+.pr-emp-avatar{width:42px;height:42px;border-radius:10px;background:#1e4d7b;color:#fff;display:flex;
+  align-items:center;justify-content:center;font-weight:700;font-size:16px;flex:none;}
+.pr-emp-name{font-size:19px;font-weight:700;color:#111827;letter-spacing:-.01em;}
+.pr-emp-sub{font-size:11.5px;color:#6b7280;}
+.pr-emp-grid{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;align-items:start;}
+@media (max-width:900px){.pr-emp-grid{grid-template-columns:1fr;}}
+.pr-emp-card{border:1px solid #e5e7eb;border-radius:10px;background:#fff;padding:14px 16px;margin-bottom:14px;}
+.pr-emp-card h4{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#6b7280;
+  font-weight:700;margin:0 0 10px;}
+.pr-emp-line{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;
+  font-size:13px;color:#374151;padding:5px 0;}
+.pr-emp-line .lv{font-variant-numeric:tabular-nums;font-weight:600;color:#111827;white-space:nowrap;}
+.pr-emp-line.minus .lv{color:#b91c1c;}
+.pr-emp-line.tot{border-top:1px solid #e5e7eb;margin-top:6px;padding-top:9px;}
+.pr-emp-line.tot .ll{font-weight:700;color:#111827;font-size:13.5px;}
+.pr-emp-line.tot .lv{font-size:20px;font-weight:800;}
+.pr-emp-why{font-size:11px;color:#9ca3af;line-height:1.45;margin-top:2px;}
+.pr-emp-drill{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px;}
+.pr-emp-drill:hover{color:#1e4d7b;}
+.pr-emp-tbl{width:100%;border-collapse:collapse;font-size:12px;}
+.pr-emp-tbl th{text-align:left;font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:#6b7280;font-weight:700;padding:6px 7px;border-bottom:1px solid #e5e7eb;white-space:nowrap;}
+.pr-emp-tbl td{padding:7px;border-bottom:1px solid #f3f4f6;color:#374151;}
+.pr-emp-tbl td.n{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#111827;white-space:nowrap;}
+.pr-emp-open{border:1px solid #fcd34d;background:#fffbeb;border-radius:8px;padding:9px 11px;
+  font-size:12px;color:#92400e;margin-bottom:12px;}
+.pr-emp-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;}
 </style>
 
 <div class="pr-wrap">
@@ -271,12 +303,29 @@
   <div id="prAlertBanner"></div>
 
   <div class="pr-tabs">
-    <button class="pr-tab active" id="prTabMonthly" data-tab="monthly">Monthly</button>
+    <button class="pr-tab active" id="prTabEmployee" data-tab="employee">Employee</button>
+    <button class="pr-tab" id="prTabMonthly" data-tab="monthly">Monthly</button>
     <button class="pr-tab" id="prTabCustom" data-tab="custom">Custom schedule</button>
   </div>
 
   {{-- Monthly view (the original grid) --}}
-  <div class="pr-view active" id="prMonthlyView">
+  {{-- ── EMPLOYEE TAB — the privacy view ──────────────────────────────────────────────
+       One person, and nothing about anyone else. It REPLACES the grid rather than floating
+       over it, so a manager can turn the laptop round. It is the landing tab on purpose:
+       opening Payroll should not put eleven salaries on screen. Nothing but names appears
+       until someone is picked. --}}
+  <div class="pr-view active" id="prEmployeeView">
+    <div class="pr-emp-pick">
+      <input type="text" id="prEmpSearch" class="pr-input" placeholder="Search an employee…" autocomplete="off">
+      <select class="pr-bank-sel" id="prEmpSelect" style="min-width:220px;"></select>
+      <span class="pr-emp-hint" id="prEmpHint"></span>
+    </div>
+    <div id="prEmpEmpty" class="pr-empty" style="padding:38px 12px;">
+      Pick an employee to see their pay for this month, and their history.
+    </div>
+    <div id="prEmpBody" style="display:none;"></div>
+  </div>
+  <div class="pr-view" id="prMonthlyView">
     <div class="pr-strip" id="prStrip"></div>
 
     <div class="pr-tablewrap">
@@ -330,7 +379,29 @@
       {{-- Leave actions for the selected employees: settle them with this payment, or pay the
            money now and leave them on the Leave-actions panel to decide later. Hidden entirely
            when the selected people have no bonus/penalty leave this month. --}}
-      <div id="prPayLeaveBox" style="display:none;border:1px solid #e5e7eb;border-radius:9px;padding:10px 12px;margin-bottom:12px;">
+      {{-- Deductions exceed salary. Money used to vanish here silently: net clamped to 0 and
+           every advance was still marked fully settled, so whatever the salary could not cover
+           was written off with nobody deciding. Now the manager is told and chooses. --}}
+      <div id="prShortBox" style="display:none;border:1px solid #fca5a5;background:#fef2f2;border-radius:9px;padding:10px 12px;margin-bottom:12px;">
+        <div style="font-size:12px;font-weight:700;color:#b91c1c;margin-bottom:6px;" id="prShortHead"></div>
+        <div id="prShortList" style="font-size:11.5px;color:#7f1d1d;margin-bottom:8px;line-height:1.5;"></div>
+        <label style="display:block;font-size:12px;color:#374151;margin-bottom:5px;cursor:pointer;">
+          <input type="radio" name="prShortMode" value="writeoff" checked style="margin-right:7px;">
+          <b>Proceed anyway</b> — the advance is cleared and the shortfall is never recovered
+        </label>
+        <label style="display:block;font-size:12px;color:#374151;cursor:pointer;">
+          <input type="radio" name="prShortMode" value="waive_deductions" style="margin-right:7px;">
+          <b>Don't apply this month's absent / late deductions</b>, so less is written off
+          <span id="prShortSaves" style="color:#047857;font-weight:600;"></span>
+        </label>
+        <div style="font-size:10.5px;color:#7f1d1d;margin-top:7px;line-height:1.45;">
+          Recovering only part of a single advance isn't possible yet — an advance is settled in
+          full or not at all — so anything still short after your choice is written off, and the
+          payment note records it.
+        </div>
+      </div>
+      <div id="prPayAbsWarn" style="display:none;margin-top:10px;font-size:12px;color:#7f1d1d;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;line-height:1.5;"></div>
+        <div id="prPayLeaveBox" style="display:none;border:1px solid #e5e7eb;border-radius:9px;padding:10px 12px;margin-bottom:12px;">
         <div style="font-size:12px;color:#374151;font-weight:600;margin-bottom:7px;" id="prPayLeaveSum"></div>
         <label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:#374151;cursor:pointer;margin-bottom:5px;">
           <input type="radio" name="prLeaveMode" value="apply" checked style="margin-top:2px;">
@@ -626,6 +697,21 @@
   let ROWS = [];        // computed rows from server (monthly)
   let FUND = { cash: null, banks: [] };
   let CURMONTH = '';
+  // ⚠ A slow page + two month clicks used to leave the header on one month and the ROWS on
+  // another: whichever fetch answered LAST won, even if it was the older request. On a
+  // money screen that means paying August while the header says September. Every loader
+  // takes a ticket and a stale answer is dropped.
+  let LOAD_SEQ = 0;
+  // Minutes in one bonus-leave day, from the server (SHIFT_TARGET_HOURS is configurable).
+  let OT_PER_DAY = 540;
+  let OT_CARRY_ON = false;
+  // "6h 20m" / "45m" — the one place minutes become words on this screen.
+  function hm(m) {
+    m = Math.max(0, Number(m) || 0);
+    const h = Math.floor(m / 60), mm = m % 60;
+    if (h > 0) return mm > 0 ? (h + 'h ' + mm + 'm') : (h + 'h');  // "9h", not "9h 0m"
+    return mm + 'm';
+  }
   let SCHEDULE_AVAILABLE = false; // schema applied → schedule gear + Custom tab usable
   let KHAAS_AVAILABLE = false;    // manager may tag/see Khaas
   let KHAAS_BU_ID = null;         // the Khaas business-unit id (to post)
@@ -633,10 +719,11 @@
   let ADV_SHEET = { row: null, mode: null }; // the advance list currently open in the sheet
   let LEAVE_ACT = null;           // this month's leave actions (card + review panel)
   let SHEET_BACK = null;          // when set, the sheet shows a "‹ back" to this renderer
-  let TAB = 'monthly';
+  let TAB = 'employee';   // the Employee tab is the landing view (owner ruling)
   let CUST_ROWS = [];             // custom-schedule rows
   let CUST_LOADED_MONTH = '';     // month the custom list was last loaded for
-  let ADV_SUMMARY = null;         // page-wide pending-advance totals (banner + strip card)
+  let ADV_SUMMARY = null;
+  let ABS_SUMMARY = null;   // closed months whose absences nobody has decided         // page-wide pending-advance totals (banner + strip card)
   let BAL_AVAILABLE = false;      // khata schema applied → running balances usable
   let CAN_VOID_PAY = false;       // Taimur / Shabib: may void a custom-salary payment
   let TODAY = '';                 // the server's today (never trust the browser clock for money)
@@ -659,13 +746,18 @@
   // ---- load month ----
   async function load() {
     const month = el('prMonth').value;
+    const seq = ++LOAD_SEQ;
     el('prGen').disabled = true; el('prGen').textContent = 'Loading…';
     el('prBody').innerHTML = '<tr><td colspan="10" class="pr-empty">Loading…</td></tr>';
     try {
       const res = await fetch('/hr/payroll/data?month=' + encodeURIComponent(month), { headers: { 'Accept': 'application/json' } });
       const j = await res.json();
+      if (seq !== LOAD_SEQ) return;                       // a newer month was asked for — drop this
+      if (month !== el('prMonth').value) return;          // …and never paint a month nobody is on
       if (!j.success) throw new Error(j.message || 'Failed');
       CURMONTH = j.month;
+      if (j.ot_per_day) OT_PER_DAY = Number(j.ot_per_day) || 540;
+      OT_CARRY_ON = !!j.ot_carry_on;
       FUND = j.funding || { cash: null, banks: [] };
       SCHEDULE_AVAILABLE = !!j.schedule_available;
       KHAAS_AVAILABLE = !!j.khaas_available;
@@ -673,16 +765,21 @@
       CAN_VOID = !!j.can_void_advance;
       LEAVE_ACT = j.leave_actions || null;
       ADV_SUMMARY = j.advance_summary || null;
+      ABS_SUMMARY = j.absence_summary || null;
       ROWS = (j.rows || []).map(r => ({ ...r, _selected: false, _lateOverride: null, _netOverride: null, _skipOvertime: false, _skipLateLeave: false }));
       renderBanner();
       renderStrip();
       renderRows();
       buildFundModal();
       el('prTabCustom').style.display = SCHEDULE_AVAILABLE ? '' : 'none';
+      // Actions started from the Employee tab (salary, advance, pay) refresh the grid; the
+      // tab must move with it or it shows stale figures next to a fresh grid.
+      if (TAB === 'employee' && EMP_ID) empLoad();
     } catch (e) {
+      if (seq !== LOAD_SEQ) return;
       el('prBody').innerHTML = '<tr><td colspan="10" class="pr-empty">Could not load payroll: ' + (e.message || e) + '</td></tr>';
     } finally {
-      el('prGen').disabled = false; el('prGen').textContent = 'Generate';
+      if (seq === LOAD_SEQ) { el('prGen').disabled = false; el('prGen').textContent = 'Generate'; }
     }
   }
 
@@ -746,6 +843,49 @@
       (missing > 0 ? card('Need salary', missing) : '') +
       (reqCount > 0 ? requestCard(reqCount, reqTotal) : '') +
       leaveCard();
+    // The absence nag. It also goes out as a Firebase push to everyone holding manage_payroll
+    // (FirebaseService::notifyAbsenceDecisionsDue, once per month), but it lives HERE too
+    // because this is where the person who can act on it already is. It keeps showing after
+    // the month ends and into the next one: an undecided month silently becomes a cut at Pay.
+    const abs = ABS_SUMMARY;
+    if (abs && Number(abs.undecided_count || 0) > 0 && !abs.dismissed) {
+      const people = abs.employees === 1 ? '1 employee' : abs.employees + ' employees';
+      el('prAlertBanner').insertAdjacentHTML('beforeend',
+        '<div class="pr-alert" style="border-color:#fca5a5;background:#fef2f2;margin-top:8px;">'
+        + '<span style="font-size:20px;">🗓</span>'
+        + '<div><div class="t" style="color:#b91c1c;">Absences waiting on a decision — ' + people
+        + ', ' + abs.days + ' day' + (abs.days === 1 ? '' : 's') + '</div>'
+        + '<div class="s" style="color:#7f1d1d;">'
+        + (abs.decide_month ? 'from ' + monthName(abs.decide_month) + ' · ' : '')
+        + 'unless you park or excuse them, paying will deduct them</div></div>'
+        + '<button type="button" class="act" id="prAbsBannerBtn" style="background:#dc2626;">Decide them</button>'
+        + '<span id="prAbsBannerX" title="Hide until next month" style="cursor:pointer;font-size:18px;color:#b91c1c;margin-left:10px;">×</span></div>');
+      const ab = document.getElementById('prAbsBannerBtn');
+      // Switch to the month that needs deciding first — opening the panel on the month the
+      // manager happens to be looking at would show none of the absences the banner counted.
+      if (ab) ab.onclick = async () => {
+        if (abs.decide_month && abs.decide_month !== el('prMonth').value) {
+          el('prMonth').value = abs.decide_month;
+          if (TAB !== 'monthly') switchTab('monthly');
+          await load();
+        }
+        openLeavePanel();
+      };
+      // Dismissal is per USER (server side), so one manager hiding it does not hide it
+      // from the other, and it returns next month with a new key.
+      const ax = document.getElementById('prAbsBannerX');
+      if (ax) ax.onclick = async () => {
+        ax.closest('.pr-alert').remove();
+        try {
+          await fetch('/hr/payroll/dismiss-absence-alert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+            body: JSON.stringify({ alert_key: abs.alert_key })
+          });
+        } catch (e) { /* hidden locally either way */ }
+      };
+    }
+
     const rc = document.getElementById('prReqCard');
     if (rc) rc.onclick = () => openRequestSheet();
     const lc = document.getElementById('prLeaveCard');
@@ -830,6 +970,29 @@
     }
 
     // attendance
+    // Absences: what is going to HAPPEN to them, not just how many there were. Undecided
+    // means the pay will be cut, so say so rather than leaving it to be discovered at Pay.
+    const absDec = r.absence_decision;
+    const absTag = r.absent_days > 0
+      ? (absDec === 'park'
+          ? '<div class="pr-formula" style="color:#b45309;">parked — no cut; overtime days will settle them</div>'
+          : absDec === 'excuse'
+            ? '<div class="pr-formula" style="color:#047857;">excused — no cut</div>'
+            : '<div class="pr-formula" style="color:#b91c1c;">'
+              + (absDec === 'cut' ? '✓ deducting ' : 'will deduct ') + fmt(r.absence_raw_deduction) + '</div>')
+      : '';
+    // Days still owed from EARLIER parked months — the debt follows the employee, so it is
+    // shown on every month until it is settled.
+    // Absent AFTER the decision — outside it, so it is cut until the manager decides again.
+    const absMore = Number(r.absence_undecided_days || 0) > 0
+      ? '<div class="pr-formula" style="color:#b91c1c;">' + r.absence_undecided_days + ' absent since the decision — deducting ' + fmt(r.absent_deduction) + '</div>'
+      : '';
+    const absOwed = Number(r.absence_outstanding || 0) > 0
+      ? '<div class="pr-formula" style="color:#b45309;">' + r.absence_owed_label + ' still owed</div>'
+      : '';
+    const heldAbs = Number(r.held_absence_deduction || 0) > 0
+      ? '<div class="pr-formula" style="color:#b91c1c;">+ ' + fmt(r.held_absence_deduction) + ' charged for earlier absences</div>'
+      : '';
     const att = '<span class="pr-chip present">' + r.present_days + ' present</span> ' +
       (r.absent_days > 0
         ? '<span class="pr-chip absent" data-drill="month_absent" data-uid="' + r.user_id + '">' + r.absent_days + ' absent</span>'
@@ -837,6 +1000,7 @@
       (r.leave_days > 0
         ? ' <span class="pr-chip leave" data-drill="month_leave" data-uid="' + r.user_id + '">' + r.leave_days + ' leave</span>'
         : '') +
+      absTag + absMore + absOwed + heldAbs +
       '<div class="pr-formula"><span data-drill="leave_grants" data-uid="' + r.user_id + '" style="cursor:pointer;text-decoration:underline dotted;">leave history ›</span></div>';
 
     // late cell (with formula + free-form input when a cut applies)
@@ -866,18 +1030,62 @@
     }
 
     // overtime → bonus leave (manager can bypass; applied on Pay, or decided in the panel)
+    // Overtime now reads like the Late cell: the MINUTES first, then the formula that turns
+    // them into whole leave days, then the decision. Showing only "+1 bonus leave" hid both
+    // how much was worked and how much was left over.
     const laOt = laFor(r, 'overtime');
+    const otMin = Number(r.overtime_minutes || 0);
+    const carryIn = Number(r.ot_carry_in || 0);
+    const carryOut = Number(r.ot_carry_out || 0);
+    const leavesTxt = (n) => '+' + n + ' bonus leave' + (n > 1 ? 's' : '');
+    // One month reads "7h 45m carried from Aug"; two or more need the split spelled out,
+    // because the whole point is that the employee can see which month is still owed.
+    const carryTxt = (mins, label, verb) => {
+      if (!label) return hm(mins) + ' ' + verb;
+      if (label.indexOf(' + ') === -1) {
+        const at = label.indexOf(' from ');
+        if (at > -1) return hm(mins) + ' ' + verb + esc(label.slice(at));
+      }
+      return hm(mins) + ' ' + verb + ' (' + esc(label) + ')';
+    };
+    // "9h 0m × 1 = 1 leave · 6h 20m carried" — the same shape as the late formula line.
+    const otFormula = () => {
+      if (!otMin && !carryIn) return '';
+      const bits = [];
+      if (carryIn > 0) bits.push(carryTxt(carryIn, r.ot_carry_in_label, 'carried in'));
+      bits.push('÷ ' + hm(OT_PER_DAY) + ' = ' + (r.bonus_leaves > 0 ? leavesTxt(r.bonus_leaves) : 'no leave yet'));
+      if (carryOut > 0) bits.push(carryTxt(carryOut, r.ot_carry_out_label, 'carried'));
+      return '<div class="pr-formula">' + bits.join(' · ') + '</div>';
+    };
+    // An ended month left undecided: its leftover is NOT carried yet, but hiding the figure
+    // would make it invisible. Shown as a to-do naming the month that has to be settled.
+    const pend = r.ot_carry_pending;
+    const pendLine = pend
+      ? '<div class="pr-formula" style="color:#b45309;">' + hm(pend.minutes) + ' waiting from '
+        + monthName(pend.month) + ' — carries once that month is paid or its overtime is decided</div>'
+      : '';
     let ot;
-    if (laOt && laOt.status !== 'pending') {
-      ot = '<span class="pr-chip ot" data-drill="month_overtime" data-uid="' + r.user_id + '" title="Click to see the overtime days">' +
-        (r.bonus_leaves > 0 ? '+' + r.bonus_leaves + ' bonus leave' + (r.bonus_leaves > 1 ? 's' : '') : 'overtime') + '</span>' +
-        laSettledTag(laOt, i);
-    } else if (r.bonus_leaves > 0) {
-      ot = '<span class="pr-chip ot' + (r._skipOvertime ? ' dim' : '') + '" data-drill="month_overtime" data-uid="' + r.user_id + '" title="Click to see the overtime days">+' + r.bonus_leaves + ' bonus leave' + (r.bonus_leaves > 1 ? 's' : '') + '</span>' +
-        '<div class="pr-lvtog ' + (r._skipOvertime ? 'off' : 'on') + '" data-skipot="' + i + '" title="Give this overtime bonus to the employee? Click to toggle. Applied when you Pay.">' + (r._skipOvertime ? '✕ bypassed' : '✓ will add') + '</div>';
+    if (otMin > 0 || carryIn > 0 || r.bonus_leaves > 0) {
+      const dim = (!laOt || laOt.status === 'pending') && r._skipOvertime ? ' dim' : '';
+      ot = '<span class="pr-chip ot' + dim + '" data-drill="month_overtime" data-uid="' + r.user_id + '"'
+         + ' title="Click to see the overtime days">' + (otMin > 0 ? hm(otMin) : 'carried only') + '</span>'
+         + otFormula();
+      if (laOt && laOt.status !== 'pending') {
+        ot += laSettledTag(laOt, i);
+      } else if (r.bonus_leaves > 0) {
+        // ⚠ Skipping forfeits the carried minutes too (owner ruling) — the toggle says so
+        // BEFORE it is clicked rather than after the leaves are gone.
+        const warn = carryIn > 0
+          ? ' Skipping also forfeits the ' + hm(carryIn) + ' carried from earlier months.'
+          : '';
+        ot += '<div class="pr-lvtog ' + (r._skipOvertime ? 'off' : 'on') + '" data-skipot="' + i + '"'
+            + ' title="Give this overtime bonus to the employee? Click to toggle. Applied when you Pay.' + warn + '">'
+            + (r._skipOvertime ? '✕ bypassed' + (carryIn > 0 ? ' (carry lost)' : '') : '✓ will add') + '</div>';
+      }
     } else {
       ot = '<span class="pr-chip muted">—</span>';
     }
+    ot += pendLine;
 
     // advances (+ always offer "give advance")
     // The amber "requested" chip is money NOT given: it is deliberately rendered BELOW the real
@@ -907,7 +1115,10 @@
       reqChip +
       '<div><span class="pr-give" data-give="' + i + '">＋ advance</span></div>';
 
-    const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
+    // The held charge for an earlier month's parked days is part of what is deducted;
+    // leaving it out would make the Deductions column disagree with Net pay.
+    const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0)
+                   + Number(r.held_absence_deduction || 0);
     const n = net(r);
     const ov = hasNetOverride(r);
     const shownNet = effNet(r);
@@ -1016,7 +1227,10 @@
   }
 
   function refreshMoney(r, i) {
-    const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0);
+    // The held charge for an earlier month's parked days is part of what is deducted;
+    // leaving it out would make the Deductions column disagree with Net pay.
+    const totalDed = Number(r.absent_deduction || 0) + lateDed(r) + Number(r.advance_total || 0)
+                   + Number(r.held_absence_deduction || 0);
     const dedCell = document.querySelector('[data-ded="' + i + '"]');
     const netCell = document.querySelector('[data-net="' + i + '"]');
     if (dedCell) dedCell.textContent = fmt(totalDed);
@@ -1225,7 +1439,11 @@
     renderLeavePanel();
   }
 
-  function laActionColor(kind) { return kind === 'overtime' ? '#047857' : '#b45309'; }
+  function laActionColor(kind) {
+    if (kind === 'overtime') return '#047857';
+    if (kind === 'absence')  return '#b91c1c';
+    return '#b45309';
+  }
 
   function renderLeavePanel() {
     const data = LEAVE_ACT;
@@ -1273,9 +1491,21 @@
       const paidChip = r.paid ? '<span style="font-size:10px;font-weight:700;color:#6b7280;background:#f3f4f6;border-radius:5px;padding:1px 6px;margin-left:6px;">salary paid</span>' : '';
 
       let acts;
-      if (a.status === 'pending') {
+      if (a.kind === 'absence') {
+        // Three outcomes, not two — and decidable while the month is still running, because
+        // the absences already happened. Whichever is in force is highlighted, and clicking
+        // another changes it, so the row is always editable rather than read-only once set.
+        const on = (v) => a.status === v ? ' style="outline:2px solid currentColor;font-weight:800;"' : '';
+        acts = '<button type="button" class="pr-la-btn pr-la-cut" data-ladec="' + idx + '" data-lachoice="cut"' + on('cut') + '>Deduct</button>' +
+          '<button type="button" class="pr-la-btn pr-la-skip" data-ladec="' + idx + '" data-lachoice="park"' + on('park') + ' title="No cut now — the days stay owed and overtime days will settle them">Park</button>' +
+          '<button type="button" class="pr-la-btn pr-la-skip" data-ladec="' + idx + '" data-lachoice="excuse"' + on('excuse') + ' title="No cut, nothing owed">Excuse</button>' +
+          (a.status === 'pending'
+            ? '<span style="font-size:10.5px;color:#b91c1c;">undecided — Pay will deduct it</span>'
+            : '');
+      } else if (a.status === 'pending') {
         const dis = open ? ' disabled title="Wait until the month ends"' : '';
-        acts = '<button type="button" class="pr-la-btn ' + (a.kind === 'overtime' ? 'pr-la-give' : 'pr-la-cut') + '" data-ladec="' + idx + '" data-lachoice="apply"' + dis + '>' +
+        acts = '<button type="button" class="pr-la-btn ' + (a.kind === 'overtime' ? 'pr-la-give' : 'pr-la-cut') + '" data-ladec="' + idx + '" data-lachoice="apply"' + dis
+            + (Number(a.will_cover || 0) > 0 ? ' title="' + a.will_cover + ' of these days will settle parked absences instead of becoming leave"' : '') + '>' +
             (a.kind === 'overtime' ? 'Give ' + a.headline : 'Deduct ' + a.headline) + '</button>' +
           '<button type="button" class="pr-la-btn pr-la-skip" data-ladec="' + idx + '" data-lachoice="waive"' + dis + '>' +
             (a.kind === 'overtime' ? 'Skip' : 'Keep leave') + '</button>';
@@ -1321,7 +1551,9 @@
         if (!it) return;
         const keep = LA_FILTER;
         SHEET_BACK = () => { LA_FILTER = keep; sheetWide(true); el('prSheetTitle').textContent = 'Leave actions — ' + monthLabel(); renderLeavePanel(); };
-        loadDateList(it.user_id, it.drill, (it.kind === 'overtime' ? 'Overtime days — ' : 'Late days — ') + it.fullname);
+        const what = it.kind === 'overtime' ? 'Overtime days — '
+          : (it.kind === 'absence' ? 'Absent days — ' : 'Late days — ');
+        loadDateList(it.user_id, it.drill, what + it.fullname);
       };
     });
     document.querySelectorAll('[data-lachange]').forEach(c => {
@@ -1356,11 +1588,13 @@
       });
       const j = await res.json();
       if (!j.success) throw new Error(j.message || 'Failed');
-      await load();
-      renderLeavePanel();
+      // ONE decide endpoint, refreshed into whichever view asked. The grid, the panel and
+      // the Employee tab are three views of the same server state and must move together.
+      if (TAB === 'employee') { await empLoad(); }
+      else { await load(); renderLeavePanel(); }
     } catch (e) {
       alert('Could not save that: ' + (e.message || e));
-      renderLeavePanel();
+      if (TAB === 'employee') { empLoad(); } else { renderLeavePanel(); }
     }
   }
 
@@ -1830,6 +2064,33 @@
     ).join('') + '<div class="r" style="font-weight:700;background:#fafbfc;"><span>Total</span><span>' +
       fmt(sel.reduce((s, r) => s + effNet(r), 0)) + '</span></div>';
 
+    // Rows whose deductions exceed the salary. `net_raw` is the un-clamped figure the row
+    // already carries, so this costs nothing to detect.
+    const short = sel.filter(r => Number(r.net_raw || 0) < 0 && !hasNetOverride(r));
+    if (short.length) {
+      const total = short.reduce((s, r) => s + Math.abs(Number(r.net_raw || 0)), 0);
+      el('prShortHead').textContent = short.length === 1
+        ? 'Deductions exceed salary for ' + short[0].fullname + ' by ' + fmt(total)
+        : short.length + ' employees owe more than this month covers — ' + fmt(total) + ' in total';
+      const otherDed = (r) => Number(r.absent_deduction || 0) + lateDed(r);
+      el('prShortList').innerHTML = short.map(r => {
+        const gap = Math.abs(Number(r.net_raw || 0));
+        const od = otherDed(r);
+        const saved = Math.min(gap, od);
+        return '<div>' + esc(r.fullname) + ' — short by <b>' + fmt(gap) + '</b>'
+          + (saved > 0 ? ' <span style="color:#047857;">(' + fmt(saved) + ' of it is absent/late deductions)</span>' : '')
+          + '</div>';
+      }).join('');
+      // How much the second option would actually rescue, so it isn't a blind choice.
+      const rescuable = short.reduce((s, r) => s + Math.min(Math.abs(Number(r.net_raw || 0)), otherDed(r)), 0);
+      el('prShortSaves').textContent = rescuable > 0 ? '— saves ' + fmt(rescuable) : '';
+      const dflt = document.querySelector('input[name=prShortMode][value=writeoff]');
+      if (dflt) dflt.checked = true;
+      el('prShortBox').style.display = '';
+    } else {
+      el('prShortBox').style.display = 'none';
+    }
+
     // Only the STILL-UNDECIDED leaves are in play here; anything already settled (from the
     // panel or an earlier payment) is untouched by paying and isn't mentioned.
     let give = 0, cut = 0;
@@ -1838,6 +2099,19 @@
       if (undecided(r, 'overtime') && !r._skipOvertime) give += Number(r.bonus_leaves || 0);
       if (undecided(r, 'late_penalty') && !r._skipLateLeave) cut += Number(r.late_leave_deduct || 0);
     });
+    // ⚠ Paying is the LAST moment an absence can still be parked or excused — afterwards the
+    // month is settled and the service refuses to re-decide it. Name the people, not a count.
+    const absUndecided = sel.filter(r => Number(r.absent_days || 0) > 0 && !r.absence_decision);
+    if (absUndecided.length) {
+      const money = absUndecided.reduce((s, r) => s + Number(r.absent_deduction || 0), 0);
+      el('prPayAbsWarn').innerHTML = '🗓 <b>' + absUndecided.length + ' of these have absences nobody has decided</b> — '
+        + esc(absUndecided.map(r => r.fullname + ' (' + r.absent_days + ')').join(', '))
+        + '. Paying deducts ' + fmt(money) + ' and the month can no longer be parked or excused.';
+      el('prPayAbsWarn').style.display = '';
+    } else {
+      el('prPayAbsWarn').style.display = 'none';
+    }
+
     const parts = [];
     if (give) parts.push('+' + give + ' bonus leave' + (give > 1 ? 's' : ''));
     if (cut) parts.push('−' + cut + ' leave' + (cut > 1 ? 's' : '') + ' for lateness');
@@ -1855,6 +2129,10 @@
   el('prPayModal').onclick = (ev) => { if (ev.target === el('prPayModal')) el('prPayModal').classList.remove('show'); };
 
   el('prPayConfirm').onclick = async () => {
+    // Deductions-exceed-salary answer. Defaults to carrying the shortfall — the option
+    // where no money disappears — and only writes off when the manager picked that.
+    const shortEl = document.querySelector('input[name=prShortMode]:checked');
+    const shortMode = shortEl ? shortEl.value : 'carry';
     const sel = selectedRows();
     if (!sel.length) return;
     const fundType = document.querySelector('input[name=prFund]:checked').value;
@@ -1867,7 +2145,7 @@
       month: CURMONTH,
       funding: fundType,
       bank_id: fundType === 'online' ? Number(bankId) : null,
-      items: sel.map(r => ({ user_id: r.user_id, net: effNet(r), late_deduction: lateDed(r), net_override: hasNetOverride(r) ? Math.max(0, Number(r._netOverride)) : null, skip_overtime: !!r._skipOvertime, skip_late_leave: !!r._skipLateLeave, defer_leave_actions: deferLeave }))
+      items: sel.map(r => ({ user_id: r.user_id, net: effNet(r), late_deduction: lateDed(r), net_override: hasNetOverride(r) ? Math.max(0, Number(r._netOverride)) : null, skip_overtime: !!r._skipOvertime, skip_late_leave: !!r._skipLateLeave, defer_leave_actions: deferLeave, shortfall: shortMode }))
     };
     el('prPayConfirm').disabled = true; el('prPayConfirm').textContent = 'Paying…';
     try {
@@ -1893,18 +2171,430 @@
   // ============================================================
   //  TABS + CUSTOM-SCHEDULE VIEW
   // ============================================================
-  function reloadActive() { return TAB === 'custom' ? customLoad() : load(); }
+  function reloadActive() {
+    if (TAB === 'custom') return customLoad();
+    if (TAB === 'employee') return empLoad();
+    return load();
+  }
   function switchTab(tab) {
     TAB = tab;
-    el('prTabMonthly').classList.toggle('active', tab === 'monthly');
-    el('prTabCustom').classList.toggle('active', tab === 'custom');
-    el('prMonthlyView').classList.toggle('active', tab === 'monthly');
-    el('prCustomView').classList.toggle('active', tab === 'custom');
-    if (tab === 'custom') { el('prPaybar').classList.remove('show'); customLoad(); }
+    ['Employee', 'Monthly', 'Custom'].forEach(k => {
+      const t = el('prTab' + k), v = el('pr' + k + 'View');
+      if (t) t.classList.toggle('active', tab === k.toLowerCase());
+      if (v) v.classList.toggle('active', tab === k.toLowerCase());
+    });
+    // The Employee tab is the privacy view, so nothing that names ANOTHER employee may
+    // survive the switch: the pay bar is a grid concept, and the advance banner sitting
+    // above the tabs names whoever is waiting for money.
+    if (tab !== 'monthly') el('prPaybar').classList.remove('show');
+    const banner = el('prAlertBanner');
+    if (banner) banner.style.display = tab === 'employee' ? 'none' : '';
+    if (tab === 'custom') { customLoad(); }
+    else if (tab === 'employee') { empLoad(); }
     else { load(); }
   }
+  el('prTabEmployee').onclick = () => switchTab('employee');
   el('prTabMonthly').onclick = () => switchTab('monthly');
   el('prTabCustom').onclick = () => switchTab('custom');
+
+  // ============================================================
+  //  EMPLOYEE TAB — one person, nothing about anyone else
+  // ============================================================
+  let EMP_ID = null;      // who is on screen
+  let EMP = null;         // the detail payload
+  let EMP_LIST = [];      // names only
+
+  function empName(id) { const e = EMP_LIST.find(x => Number(x.user_id) === Number(id)); return e ? e.name : ''; }
+
+  function renderEmpPicker() {
+    const q = (el('prEmpSearch').value || '').trim().toLowerCase();
+    const shown = EMP_LIST.filter(e => !q || e.name.toLowerCase().includes(q));
+    el('prEmpSelect').innerHTML = '<option value="">— choose —</option>' + shown.map(e =>
+      '<option value="' + e.user_id + '"' + (Number(e.user_id) === Number(EMP_ID) ? ' selected' : '') + '>'
+      + esc(e.name) + (e.schedule === 'custom' ? ' (custom)' : '') + '</option>').join('');
+    el('prEmpHint').textContent = shown.length + ' of ' + EMP_LIST.length + ' shown';
+  }
+
+  async function empLoad(userId) {
+    if (userId !== undefined) EMP_ID = userId;
+    const month = el('prMonth').value;
+    const seq = ++LOAD_SEQ;
+    if (!EMP_ID) {
+      el('prEmpBody').style.display = 'none';
+      el('prEmpEmpty').style.display = '';
+    }
+    try {
+      const url = '/hr/payroll/employee?month=' + encodeURIComponent(month)
+                + (EMP_ID ? '&user_id=' + encodeURIComponent(EMP_ID) : '');
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      const j = await res.json();
+      if (seq !== LOAD_SEQ || month !== el('prMonth').value) return;   // stale month — drop it
+      if (!j.success) throw new Error(j.message || 'Failed');
+      CURMONTH = j.month;
+      EMP_LIST = j.employees || [];
+      if (j.funding) FUND = j.funding;
+      if (j.ot_per_day) OT_PER_DAY = Number(j.ot_per_day) || OT_PER_DAY;
+      if (j.can_void_advance !== undefined) CAN_VOID = !!j.can_void_advance;
+      // The custom card reads these globals; landing on this tab must not leave them at
+      // their boot defaults (which would hide the khata controls and mis-date the calendar).
+      if (j.balance_available !== undefined) BAL_AVAILABLE = !!j.balance_available;
+      if (j.can_void_payment !== undefined) CAN_VOID_PAY = !!j.can_void_payment;
+      if (j.today) TODAY = j.today;
+      if (j.khaas_available !== undefined) KHAAS_AVAILABLE = !!j.khaas_available;
+      if (j.khaas_bu_id !== undefined) KHAAS_BU_ID = j.khaas_bu_id || null;
+      if (j.schedule_available !== undefined) SCHEDULE_AVAILABLE = !!j.schedule_available;
+      renderEmpPicker();
+      if (!EMP_ID) { EMP = null; return; }
+      // Seed the same per-row UI state the grid seeds. Without it `_lateOverride` is
+      // undefined, `Number(undefined)` is NaN, and the net silently renders as Rs 0 —
+      // these helpers are shared with the grid and expect the fields to exist.
+      EMP = j;
+      if (EMP.row) {
+        EMP.row = { ...EMP.row, _selected: false, _lateOverride: null, _netOverride: null,
+                    _skipOvertime: false, _skipLateLeave: false };
+      }
+      renderEmployee();
+    } catch (e) {
+      el('prEmpBody').style.display = '';
+      el('prEmpEmpty').style.display = 'none';
+      el('prEmpBody').innerHTML = '<div class="pr-empty">Could not load: ' + esc(e.message || e) + '</div>';
+    }
+  }
+
+  el('prEmpSearch').oninput = renderEmpPicker;
+  el('prEmpSelect').onchange = (ev) => { empLoad(ev.target.value ? Number(ev.target.value) : null); };
+
+  // One money line, optionally opening the days behind it.
+  function empLine(label, value, opts) {
+    opts = opts || {};
+    const cls = 'pr-emp-line' + (opts.minus ? ' minus' : '') + (opts.total ? ' tot' : '');
+    const lbl = opts.drill
+      ? '<span class="pr-emp-drill" data-drill="' + opts.drill + '" data-uid="' + EMP_ID + '">' + label + ' ›</span>'
+      : label;
+    return '<div class="' + cls + '"><span class="ll">' + lbl
+      + (opts.why ? '<div class="pr-emp-why">' + opts.why + '</div>' : '')
+      + '</span><span class="lv">' + value + '</span></div>';
+  }
+
+  // Header shared by both modes.
+  function empHeader(u, subtitle) {
+    const initials = (u.fullname || '?').split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    return '<div class="pr-emp-head"><div class="pr-emp-avatar">' + esc(initials) + '</div>'
+      + '<div><div class="pr-emp-name">' + esc(u.fullname) + '</div>'
+      + '<div class="pr-emp-sub">' + esc(subtitle) + (u.is_active ? '' : ' · <b>inactive</b>') + '</div></div></div>';
+  }
+
+  // ⭐⭐ CUSTOM-SCHEDULE employee: the very card the Custom tab shows, built by the same
+  // renderer and wired to the same actions (Add period / Record payment / calendar / rate).
+  // No monthly statement, no leave, no overtime — none of those rules apply to them, and
+  // showing a monthly "Pay" here was exactly the bug the owner spotted (an absent-day cut and
+  // a Rs 2,880 pay button on a khata employee).
+  function renderEmployeeCustom() {
+    const u = EMP.user, r = EMP.custom_row;
+    let body = empHeader(u, 'Custom schedule · ' + EMP.month_label);
+    if (r) {
+      // 'emp' as the index keeps this card's data-* hooks distinct from the (hidden) Custom
+      // tab's cards, which use numeric indexes — wireCust() queries the whole document.
+      body += '<div class="pr-cust-list">' + custCard(r, 'emp') + '</div>';
+    } else {
+      body += '<div class="pr-empty">No custom-schedule card for ' + esc(EMP.month_label)
+            + ' — the employee may be hidden from Payroll or not yet set up.</div>';
+    }
+    let notes = '';
+    (EMP.pending_requests || []).forEach(q => {
+      notes += '<div class="pr-emp-open">Asked for ' + fmt(q.amount) + ' — not given yet.</div>';
+    });
+    el('prEmpEmpty').style.display = 'none';
+    el('prEmpBody').style.display = '';
+    el('prEmpBody').innerHTML = body + notes + empHistoryCard();
+    if (r) wireCust(r, 'emp');
+  }
+
+  // What was actually paid, month by month — the frozen receipts. Shared by both modes.
+  function empHistoryCard() {
+    let hist = '<div class="pr-emp-card"><h4>Paid history</h4>';
+    if ((EMP.history || []).length) {
+      hist += '<div style="overflow-x:auto;"><table class="pr-emp-tbl"><thead><tr>'
+        + '<th>Month</th><th>Base</th><th>Days</th><th>Late</th><th>Advances</th><th>Net paid</th><th>Paid</th>'
+        + '</tr></thead><tbody>'
+        + EMP.history.map(h => '<tr>'
+            + '<td><b>' + esc(h.period || monthName(h.pay_month)) + '</b></td>'
+            + '<td class="n">' + fmt(h.base_salary) + '</td>'
+            + '<td class="n">' + h.present_days + ' / ' + h.absent_days + '</td>'
+            + '<td class="n">' + (h.late_deduction > 0 ? fmt(h.late_deduction) : '—') + '</td>'
+            + '<td class="n">' + (h.advance_total > 0 ? fmt(h.advance_total) : '—') + '</td>'
+            + '<td class="n">' + fmt(h.net_salary) + '</td>'
+            + '<td>' + esc(h.funding || '') + ' · ' + esc(String(h.paid_at || '').slice(0, 10)) + '</td>'
+          + '</tr>').join('')
+        + '</tbody></table></div>'
+        + '<div class="pr-emp-why" style="margin-top:8px;">These are the receipts as paid — never recalculated.</div>';
+    } else {
+      hist += '<div class="pr-emp-why">No salary has been paid through this screen yet.</div>';
+    }
+    return hist + '</div>';
+  }
+
+  function renderEmployee() {
+    if (EMP.mode === 'custom') { renderEmployeeCustom(); return; }
+    const r = EMP.row, u = EMP.user, bal = EMP.leave_balance || {};
+    const paid = !!r.paid;
+    const lateCut = lateDed(r);
+    const otherDed = Number(r.absent_deduction || 0) + lateCut;
+    const netRaw = Number(r.net_raw || 0);
+
+    // ── This month, as a statement rather than a row ───────────────────────
+    let month = '<div class="pr-emp-card"><h4>' + esc(EMP.month_label)
+      + (paid ? ' — paid' : ' — not paid yet') + '</h4>';
+    month += empLine('Base salary', fmt(r.base_salary), {
+      why: u.previous_salary && u.last_salary_change_date
+        ? 'was ' + fmt(u.previous_salary) + ' until ' + esc(u.last_salary_change_date) : ''
+    });
+    month += empLine('Attendance', r.present_days + ' present · ' + r.absent_days + ' absent · ' + (r.leave_days || 0) + ' leave',
+      { drill: 'month_absent', why: 'Tap to see the days' });
+    month += empLine('Absent deduction', r.absent_deduction > 0 ? '− ' + fmt(r.absent_deduction) : 'Rs 0',
+      { minus: r.absent_deduction > 0 });
+    month += empLine('Late', hm(r.late_minutes || 0), {
+      drill: 'month_late',
+      why: r.late_minutes > 0
+        ? (lateCut > 0 ? fmt(r.per_hour) + '/hr × ' + ((r.late_minutes || 0) / 60).toFixed(1) + 'h'
+                       : 'within the free buffer — no pay cut')
+        : ''
+    });
+    if (lateCut > 0) month += empLine('Late deduction', '− ' + fmt(lateCut), { minus: true });
+    const otBits = [];
+    if (Number(r.ot_carry_in || 0) > 0) otBits.push(hm(r.ot_carry_in) + ' carried in');
+    otBits.push('÷ ' + hm(OT_PER_DAY) + ' = ' + (r.bonus_leaves > 0 ? '+' + r.bonus_leaves + ' leave' + (r.bonus_leaves > 1 ? 's' : '') : 'no leave yet'));
+    if (Number(r.ot_carry_out || 0) > 0) otBits.push(hm(r.ot_carry_out) + ' carried on');
+    month += empLine('Overtime', hm(r.overtime_minutes || 0), { drill: 'month_overtime', why: otBits.join(' · ') });
+    month += empLine('Advances taken', r.advance_total > 0 ? '− ' + fmt(r.advance_total) : 'Rs 0',
+      { minus: r.advance_total > 0, why: Number(r.other_open_advance_total || 0) > 0
+          ? fmt(r.other_open_advance_total) + ' more is open against other months' : '' });
+    month += empLine(paid ? 'Net paid' : 'Net to pay', fmt(paid ? r.paid_net : effNet(r)), { total: true });
+    if (!paid && netRaw < 0) {
+      month += '<div class="pr-emp-open" style="margin-top:10px;">Deductions are '
+        + fmt(Math.abs(netRaw)) + ' more than this month\'s salary. He is paid Rs 0; when you '
+        + 'press Pay you choose whether that ' + fmt(Math.abs(netRaw)) + ' is written off.</div>';
+    }
+    if (paid) {
+      month += '<div class="pr-emp-why" style="margin-top:8px;">Paid ' + esc(String(r.paid_at || '').slice(0, 10))
+        + ' from ' + esc(r.paid_funding || '—') + '. This is the frozen receipt, not a fresh calculation.</div>';
+    } else {
+      month += '<div class="pr-emp-why" style="margin-top:8px;">Still counting — these figures can change until the month is paid.</div>';
+    }
+    month += '<div class="pr-emp-acts">'
+      + '<button class="pr-btn-ghost" id="prEmpSetSal">Change salary</button>'
+      + '<button class="pr-btn-ghost" id="prEmpAdv">＋ advance</button>'
+      + (paid ? '' : '<button class="pr-btn-primary" id="prEmpPay">Pay ' + fmt(effNet(r)) + '</button>')
+      + '</div></div>';
+
+    // ── Leave position ─────────────────────────────────────────────────────
+    let leave = '<div class="pr-emp-card"><h4>Leave</h4>';
+    leave += empLine('Yearly quota', (bal.quota_total ?? '—'));
+    leave += empLine('Earned from overtime', '+' + (bal.earned_overtime ?? 0));
+    leave += empLine('Taken off for lateness', (bal.late_penalties ?? 0));
+    if (Number(bal.absence_cover ?? 0) !== 0) leave += empLine('Used to cover parked absences', bal.absence_cover);
+    leave += empLine('Taken', (bal.taken_total ?? 0), { drill: 'month_leave' });
+    leave += empLine('Remaining', (bal.remaining ?? '—'), { total: true });
+    const carryOpen = (EMP.ot_carry || []).reduce((s, c) => s + (c.forfeited_at ? 0 : (c.carried_out || 0)), 0);
+    if (EMP.ot_carry_on) {
+      leave += '<div class="pr-emp-why" style="margin-top:8px;">Carried overtime: '
+        + (carryOpen > 0 ? '<b>' + hm(carryOpen) + '</b> waiting to become a leave day' : 'none')
+        + '.</div>';
+      if (carryOpen > 0) {
+        leave += '<div class="pr-emp-acts"><button class="pr-btn-ghost" id="prEmpForfeit">Forfeit carried overtime</button></div>';
+      }
+    }
+    leave += '</div>';
+
+    // ── Leave actions — decided HERE, through the SAME endpoint the panel uses ─────
+    // Owner: these must be clickable and editable like everywhere else, and must not
+    // become a second set of numbers. So they render from the row's own
+    // `leave_actions` (leaveActionsForRow) and post to /leave-actions/decide.
+    let la = '';
+    const acts = r.leave_actions || [];
+    if (acts.length) {
+      la = '<div class="pr-emp-card"><h4>Leave actions — ' + esc(EMP.month_label) + '</h4>';
+      acts.forEach(a => {
+        const pending = a.status === 'pending';
+        const applied = a.status === 'applied';
+        const warn = (a.kind === 'overtime' && Number(r.ot_carry_in || 0) > 0)
+          ? ' Skipping also forfeits the ' + hm(r.ot_carry_in) + ' carried from earlier months.' : '';
+        let ctl;
+        if (a.kind === 'absence') {
+          // Absences have THREE outcomes and are decidable while the month still runs — the
+          // absences already happened. Same data-empdec hook → the same decideLeaveAction.
+          const on = (v) => a.status === v ? ' style="border-color:#b91c1c;color:#b91c1c;font-weight:700;"' : '';
+          ctl = '<button class="pr-la-btn pr-btn-ghost" data-empdec="absence" data-empchoice="cut"' + on('cut') + '>Deduct</button> '
+              + '<button class="pr-la-btn pr-btn-ghost" data-empdec="absence" data-empchoice="park"' + on('park') + ' title="No cut now — the days stay owed and overtime days settle them">Park</button> '
+              + '<button class="pr-la-btn pr-btn-ghost" data-empdec="absence" data-empchoice="excuse"' + on('excuse') + ' title="No cut, nothing owed">Excuse</button>';
+        } else if (!EMP.month_closed) {
+          ctl = '<span class="pr-emp-why">Can be decided once ' + esc(EMP.month_label) + ' ends</span>';
+        } else {
+          ctl = '<button class="pr-la-btn pr-btn-ghost" data-empdec="' + a.kind + '" data-empchoice="apply"'
+              + (applied ? ' style="border-color:#047857;color:#047857;font-weight:700;"' : '') + '>Give</button> '
+              + '<button class="pr-la-btn pr-btn-ghost" data-empdec="' + a.kind + '" data-empchoice="waive"'
+              + (a.status === 'waived' ? ' style="border-color:#b45309;color:#b45309;font-weight:700;"' : '')
+              + ' title="' + esc(warn.trim()) + '">Skip</button>';
+        }
+        la += '<div class="pr-emp-line"><span class="ll">'
+            + '<span class="pr-emp-drill" data-drill="' + esc(a.drill || '') + '" data-uid="' + EMP_ID + '">'
+            + esc(a.headline || a.kind) + ' ›</span>'
+            + '<div class="pr-emp-why">' + esc(a.basis || '')
+            + (a.formula ? ' · ' + esc(a.formula) : '') + '</div>'
+            + (a.kind === 'absence'
+                ? (pending ? '<div class="pr-emp-why" style="color:#b91c1c;">undecided — Pay will deduct it</div>' : '')
+                : pending ? '' : '<div class="pr-emp-why">'
+                + (a.status === 'waived' ? 'skipped' : 'given ' + a.applied_days)
+                + (a.decided_by ? ' by ' + esc(a.decided_by) : '')
+                + (a.decided_at ? ' on ' + esc(a.decided_at) : '') + '</div>')
+            + '</span><span class="lv" style="font-weight:400;">' + ctl + '</span></div>';
+      });
+      la += '</div>';
+    }
+
+    // ── Absences ───────────────────────────────────────────────────────────
+    // What happened to this month's absences, and anything still owed from earlier ones.
+    let absc = '';
+    const owed = Number(r.absence_outstanding || 0);
+    if (Number(r.absent_days || 0) > 0 || owed > 0 || Number(r.held_absence_deduction || 0) > 0) {
+      absc = '<div class="pr-emp-card"><h4>Absences</h4>';
+      if (Number(r.absent_days || 0) > 0) {
+        const dec = r.absence_decision;
+        const what = dec === 'park' ? 'Parked — no cut; overtime days will settle them'
+          : dec === 'excuse' ? 'Excused — no cut, nothing owed'
+          : (dec === 'cut' ? 'Being deducted' : 'Not decided — Pay will deduct this');
+        absc += empLine(esc(EMP.month_label) + ': ' + r.absent_days + ' day' + (r.absent_days === 1 ? '' : 's'),
+          dec === 'park' || dec === 'excuse' ? 'Rs 0' : fmt(r.absence_raw_deduction),
+          { drill: 'month_absent', why: what + ' · ' + fmt(r.absence_day_rate) + ' per day' });
+      }
+      if (Number(r.held_absence_deduction || 0) > 0) {
+        absc += empLine('Charged this month for earlier absences',
+          '− ' + fmt(r.held_absence_deduction), { minus: true,
+            why: r.held_absence_days + ' day(s) from ' + (r.held_absence_months || []).map(monthName).join(', ') });
+      }
+      if (owed > 0) {
+        absc += '<div class="pr-emp-open" style="margin-top:10px;">Still owed: <b>' + esc(r.absence_owed_label)
+             + '</b>. Overtime days settle these automatically.</div>'
+             + '<div class="pr-emp-acts">'
+             + '<button class="pr-btn-ghost" data-abssettle="charge">Charge it</button>'
+             + '<button class="pr-btn-ghost" data-abssettle="use_leave">Use his leave</button>'
+             + '<button class="pr-btn-ghost" data-abssettle="excuse">Excuse it</button>'
+             + '</div>';
+      }
+      absc += '</div>';
+    }
+
+    // ── Advances ───────────────────────────────────────────────────────────
+    let adv = '<div class="pr-emp-card"><h4>Advances</h4>';
+    const list = r.advances || [];
+    adv += list.length
+      ? list.map(a => '<div class="pr-emp-line"><span class="ll">' + esc(a.date || '—')
+          + '<div class="pr-emp-why">' + esc(a.request_number || '') + (a.bank ? ' · ' + esc(a.bank) : ' · cash')
+          + (a.given_by ? ' · by ' + esc(a.given_by) : '') + '</div></span>'
+          + '<span class="lv">' + fmt(a.amount) + '</span></div>').join('')
+      : '<div class="pr-emp-why">Nothing open for this month.</div>';
+    (EMP.pending_requests || []).forEach(q => {
+      adv += '<div class="pr-emp-open" style="margin-top:8px;">Asked for ' + fmt(q.amount)
+           + ' — not given yet.</div>';
+    });
+    adv += '</div>';
+
+    const hist = empHistoryCard();
+
+    el('prEmpEmpty').style.display = 'none';
+    el('prEmpBody').style.display = '';
+    el('prEmpBody').innerHTML = empHeader(u, 'Monthly salary · ' + EMP.month_label)
+      + '<div class="pr-emp-grid"><div>' + month + hist + '</div><div>' + leave + la + absc + adv + '</div></div>';
+
+    wireEmployee();
+  }
+
+  function monthName(ym) {
+    if (!ym) return '';
+    const [y, m] = String(ym).split('-').map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  }
+
+  function wireEmployee() {
+    const r = EMP.row;
+    // Drills need no wiring here: a document-level [data-drill] delegate already opens the
+    // SAME sheet the grid uses, so the days shown in both places cannot disagree — and
+    // adding an onclick as well would fire it twice.
+    // Settle days parked in an EARLIER month. The oldest owed month is settled first, the
+    // same order the server uses, so the button and the result always agree.
+    el('prEmpBody').querySelectorAll('[data-abssettle]').forEach(b => {
+      b.onclick = async () => {
+        const action = b.getAttribute('data-abssettle');
+        const oldest = (EMP.absence_open || [])[0];
+        if (!oldest) { alert('Nothing is owed.'); return; }
+        const from = monthName(oldest.month);
+        let body = { user_id: EMP_ID, month: oldest.month, action };
+        if (action === 'charge') {
+          const suggested = Math.round(oldest.outstanding * Number(r.absence_day_rate || 0));
+          const amt = prompt('Charge ' + EMP.user.fullname + ' for ' + oldest.outstanding
+            + ' day(s) of ' + from + ' absence.\n\nThis goes on ' + EMP.month_label
+            + "'s pay. Amount (today's rate is suggested — change it if you want):", suggested);
+          if (amt === null) return;
+          body.amount = Number(amt);
+          body.in_month = EMP.month;
+        } else if (action === 'use_leave') {
+          if (!confirm('Use ' + oldest.outstanding + ' of ' + EMP.user.fullname
+            + "'s own leave to cover the " + from + ' absence?')) return;
+        } else {
+          if (!confirm('Excuse ' + oldest.outstanding + ' day(s) of ' + from
+            + ' absence? Nothing will be owed or deducted.')) return;
+        }
+        try {
+          const res = await fetch('/hr/payroll/settle-absence', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+            body: JSON.stringify(body)
+          });
+          const j = await res.json();
+          alert(j.message || (j.success ? 'Done.' : 'Could not do that.'));
+          if (j.success) empLoad();
+        } catch (e) { alert('Could not do that: ' + (e.message || e)); }
+      };
+    });
+
+    // Same decide function the leave panel uses — not a copy.
+    el('prEmpBody').querySelectorAll('[data-empdec]').forEach(b => {
+      b.onclick = () => decideLeaveAction(
+        { user_id: EMP_ID, kind: b.getAttribute('data-empdec') },
+        b.getAttribute('data-empchoice')
+      );
+    });
+    const sal = el('prEmpSetSal'); if (sal) sal.onclick = () => editBase(r);
+    const adv = el('prEmpAdv');    if (adv) adv.onclick = () => openAdvance(r);
+    const pay = el('prEmpPay');
+    if (pay) pay.onclick = async () => {
+      // Reuse the real pay modal with a selection of exactly one. The tab is the landing
+      // view, so the grid may never have been fetched — load it (hidden) first.
+      if (!ROWS.length || CURMONTH !== el('prMonth').value) await load();
+      ROWS.forEach(x => { x._sel = false; });
+      const target = ROWS.find(x => Number(x.user_id) === Number(EMP_ID));
+      if (!target) { alert('This employee is not on the Monthly grid for ' + EMP.month_label + '.'); return; }
+      target._sel = true;
+      el('prPayBtn').click();
+    };
+    const ff = el('prEmpForfeit');
+    if (ff) ff.onclick = async () => {
+      const why = prompt('Forfeit the carried overtime for ' + EMP.user.fullname
+        + '?\n\nThis removes overtime he already worked, so say why:');
+      if (why === null) return;
+      if (!why.trim()) { alert('A reason is required.'); return; }
+      try {
+        const res = await fetch('/hr/payroll/forfeit-carry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf },
+          body: JSON.stringify({ user_id: EMP_ID, reason: why.trim() })
+        });
+        const j = await res.json();
+        alert(j.message || (j.success ? 'Done.' : 'Could not do that.'));
+        if (j.success) empLoad();
+      } catch (e) { alert('Could not do that: ' + (e.message || e)); }
+    };
+  }
 
   async function customLoad() {
     const month = el('prMonth').value;
@@ -1928,6 +2618,7 @@
       buildFundModal();
       renderBanner();
       renderCustom();
+      if (TAB === 'employee' && EMP_ID) empLoad();   // same reason as in load()
     } catch (e) {
       el('prCustList').innerHTML = '<div class="pr-empty">Could not load: ' + (e.message || e) + '</div>';
     }
@@ -2080,6 +2771,13 @@
     const t = new Date(d + 'T00:00:00');
     return t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   }
+  /** '2026-08' → 'August 2026', for text that names a month other than the one on screen. */
+  function monthName(m) {
+    const [y, mm] = String(m || '').split('-').map(Number);
+    if (!y || !mm) return '';
+    return new Date(y, mm - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  }
+
   function monthLabel() {
     const [y, m] = (CURMONTH || el('prMonth').value).split('-').map(Number);
     return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
@@ -2775,7 +3473,9 @@
   };
 
   // auto-load current month
-  load();
+  // Land on the Employee tab (owner ruling): opening Payroll should not put every
+  // salary on screen. The grid is one click away on Monthly.
+  empLoad();
 })();
 </script>
 @endsection

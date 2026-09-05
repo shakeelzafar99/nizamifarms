@@ -297,6 +297,36 @@ class FirebaseService
     }
 
     /**
+     * 🗓 A month has ended with absences nobody has decided about (Sep-2026).
+     *
+     * Left alone, those days are simply deducted the moment someone presses Pay — so "nobody
+     * looked at it" and "we decided to cut it" become the same thing after the fact. This is
+     * the nudge to look before that happens.
+     *
+     * Audience is `manage_payroll`: the key that already gates the Payroll screen, so the
+     * people told are exactly the people who can act, and nobody else learns what anyone earns.
+     *
+     * ⚠ There is no scheduler on prod (`schedule:run` has never run), so this cannot fire on a
+     * timer. The Payroll screen loading triggers it, deduped per month in
+     * `t_ops_service_alert_push` — the same mechanism the bike-service alerts use — so a month
+     * is announced once rather than once per page view.
+     */
+    public function notifyAbsenceDecisionsDue(string $month, int $employees, float $days): void
+    {
+        $label = date('F Y', strtotime($month . '-01'));
+        $who   = $employees === 1 ? '1 employee' : $employees . ' employees';
+        $dayTxt = rtrim(rtrim(number_format($days, 1), '0'), '.');
+        $this->sendToPermissionGroup('manage_payroll', [
+            'title' => '🗓 Absences waiting on a decision',
+            'body'  => $label . ' has ended and ' . $who . ' have absences nobody has decided about '
+                . '(' . $dayTxt . ' days). Unless you park or excuse them, paying will deduct them.',
+        ], [
+            'type'  => 'absence_decisions_due',
+            'month' => $month,
+        ], 'shift_notifications');
+    }
+
+    /**
      * 🛢 A scheduled service is DUE on a machine (Aug-2026).
      *
      * ⚠⚠ NOT the same as notifyHomeMeterMissed — that is about a RIDER forgetting
@@ -334,13 +364,18 @@ class FirebaseService
         // is sitting on, he needs to know his own bike is due.
         $keeper = $alert['keeper_user_id'] ?? null;
         if ($keeper) {
+            // 🗣 Roman Urdu — the keeper is a RIDER and he is the one who has to take the
+            // bike in (owner ruling). The group title above stays English for the managers.
+            $hisTitle = ($alert['state'] ?? '') === 'overdue'
+                ? '🛢 Aap ki bike ki service late ho chuki hai'
+                : '🛢 Aap ki bike ki service aane wali hai';
             $his = ($alert['state'] ?? '') === 'overdue'
-                ? 'Your bike is ' . number_format(abs((int) ($alert['due_in_km'] ?? 0)))
-                    . ' km overdue for its ' . ($alert['type_name'] ?? 'service') . '.'
-                : 'Your bike is due for its ' . ($alert['type_name'] ?? 'service') . ' in '
-                    . number_format((int) ($alert['due_in_km'] ?? 0)) . ' km.';
+                ? 'Aap ki bike ka ' . ($alert['type_name'] ?? 'service') . ' '
+                    . number_format(abs((int) ($alert['due_in_km'] ?? 0))) . ' km late ho chuka hai.'
+                : 'Aap ki bike ka ' . ($alert['type_name'] ?? 'service') . ' '
+                    . number_format((int) ($alert['due_in_km'] ?? 0)) . ' km baad hai.';
             try {
-                $this->notifyUser((int) $keeper, ['title' => $title, 'body' => $his],
+                $this->notifyUser((int) $keeper, ['title' => $hisTitle, 'body' => $his],
                                   $data, 'shift_notifications');
             } catch (\Throwable $e) {
                 Log::warning('service-due push to keeper failed', [
@@ -468,6 +503,209 @@ class FirebaseService
             ]);
         }
     }
+    /**
+     * 🛠 BIKE TICKETS (Sep-2026) — a rider reported a fault, or a manager answered.
+     *
+     * ⭐ THE AUDIENCE FOLLOWS THE DIRECTION OF THE CONVERSATION, which is the whole
+     *   point of a ticket rather than a broadcast:
+     *     • opened   → the managers who hold `receive_vehicle_ticket_alerts`
+     *                  (RULED 2-Sep: Qasim, Shabib, Taimur — NOT Farooq, who gets
+     *                  workshop alerts only in Phase 2);
+     *     • replied  → if a manager spoke, the RIDER hears it (no permission needed —
+     *                  it is his bike); if the rider spoke, the manager who took the
+     *                  ticket hears it, falling back to the group when nobody has;
+     *     • closed   → the rider, so an answered complaint visibly ends.
+     *
+     * ⚠ The actor is always excluded: nobody should be buzzed by their own message.
+     * ⚠ Reuses the EXISTING `shift_notifications` channel. An Android channel is created
+     *   at install time, so a brand-new id would not exist on any APK already in the
+     *   field and the notification would be dropped silently — the same trap the vehicle
+     *   handover pushes documented.
+     */
+    public function notifyVehicleTicket(string $event, int $ticketId, int $actorId): void
+    {
+        try {
+            $t = DB::table(\App\Services\Riders\VehicleTicketService::T_TICKET)
+                ->where('id', $ticketId)->first();
+            if (!$t) return;
+
+            $bike = null;
+            try {
+                $bike = (new \App\Services\Riders\VehicleResolver())->labelFor((int) $t->vehicle_id);
+            } catch (\Throwable $e) {
+                $bike = null;
+            }
+            $bike  = $bike ?: 'bike';   // reads correctly in both the English and Roman Urdu lines
+            $actor = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: 'Someone';
+
+            // The rider side of the conversation: who it was raised for, else who raised it.
+            $riderId = (int) ($t->opened_for_user_id ?: $t->opened_by);
+            $data = [
+                'type'      => 'vehicle_ticket',
+                'ticket_id' => (string) $ticketId,
+                'vehicle_id'=> (string) $t->vehicle_id,
+            ];
+
+            if ($event === 'opened') {
+                $this->sendToPermissionGroup(
+                    \App\Services\Riders\VehicleTicketService::ALERT_PERMISSION,
+                    [
+                        'title' => ($t->urgent ? '🔴 Bike problem — not rideable' : '🛠 Bike problem reported'),
+                        'body'  => "{$actor}: {$bike} — {$t->title}",
+                    ],
+                    $data, 'shift_notifications', $actorId
+                );
+                return;
+            }
+
+            /**
+             * ⭐ RIDER-FACING COPY IS ROMAN URDU (owner ruling, 2-Sep). The people who act on
+             *   these are riders, and a banner they cannot read is a banner that does not work.
+             *   MANAGER-facing lines above/below stay English — that audience reads the ledger
+             *   and the reports in English all day. See [[alerts-copy-roman-urdu]].
+             */
+            if ($event === 'closed') {
+                if ($riderId && $riderId !== $actorId) {
+                    $this->notifyUser($riderId, [
+                        'title' => '✅ Bike ka masla hal ho gaya',
+                        'body'  => "{$actor} ne band kiya: {$bike} — {$t->title}",
+                    ], $data, 'shift_notifications');
+                }
+                return;
+            }
+
+            // replied
+            $actorIsRider = $actorId === $riderId;
+            if (!$actorIsRider) {
+                if ($riderId && $riderId !== $actorId) {
+                    $this->notifyUser($riderId, [
+                        'title' => '🛠 Aap ke bike ka jawab aaya',
+                        'body'  => "{$actor}: {$bike} — {$t->title}",
+                    ], $data, 'shift_notifications');
+                }
+                return;
+            }
+
+            $assigned = (int) ($t->assigned_to ?: 0);
+            if ($assigned && $assigned !== $actorId) {
+                $this->notifyUser($assigned, [
+                    'title' => '🛠 Rider replied on a bike ticket',
+                    'body'  => "{$actor}: {$bike} — {$t->title}",
+                ], $data, 'shift_notifications');
+                return;
+            }
+            $this->sendToPermissionGroup(
+                \App\Services\Riders\VehicleTicketService::ALERT_PERMISSION,
+                [
+                    'title' => '🛠 Rider replied on a bike ticket',
+                    'body'  => "{$actor}: {$bike} — {$t->title}",
+                ],
+                $data, 'shift_notifications', $actorId
+            );
+        } catch (\Throwable $e) {
+            // A ticket that was recorded must never fail because a push did.
+            Log::warning('Firebase: vehicle ticket push failed', [
+                'ticket_id' => $ticketId, 'event' => $event, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * 🔧 WORKSHOP VISITS (Sep-2026) — a bike has been booked in, or a rider confirmed.
+     *
+     * ⭐ TWO AUDIENCES, AND THEY ARE NOT THE SAME AS THE TICKET ONES:
+     *     • scheduled → the NAMED RIDER (he has to accept it — no permission involved,
+     *       it is an instruction addressed to him) AND the managers holding
+     *       `receive_workshop_alerts`, which RULED to include Farooq (role 20) because
+     *       he plans the shifts and must know a rider is out that day;
+     *     • accepted  → the managers, so "awaiting Asim" visibly becomes "confirmed";
+     *     • cancelled → the rider, so he does not turn up to a cancelled appointment;
+     *     • reminder  → the rider the day before (fired from the banner poll, since
+     *       prod has no cron).
+     *
+     * ⚠ Reuses the EXISTING `shift_notifications` channel — a channel id an installed
+     *   APK never created is dropped silently.
+     */
+    public function notifyWorkshopVisit(string $event, int $visitId, int $actorId): void
+    {
+        try {
+            $v = DB::table(\App\Services\Riders\WorkshopVisitService::T_VISIT)
+                ->where('id', $visitId)->first();
+            if (!$v) return;
+
+            $bike = null;
+            try {
+                $bike = (new \App\Services\Riders\VehicleResolver())->labelFor((int) $v->vehicle_id);
+            } catch (\Throwable $e) {
+                $bike = null;
+            }
+            $bike  = $bike ?: 'bike';   // reads correctly in both the English and Roman Urdu lines
+            $when  = \Carbon\Carbon::parse($v->visit_date)->format('D j M')
+                   . ($v->visit_time ? ' at ' . substr((string) $v->visit_time, 0, 5) : '');
+            $rider = DB::table('t_sys_user')->where('id', $v->user_id)->value('fullname') ?: 'The rider';
+            $actor = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: 'Someone';
+
+            $data = [
+                'type'       => 'workshop_visit',
+                'visit_id'   => (string) $visitId,
+                'vehicle_id' => (string) $v->vehicle_id,
+            ];
+            $riderId  = (int) $v->user_id;
+            $ALERT    = \App\Services\Riders\WorkshopVisitService::ALERT_PERMISSION;
+
+            if ($event === 'scheduled') {
+                if ($riderId !== $actorId) {
+                    // ⭐ Roman Urdu — this one has a BUTTON he must press (owner ruling).
+                    $this->notifyUser($riderId, [
+                        'title' => '🔧 Workshop jana hai — confirm karein',
+                        'body'  => "{$bike} · {$when}. Tap kar ke confirm karein.",
+                    ], $data, 'shift_notifications');
+                }
+                $this->sendToPermissionGroup($ALERT, [
+                    'title' => '🔧 Workshop visit set',
+                    'body'  => "{$rider} → {$bike}, {$when} · set by {$actor}",
+                ], $data, 'shift_notifications', $actorId);
+                return;
+            }
+
+            if ($event === 'accepted') {
+                $this->sendToPermissionGroup($ALERT, [
+                    'title' => '✅ Workshop visit confirmed',
+                    'body'  => "{$rider} confirmed {$bike} on {$when}",
+                ], $data, 'shift_notifications', $actorId);
+                return;
+            }
+
+            if ($event === 'cancelled') {
+                if ($riderId !== $actorId) {
+                    $this->notifyUser($riderId, [
+                        'title' => '🔧 Workshop cancel ho gaya',
+                        'body'  => "{$bike} · {$when} ab nahi jana — {$actor} ne cancel kiya.",
+                    ], $data, 'shift_notifications');
+                }
+                return;
+            }
+
+            if ($event === 'reminder') {
+                $this->notifyUser($riderId, [
+                    'title' => '🔧 Kal workshop jana hai',
+                    'body'  => "{$bike} · {$when}"
+                        . ($v->status === 'scheduled' ? '. Aap ne abhi tak confirm nahi kiya.' : ''),
+                ], $data, 'shift_notifications');
+                $this->sendToPermissionGroup($ALERT, [
+                    'title' => '🔧 Workshop tomorrow',
+                    'body'  => "{$rider} → {$bike}, {$when}"
+                        . ($v->status === 'scheduled' ? ' · not confirmed' : ''),
+                ], $data, 'shift_notifications');
+            }
+        } catch (\Throwable $e) {
+            // A visit that was recorded must never fail because a push did.
+            Log::warning('Firebase: workshop visit push failed', [
+                'visit_id' => $visitId, 'event' => $event, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     protected function sendToPermissionGroup(string $permissionCode, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null): void
     {
         $this->sendToPermissionGroups([$permissionCode], $notification, $data, $channelId, $excludeUserId);
@@ -622,8 +860,10 @@ class FirebaseService
             }
 
             $notification = [
-                'title' => '🚀 App Update Available',
-                'body'  => "Nizami Farms v{$version['name']} is ready to install. Tap to update.",
+                // 🗣 Roman Urdu: this reaches EVERY device, and the people who put off
+                // updating are the riders. Managers read this fine too.
+                'title' => '🚀 App ka naya version aa gaya',
+                'body'  => "Nizami Farms v{$version['name']} tayyar hai. Update karne ke liye tap karein.",
             ];
             // FCM v1 requires every data value to be a string.
             $data = [

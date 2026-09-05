@@ -143,8 +143,32 @@ class FuelClaimRules
         }
 
         // ── 2. Odometer sanity, against the reading's OWN date ─────────────────
-        if ($meter !== null) {
-            $bad = $this->checkOdometer($forUserId, $meter, $claimDate);
+        /**
+         * ⚠⚠ A READING INHERITED FROM AN ALREADY-RECORDED SERVICE IS NOT NEW INFORMATION
+         *    (owner ask, 3-Sep — "add the bill that was handed over to them").
+         *
+         *    This check exists to catch a mistyped odometer AT ENTRY. When the manager attaches
+         *    a bill to a service he recorded earlier, the meter is copied FROM that record — it
+         *    was already entered, already accepted, and is already feeding the countdowns.
+         *    Re-judging it here produced a flat contradiction: the log at 47,013 km stands, but
+         *    the bill for that very service is refused as implausible. The result was a
+         *    legitimate action nobody could complete.
+         *
+         * ⭐ So the check is skipped ONLY for an inherited reading. Every claim that ASSERTS a
+         *   meter — which is every ordinary one — is judged exactly as before. If the figure is
+         *   wrong the fix is to correct the service record, where it is editable and audited.
+         */
+        if ($meter !== null && empty($input['meter_from_service_log'])) {
+            /**
+             * ⭐ The MACHINE is passed when the caller knows it, so the window can also count
+             *   what SERVICE RECORDS say about that bike. Without it the typo-guard measured
+             *   against attendance and claims only, while the odometer itself already counted
+             *   service readings — two answers to "how far has this bike gone".
+             * ⚠ Only when the machine is known: a service log is rider-keyed, and counting one
+             *   blind would re-create the man-not-machine leak the notes below describe.
+             */
+            $bad = $this->checkOdometer($forUserId, $meter, $claimDate,
+                                        $this->intOrNull($input['vehicle_id'] ?? null));
             if ($bad !== null) return $this->fail($bad);
         }
 
@@ -400,9 +424,9 @@ class FuelClaimRules
      * "latest known" — a service filed for yesterday is legitimately lower than
      * today's odometer, and comparing to the latest rejected exactly those.
      */
-    private function checkOdometer(int $userId, int $meter, string $date): ?string
+    private function checkOdometer(int $userId, int $meter, string $date, ?int $vehicleId = null): ?string
     {
-        $win = $this->odometerWindow($userId, $date);
+        $win = $this->odometerWindow($userId, $date, $vehicleId);
 
         if ($win['floor'] !== null && $meter < $win['floor'] - self::METER_SLACK_KM) {
             // ⭐ Teach the remedy, don't just refuse. The most common legitimate hit
@@ -502,7 +526,7 @@ class FuelClaimRules
      * 26,261 → 56,403 in a day). A raw MAX lets one such row become the floor
      * forever, after which the rider can never file a correct reading again.
      */
-    public function odometerWindow(int $userId, string $date): array
+    public function odometerWindow(int $userId, string $date, ?int $vehicleId = null): array
     {
         // ⭐ PHASE C: the window belongs to the MACHINE he held on that date, not
         //    to the man. Danish's first fill on DCR-799 (~24,800) must be judged
@@ -557,7 +581,40 @@ class FuelClaimRules
                 ->whereRaw('COALESCE(expense_date, DATE(created_at)) < ?', [$date])
                 ->max('meter_at_fill');
 
-            $floor = max((int) $attBefore, (int) $fillBefore);
+            /**
+             * ⭐ WHAT THE SERVICE RECORDS SAY (3-Sep). The odometer itself already counts
+             *   service readings; this typo-guard did not — so a bike whose only recent
+             *   reading came from a recorded service was judged against a stale floor, and an
+             *   honest claim could be refused as "far above this bike's last km". Same date
+             *   anchor as everything else here: strictly BEFORE the claim's own date.
+             *
+             * ⚠⚠ ONLY when the machine is known, and only rows that resolve to THAT machine.
+             *    A service log is rider-keyed, so counting one blind would let a van reading
+             *    set the floor for the man's own bike — precisely the man-not-machine leak the
+             *    $fillBefore note above exists to prevent.
+             * ⚠ Fails OPEN: a guard must never be the reason a real claim cannot be filed.
+             */
+            $svcBefore = 0;
+            if ($vehicleId) {
+                try {
+                    $res = new VehicleResolver();
+                    foreach (DB::table('t_fleet_service_log')
+                                ->where('user_id', $userId)
+                                ->whereNotNull('meter')
+                                ->where('meter', '>', self::MIN_PLAUSIBLE_METER)
+                                ->whereDate('service_date', '<', $date)
+                                ->orderByDesc('meter')->limit(40)
+                                ->get(['meter', 'service_date']) as $sl) {
+                        $d = substr((string) $sl->service_date, 0, 10);
+                        if ((int) $res->vehicleForDay($userId, $d) !== (int) $vehicleId) continue;
+                        $svcBefore = (int) $sl->meter;
+                        break;   // ordered desc — the first match on this machine is its highest
+                    }
+                } catch (\Throwable $e) {
+                    $svcBefore = 0;
+                }
+            }
+            $floor = max((int) $attBefore, (int) $fillBefore, $svcBefore);
             $floor = $floor > self::MIN_PLAUSIBLE_METER ? $floor : null;
 
             // Sub-1000 junk is excluded INSIDE the query — taking MIN() first would

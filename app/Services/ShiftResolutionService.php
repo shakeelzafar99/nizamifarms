@@ -19,6 +19,22 @@ class ShiftResolutionService
     private static array $shiftMemo = [];
 
     /**
+     * ⚠ PERF: this version segment used to be read from the cache store on EVERY shift
+     * lookup — and the cache driver here is the DATABASE, so that was one SQL query per
+     * lookup even when the in-request memo already had the answer. A payroll month resolves
+     * the same (user, date) pairs thousands of times: that was ~2,200 of the payroll page's
+     * queries. The version only changes when a shift template is edited, and that path
+     * (clearAllShiftCaches) refreshes this memo, so holding it for one request is safe.
+     */
+    private static ?int $verMemo = null;
+
+    private static function cacheVer(): int
+    {
+        if (self::$verMemo === null) { self::$verMemo = (int) Cache::get('shift_cache_ver', 1); }
+        return self::$verMemo;
+    }
+
+    /**
      * Get the effective shift for a user on a specific date
      * 
      * Resolution order:
@@ -38,7 +54,7 @@ class ShiftResolutionService
         // In-request memo first (a monthly report resolves the same (user,date) many
         // times); then the file cache (1h). The version segment lets clearAllShiftCaches()
         // invalidate every cached shift at once by bumping the version (no Cache::flush()).
-        $ver = (int) Cache::get('shift_cache_ver', 1);
+        $ver = self::cacheVer();
         $memoKey = "{$ver}|{$userId}|{$date}";
         if (isset(self::$shiftMemo[$memoKey])) {
             return self::$shiftMemo[$memoKey];
@@ -208,6 +224,39 @@ class ShiftResolutionService
      * @param string $endDate (Y-m-d)
      * @return int
      */
+    /**
+     * ⚠ PERF: resolving a month meant one cache lookup PER DAY per user — and with the
+     * database cache driver each of those is a SQL round trip (~330 for a payroll month).
+     * Laravel can fetch many keys in a single query, so pull the whole range at once and
+     * seed the in-request memo with the hits. Misses fall through to getUserShift(), which
+     * resolves and caches them exactly as before — this changes speed, not answers.
+     */
+    public function warmShifts(int $userId, string $startDate, string $endDate): void
+    {
+        try {
+            $ver = self::cacheVer();
+            $keys = [];
+            $cur = new \DateTime($startDate);
+            $end = new \DateTime($endDate);
+            $guard = 0;   // a silly range must not ask for tens of thousands of keys
+            while ($cur <= $end && $guard++ < 400) {
+                $d = $cur->format('Y-m-d');
+                if (!isset(self::$shiftMemo["{$ver}|{$userId}|{$d}"])) {
+                    $keys["user_shift_v{$ver}_{$userId}_{$d}"] = $d;
+                }
+                $cur->modify('+1 day');
+            }
+            if (!$keys) { return; }
+            foreach (Cache::many(array_keys($keys)) as $key => $val) {
+                if ($val === null) { continue; }
+                $d = $keys[$key] ?? null;
+                if ($d !== null) { self::$shiftMemo["{$ver}|{$userId}|{$d}"] = $val; }
+            }
+        } catch (\Throwable $e) {
+            // A warm-up that fails must never break the calculation it was speeding up.
+        }
+    }
+
     public function calculateWorkingDays(int $userId, string $startDate, string $endDate): int
     {
         // Never count days before the user's hire date — they weren't employed yet,
@@ -223,6 +272,9 @@ class ShiftResolutionService
         }
 
         // Get public holidays in this range
+        // One cache read for the whole range instead of one per day (see warmShifts).
+        $this->warmShifts($userId, $startDate, $endDate);
+
         $holidays = PublicHolidayModel::getHolidaysInRange($startDate, $endDate);
 
         // Iterate the range resolving the shift FOR EACH DATE. A mid-range shift
@@ -617,7 +669,7 @@ class ShiftResolutionService
     public function clearUserShiftCache(int $userId): void
     {
         // Clear this user's cached shift entries around today (version-aware keys).
-        $ver = (int) Cache::get('shift_cache_ver', 1);
+        $ver = self::cacheVer();
         for ($i = -30; $i <= 30; $i++) {
             $date = now()->addDays($i)->format('Y-m-d');
             Cache::forget("user_shift_v{$ver}_{$userId}_{$date}");
@@ -646,6 +698,7 @@ class ShiftResolutionService
         // invalidates every cached shift without touching unrelated caches.
         $ver = (int) Cache::get('shift_cache_ver', 1);
         Cache::forever('shift_cache_ver', $ver + 1);
+        self::$verMemo = $ver + 1;   // this request must not keep serving the old version
         self::$shiftMemo = [];
         self::$hireMemo = [];
         self::$tagMemo = [];

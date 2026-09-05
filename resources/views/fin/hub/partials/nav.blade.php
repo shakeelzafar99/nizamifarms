@@ -15,6 +15,8 @@
         'vendors'  => [route('fin.vendors.index'),  'Old vendors ↗',   'The current vendors page — same data, old layout'],
         'banks'    => [route('fin.ledger.index'),   'Old ledger ↗',    'The current ledger page — kept live for cross-checking'],
         'health'   => [route('fin.ledger.index'),   'Old ledger ↗',    'The current ledger page — kept live for cross-checking'],
+        // Tips are new in Sep-2026 — there is no older page showing this money.
+        'tips'     => [route('reports.index'),      'Reports ↗',       'The Reports tab, where the same tips are listed invoice by invoice'],
     ];
     [$oldHref, $oldLabel, $oldTitle] = $oldLinks[$active ?? 'overview'] ?? $oldLinks['overview'];
     if (!empty($oldNavUrl))   { $oldHref = $oldNavUrl; }
@@ -24,6 +26,7 @@
         'accounts' => ['Accounts', 'fin.hub.accounts'],
         'vendors'  => ['Vendors',  'fin.hub.vendors'],
         'banks'    => ['Banks',    'fin.hub.banks'],
+        'tips'     => ['Tips',     'fin.hub.tips'],
         'health'   => ['Health',   'fin.hub.health'],
     ];
     $scopeOpts = [

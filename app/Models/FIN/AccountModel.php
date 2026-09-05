@@ -85,6 +85,21 @@ class AccountModel extends BaseModel
     const CATEGORY_REVENUE = 'revenue';
 
     /**
+     * Money held for the staff tip pool (Sep-2026).
+     *
+     * ⚠⚠ Its own category ON PURPOSE. Bank pools, the rebalance tool,
+     * PaymentSourceService, the employee-cash formulas and daily closing all
+     * pick accounts by CATEGORY_CASH / CATEGORY_BANK / CATEGORY_EMPLOYEE_CASH,
+     * so a tips_fund account is invisible to every one of them by construction.
+     * Screens that SHOULD show it (Ledger Hub Tips page, mobile NF Ledger) name
+     * this constant explicitly. Never re-tag it as cash or bank.
+     */
+    const CATEGORY_TIPS_FUND = 'tips_fund';
+
+    /** The tip pool's account code. */
+    const CODE_TIPS_FUND = 'TIPS_FUND';
+
+    /**
      * Relationships
      */
     public function user(): BelongsTo

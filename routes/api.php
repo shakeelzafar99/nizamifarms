@@ -339,6 +339,10 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/set-salary', [\App\Http\Controllers\API\PayrollController::class, 'managerSetSalary']);
             Route::post('/give-advance', [\App\Http\Controllers\API\PayrollController::class, 'managerGiveAdvance']);
             Route::post('/pay', [\App\Http\Controllers\API\PayrollController::class, 'managerPay']);
+            // Leave actions on the phone (Sep-2026): the same decisions as the web panel.
+            Route::post('/decide-leave-action', [\App\Http\Controllers\API\PayrollController::class, 'decideLeaveAction']);
+            Route::post('/settle-absence', [\App\Http\Controllers\API\PayrollController::class, 'settleAbsence']);
+            Route::post('/dismiss-absence-alert', [\App\Http\Controllers\API\PayrollController::class, 'dismissAbsenceAlert']);
         });
     
     // Approvals (Admin/Manager users)
@@ -445,7 +449,45 @@ Route::middleware('auth:sanctum')->group(function () {
     // lives in BikeServiceAlerts::forUser().
     Route::get('/service-alerts', [\App\Http\Controllers\CRM\VehicleController::class, 'serviceAlerts']);
     Route::post('/service-alerts/dismiss', [\App\Http\Controllers\CRM\VehicleController::class, 'dismissServiceAlert']);
+
+    // 🛠 BIKE TICKETS (Sep-2026). ⚠ NOT under the fleet permission, for the same reason
+    // the service-alert routes are not: a RIDER holds no fleet key at all and must be
+    // able to report a fault on the machine he is riding. Who may see, reply to and
+    // close what is decided inside VehicleTicketService, not by a route gate.
+    Route::get('/vehicle-tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiIndex']);
+    Route::post('/vehicle-tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiStore']);
+    // Drives the floating banner — polled, so it stays a cheap summary.
+    Route::get('/vehicle-tickets/alerts', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiAlerts']);
+    Route::get('/vehicle-tickets/{id}', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiShow'])->where('id', '[0-9]+');
+    Route::post('/vehicle-tickets/{id}/reply', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiReply'])->where('id', '[0-9]+');
+    Route::post('/vehicle-tickets/{id}/close', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiClose'])->where('id', '[0-9]+');
+    Route::post('/vehicle-tickets/{id}/reopen', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiReopen'])->where('id', '[0-9]+');
+    Route::post('/vehicle-tickets/{id}/read', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiMarkRead'])->where('id', '[0-9]+');
+
+    // 🔧 WORKSHOP VISITS (Sep-2026). ⚠ NOT under the fleet permission: `pending` and
+    // `accept` must reach the RIDER, who holds no key and is the person the instruction
+    // is addressed to. `pending` is self-scoped to Auth::id(); scheduling and completing
+    // check `schedule_workshop` inside WorkshopVisitService.
+    Route::get('/workshop-visits', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiIndex']);
+    Route::post('/workshop-visits', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiStore']);
+    Route::get('/workshop-visits/pending', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiPending']);
+    Route::get('/workshop-visits/alerts', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiAlerts']);
+    Route::get('/workshop-visits/warnings', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiWarnings']);
+    // ⭐ Phase 3 — the RIDER answering "did it get done?" on his own visit. Self-scoped
+    // to Auth::id(), so no permission and nothing to leak.
+    Route::get('/workshop-visits/outcome', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiOutcome']);
+    Route::post('/workshop-visits/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiAccept'])->where('id', '[0-9]+');
+    Route::post('/workshop-visits/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiCancel'])->where('id', '[0-9]+');
+    Route::post('/workshop-visits/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDone'])->where('id', '[0-9]+');
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
+    // ✏️ Correct / remove a service record from the phone — same right as recording one.
+    Route::post('/store/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiAmendServiceRecord'])->where('id', '[0-9]+');
+    Route::delete('/store/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiDeleteServiceRecord'])->where('id', '[0-9]+');
+    // ✏️ Correct the odometer / job on a maintenance CLAIM. Money fields stay locked.
+    Route::post('/store/fleet/claim-readings/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiCorrectClaimReading'])->where('id', '[0-9]+');
+    // 🧾 "Which recorded service is this bill for?" — the picker's list. Own by default;
+    //    another rider needs manage_bike_service.
+    Route::get('/store/fleet/unbilled-services', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiUnbilledServices']);
     Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
     // Which bikes hold their own schedule — shown before a company-wide change.
     Route::get('/store/fleet/interval-overrides', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiIntervalOverrides']);
@@ -566,6 +608,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/nf-ledger/accounts/{accountId}', [\App\Http\Controllers\API\RiderController::class, 'getNFLedgerDetails']);
     Route::post('/nf-ledger/accounts/{accountId}/petty-cash', [\App\Http\Controllers\API\RiderController::class, 'updatePettyCash']);
     Route::get('/nf-ledger/transfer-accounts', [\App\Http\Controllers\API\RiderController::class, 'getTransferAccounts']);
+    // 💵 Tips held for staff (Sep-2026). Reading rides on view_nf_ledger; the
+    // payout is gated to Shabib/Taimur inside the controller — the mobile client
+    // can call directly, so UI hiding is not a gate.
+    Route::get('/nf-ledger/tips', [\App\Http\Controllers\API\RiderController::class, 'getTipsFund']);
+    Route::post('/nf-ledger/tips/payout', [\App\Http\Controllers\API\RiderController::class, 'payTipsOut']);
     Route::post('/nf-ledger/transfer', [\App\Http\Controllers\API\RiderController::class, 'processTransfer']);
     
     // Qurbani Mode
@@ -948,6 +995,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/custom-materials', [\App\Http\Controllers\CRM\WarehouseController::class, 'saveCustomMaterial']);
 
         Route::get('/khaas-badges', [\App\Http\Controllers\CRM\WarehouseController::class, 'getKhaasBadges']);
+
+        // 📊 Sep-2026 Month Review — the SAME FrozenMonthService that builds
+        // /warehouse/inventory-report above, so the phone and the web page can
+        // never quote different production numbers for a month.
+        Route::get('/month-review', [\App\Http\Controllers\KhaasController::class, 'monthReviewApi']);
     });
 
     // ============================

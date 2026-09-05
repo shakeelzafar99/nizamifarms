@@ -379,6 +379,35 @@ class FleetFuelController extends Controller
             $req->updated_by = auth()->id();
             $req->save();
 
+            /**
+             * ⭐ THE THIRD DOOR ONTO THE SAME READING (review, 3-Sep). A PENDING claim can be
+             *   edited here — the original, pre-linking door. If that claim was filed WITH a
+             *   service (or attached to one), the log it is linked to must follow, or the pair
+             *   disagrees and the history and countdown (which follow the LOG) show the old
+             *   number while the claim shows the new one. Only the two observation fields;
+             *   the amount is this door's own business and never touches the log.
+             */
+            try {
+                if (\Illuminate\Support\Facades\Schema::hasColumn('t_fleet_service_log', 'request_id')) {
+                    $linkedLog = \DB::table('t_fleet_service_log')->where('request_id', $req->id)->first(['id', 'user_id']);
+                    if ($linkedLog) {
+                        $lu = [];
+                        if ($req->meter_at_fill !== null && (int) $req->meter_at_fill !== (int) ($before['meter_at_fill'] ?? -1)) {
+                            $lu['meter'] = (int) $req->meter_at_fill;
+                        }
+                        if ($req->maintenance_type_id && (int) $req->maintenance_type_id !== (int) ($before['maintenance_type_id'] ?? 0)) {
+                            $lu['maintenance_type_id'] = (int) $req->maintenance_type_id;
+                        }
+                        if ($lu) {
+                            \DB::table('t_fleet_service_log')->where('id', $linkedLog->id)->update($lu);
+                            app(\App\Services\Riders\ServiceRecordService::class)->bustCaches((int) $linkedLog->user_id);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('editClaim: linked log mirror failed', ['request' => $req->id, 'error' => $e->getMessage()]);
+            }
+
             // The rider is told his claim was corrected, in the record itself —
             // an edit that leaves no trace is indistinguishable from him having
             // filed it that way.
@@ -466,12 +495,33 @@ class FleetFuelController extends Controller
         $data = $request->validate([
             'rider_id' => 'required|integer',
             'meter'    => 'nullable|integer|min:0',
-            'date'     => 'nullable|date',
+            // ⚠ A service cannot have happened in the future — a forward-dated row
+            //   would reset the clock today against work not yet done.
+            'date'     => 'nullable|date|before_or_equal:today',
             // 0 / null means "follow the company default" (BIKE_SERVICE_INTERVAL_KM).
             'interval_km' => 'nullable|integer|min:0|max:100000',
-            // ⭐ WHICH service was done. Optional (an old APK sends none), but when
-            // given it must be one that actually resets the clock — see below.
+            // ⭐ WHICH service was done. REQUIRED whenever a meter is given and the
+            // type list exists — see the block below.
             'maintenance_type_id' => 'nullable|integer',
+            /**
+             * 💰 THE BILL — OPTIONAL (owner ask, 3-Sep). Blank means exactly what it always
+             *    meant: the work is recorded, no money moves, and the row reads "no bill".
+             *    A figure here files a real maintenance expense against the rider and links
+             *    it to this service record. See recordServiceBill() below for why it is
+             *    filed through RequestController rather than inserted here.
+             */
+            'amount' => 'nullable|numeric|min:1|max:9999999',
+            'payment_source_account_id' => 'nullable|integer',
+            /**
+             * 🧾 THE BILL ITSELF (owner ask, 3-Sep): "if we are raising a request for expense
+             *    from the same, the bill should also be there."
+             *
+             * ⚠ Validated to the SAME rule RequestController::store applies, so a photo that
+             *   would be refused there is refused here — before the service is recorded and
+             *   the manager is left with a half-done action to puzzle over.
+             * ⚠ Only meaningful alongside an amount; ignored otherwise (see below).
+             */
+            'bill_image' => 'nullable|image|max:5120',
         ]);
 
         // ⚠ Any type WITH A SCHEDULE can be recorded here — those are exactly the
@@ -484,19 +534,42 @@ class FleetFuelController extends Controller
         // "As conditions" types (Chain Set, Misc) are refused: they have no
         // countdown, so there is nothing here to record against.
         $recordType = null;
-        if ($request->filled('maintenance_type_id') && $request->filled('meter')) {
-            $recordType = app(\App\Services\Riders\MaintenanceTypeService::class)
-                ->find($data['maintenance_type_id']);
-            if (!$recordType) {
-                return response()->json(['success' => false, 'message' => 'That maintenance type no longer exists.'], 422);
+        if ($request->filled('meter')) {
+            /**
+             * ⭐⭐ THE TYPE IS REQUIRED (owner ruling, 2-Sep-2026). NO GUESSING.
+             *
+             * ⚠⚠ WHAT USED TO BE HERE: an untyped recording was filed against
+             *    "the shortest `resets_service_clock` type", on the reasoning that
+             *    untyped had always meant the routine service. That premise DIED on
+             *    22-Aug when Oil Change was set to 1,000 km and un-ticked as
+             *    clock-resetting: the shortest clock-resetting type became Oil +
+             *    Tuning (2,000). Live proof — `t_fleet_service_log` #8, Qasim on
+             *    Arslan Aslam's bike, 1-Sep, 36,387 km, filed as Oil + Tuning while
+             *    Oil Change's countdown kept running (47 km left, never reset).
+             *    Whichever job was really done, one countdown was wrong and nothing
+             *    on any screen said the type had been guessed.
+             *
+             * ⭐ So a meter with no type is now REFUSED rather than guessed. The web
+             *   prompt has always asked; mobile now asks too (FleetScreen). An APK
+             *   built before that gets this message and its manager records from the
+             *   web until the new build is installed — a refusal a human can act on,
+             *   in place of a silent misfile nobody could see.
+             *
+             * ⚠ Guarded on the type list EXISTING: before batch 12 (or if the table
+             *   is unreachable) there is nothing to choose from, so the old untyped
+             *   behaviour is kept rather than blocking the button outright — the
+             *   same degrade-quietly rule the pickers follow.
+             */
+            // ⭐ THE RULE ITSELF LIVES IN ServiceRecordService, because three callers with
+            //   three different permission gates must apply it identically — this screen,
+            //   completing a workshop visit, and the RIDER answering "did it get done?"
+            //   (who holds no `manage_bike_service` key at all).
+            $resolved = app(\App\Services\Riders\ServiceRecordService::class)
+                ->resolveType($request->input('maintenance_type_id'));
+            if (!$resolved['ok']) {
+                return response()->json(['success' => false, 'message' => $resolved['message']], 422);
             }
-            if ((int) $recordType->interval_km <= 0) {
-                return response()->json([
-                    'success' => false,
-                    'message' => '"' . $recordType->type_name . '" is done as conditions require, so it has no due date to reset. '
-                        . 'File it as a maintenance request instead — that keeps the bill and the photo with it.',
-                ], 422);
-            }
+            $recordType = $resolved['type'];
         }
 
         if (!$request->filled('meter') && !$request->filled('interval_km')) {
@@ -514,81 +587,68 @@ class FleetFuelController extends Controller
 
             $update = ['updated_at' => now()];
 
-            // A service actually happened.
+            /**
+             * A service actually happened.
+             *
+             * ⭐⭐ THE WRITE ITSELF LIVES IN ServiceRecordService — the same call the workshop
+             *    completion and the RIDER's "did it get done?" both make. Until now only the
+             *    type RULE was shared and this method kept its own copy of the insert + the
+             *    profile stamp + the cache bump, so "what a service record IS" existed in two
+             *    places. Two writers is how the pair drifts; the whole point of the extraction
+             *    was that they cannot.
+             *
+             * ⚠ `$recordType` is null here ONLY when the type table does not exist yet
+             *   (pre-batch-12) — a meter with no type is refused by resolveType() above. The
+             *   service then writes no log row but still stamps the profile, exactly as this
+             *   endpoint behaved before types existed.
+             */
+            $recorded = null;
             if ($request->filled('meter')) {
                 $serviceDate = $data['date'] ?? Carbon::today()->format('Y-m-d');
+                $recorded = app(\App\Services\Riders\ServiceRecordService::class)->record([
+                    'rider_id' => (int) $data['rider_id'],
+                    'meter'    => (int) $data['meter'],
+                    'date'     => $serviceDate,
+                    'type'     => $recordType,
+                    'actor_id' => (int) auth()->id(),
+                    'note'     => 'Recorded on the Bikes screen (no bill filed)',
+                ]);
+                if (!$recorded['ok']) {
+                    return response()->json(['success' => false, 'message' => $recorded['message']], 422);
+                }
 
-                // Every scheduled type gets a log row, so the per-type countdown on
-                // the Bikes drawer resets. Deliberately NOT a zero-amount expense
-                // request: a service record is not a money movement, and faking one
-                // would put Rs 0 rows into the expense reports and the ledger.
-                //
-                // ⚠⚠ AN UNTYPED RECORDING MUST STILL LAND SOMEWHERE. Every APK in the
-                //    field posts `{rider_id, meter}` with NO type (FleetScreen's
-                //    "Record a service"), and the derived engine reads the rider's
-                //    profile stamp only in its LEGACY FALLBACK — which is unreachable
-                //    the moment a bike has any typed history. So without this the
-                //    manager tapped Record service, was told "Service recorded at
-                //    36,500 km", and every surface carried on reading the old date.
-                //    Verified before the fix: 0 log rows, headline unmoved.
-                //
-                //    Untyped has always meant the ROUTINE service (that is all it could
-                //    mean before types existed), so it is recorded against the shortest
-                //    clock-resetting type — the same job the per-bike override targets.
-                //    Old APKs therefore start working again on the web upload alone.
-                $logType = $recordType;
-                if (!$logType) {
-                    try {
-                        $logType = \DB::table('t_fleet_maintenance_types')
-                            ->where('is_active', 1)->where('resets_service_clock', 1)
-                            ->where('interval_km', '>', 0)
-                            ->orderBy('interval_km')->first(['id', 'type_name', 'interval_km']);
-                    } catch (\Throwable $e) {
-                        $logType = null;
+                /**
+                 * 💰 …AND THE BILL, IF ONE WAS GIVEN.
+                 *
+                 * ⭐⭐ ORDER MATTERS: THE WORK IS RECORDED FIRST, THE MONEY SECOND.
+                 *    The service log is an OBSERVATION — the bike was serviced, and its
+                 *    countdown must reset the moment we are told, not when a bill clears.
+                 *    So if the expense fails to file we keep the service and say the bill
+                 *    did not go through; we never lose the reading over a money error.
+                 *
+                 * ⚠⚠ AND WHY THE CLAIM IS NOT INSERTED HERE. Filing an expense means a
+                 *    request number, the L1/L2 auto-approval rule, the ledger posting, the
+                 *    BikeServiceClock hook and the vehicle stamping — all of which already
+                 *    live in RequestController::store. A second copy of that would drift,
+                 *    and this codebase has been bitten by exactly that more than once. So
+                 *    the money goes through the real door, not a replica of it.
+                 */
+                $billSaid = null;
+                if (!empty($data['amount']) && (float) $data['amount'] > 0) {
+                    $bill = $this->recordServiceBill($request, $data, $recordType, $serviceDate,
+                                                     $recorded['service_log_id'] ?? null);
+                    if (!$bill['ok']) {
+                        return response()->json([
+                            'success'      => true,   // ⚠ the SERVICE stands — see above
+                            'bill_failed'  => true,
+                            'message'      => ($recorded['message'] ?? 'Service recorded.')
+                                . ' But the expense was NOT filed: ' . $bill['message'],
+                        ], 200);
                     }
-                }
-                if ($logType && \Illuminate\Support\Facades\Schema::hasTable('t_fleet_service_log')) {
-                    \DB::table('t_fleet_service_log')->insert([
-                        'user_id'             => (int) $data['rider_id'],
-                        'maintenance_type_id' => (int) $logType->id,
-                        'meter'               => (int) $data['meter'],
-                        'service_date'        => $serviceDate,
-                        'note'                => $recordType
-                            ? 'Recorded on the Bikes screen (no bill filed)'
-                            : 'Recorded on the Bikes screen — no service type given, treated as the routine service',
-                        'created_by'          => auth()->id(),
-                        'created_at'          => now(),
-                    ]);
-                }
-
-                // ⭐ ONLY a clock-resetting type moves the bike's overall service-due
-                // clock. A brake-shoe job is real work on its own 10,000 km cycle,
-                // but it must never make an overdue oil change look done — the same
-                // rule the approval path enforces via BikeServiceClock.
-                if (!$recordType || $recordType->resets_service_clock) {
-                    $update['last_service_meter'] = (int) $data['meter'];
-                    $update['last_service_at']    = $serviceDate;
-
-                    // ⚠⚠ THE OLD "schedule follows the work done" WRITE IS GONE, and
-                    //    removing it is a FIX, not a regression.
-                    //
-                    //    It stamped the recorded type's interval as the bike's own
-                    //    override — a sensible workaround when there was ONE clock and
-                    //    "due again in 2,500" had nowhere else to live. Each type now
-                    //    carries its own interval, so the countdown already follows the
-                    //    work done without any override at all.
-                    //
-                    //    Left in, it actively broke things: the per-bike override now
-                    //    replaces the interval of the SHORTEST clock-resetting type, so
-                    //    recording one Oil + Tuning silently rewrote that bike's Oil
-                    //    Change from every 1,200 km to every 2,500 — on the banner, the
-                    //    rider's phone and the alert, with nothing on screen saying why.
-                    //    (Verified: 1200 → 2500 from a single click.) It also opted the
-                    //    bike out of the company default forever, since any non-NULL
-                    //    override counts as "has its own schedule".
-                    //
-                    //    An override is now written ONLY when a manager explicitly asks
-                    //    for one — the `interval_km` branch below.
+                    // ⚠ Carried out to the receipt below, which is built from $said — the
+                    //   manager must be told what happened to his money, in the same breath
+                    //   as what happened to the reading.
+                    $billSaid = $bill['message'];
                 }
             }
             // The schedule changed → how often it falls due. Never touches when
@@ -680,14 +740,23 @@ class FleetFuelController extends Controller
                 // move the bike's overall clock — otherwise recording brake shoes
                 // reads as "the bike is serviced", which is the whole confusion
                 // the per-type schedule exists to remove.
+                // ⭐ Say the DATE back when it is not today. A backdated record moves
+                //   the schedule from a day the manager chose, and a receipt that
+                //   omits it reads as "recorded today" — the one thing he needs to
+                //   check before trusting the number.
+                $backdated = $serviceDate !== Carbon::today()->format('Y-m-d');
                 $said[] = ($recordType ? $recordType->type_name : 'Service')
                     . ' recorded at ' . number_format((int) $data['meter']) . ' km'
+                    . ($backdated ? ' on ' . Carbon::parse($serviceDate)->format('D j M') : '')
                     . ($recordType && (int) $recordType->interval_km > 0
                         ? ' — next due at ' . number_format((int) $data['meter'] + (int) $recordType->interval_km) . ' km'
                         : '');
                 if ($recordType && !$recordType->resets_service_clock) {
                     $said[] = 'The bike\'s overall service-due clock is unchanged (only an oil service moves that)';
                 }
+                // 💰 What happened to the MONEY, in the same breath as what happened to the
+                //    reading — a manager must never have to go looking for that answer.
+                if (!empty($billSaid)) $said[] = $billSaid;
             }
             if ($request->filled('interval_km')) {
                 $said[] = ((int) $data['interval_km']) > 0
@@ -701,6 +770,212 @@ class FleetFuelController extends Controller
             return response()->json(['success' => false, 'message' => 'Could not save the change'], 500);
         }
     }
+
+    /**
+     * ✏️ CORRECT a service record (owner ask, 3-Sep): "make sure Qasim or Shabib or Taimur can
+     *    modify these service dates later on as well if needed."
+     *
+     * ⭐ Same permission as recording one — being able to write the record and not being able
+     *   to fix it is the gap that left log #8 needing hand-written SQL.
+     * ⚠ This corrects the manual SERVICE LOG only. An approved maintenance CLAIM carries money
+     *   and is edited through the claims flow (pending only, then reversed and re-filed) —
+     *   deliberately not here.
+     */
+    public function amendServiceRecord(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change service records'], 403);
+        }
+        $data = $request->validate([
+            'maintenance_type_id' => 'nullable|integer',
+            'meter'               => 'nullable|integer|min:1',
+            'date'                => 'nullable|date_format:Y-m-d|before_or_equal:today',
+        ]);
+        $res = app(\App\Services\Riders\ServiceRecordService::class)
+            ->amend((int) $id, $data, (int) auth()->id());
+        return response()->json(['success' => $res['ok'], 'message' => $res['message']],
+                                $res['ok'] ? 200 : 422);
+    }
+
+    /** Remove a service record that should never have been there. Same right as amending. */
+    public function deleteServiceRecord(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change service records'], 403);
+        }
+        $res = app(\App\Services\Riders\ServiceRecordService::class)
+            ->remove((int) $id, (int) auth()->id());
+        return response()->json(['success' => $res['ok'], 'message' => $res['message']],
+                                $res['ok'] ? 200 : 422);
+    }
+
+    /**
+     * ✏️ Correct the ODOMETER (and the job) on a maintenance CLAIM — approved ones included.
+     *
+     * ⚠⚠ NOT a way round `editClaim`'s approved-claim guard, which stays exactly as it is.
+     *    That method owns the money fields; this one owns two observations about a machine —
+     *    the reading and which service it was — and nothing else. The amount, the date and the
+     *    vehicle are untouchable here; for those, reverse and re-file remains the answer.
+     *
+     * ⭐ Same right as recording or amending a service: if you may write the number, you may fix
+     *   the number. The rule itself lives in ServiceRecordService, next to the log-row version,
+     *   so the two cannot drift.
+     */
+    public function correctClaimReading(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change service readings'], 403);
+        }
+        $data = $request->validate([
+            'maintenance_type_id' => 'nullable|integer',
+            'meter'               => 'nullable|integer|min:1|max:9999999',
+        ]);
+        $res = app(\App\Services\Riders\ServiceRecordService::class)
+            ->correctClaim((int) $id, $data, (int) auth()->id());
+        return response()->json(['success' => $res['ok'], 'message' => $res['message']],
+                                $res['ok'] ? 200 : 422);
+    }
+
+    /**
+     * 💰 File the BILL for a service just recorded, and tie the two together.
+     *
+     * ⭐⭐ THIS DELIBERATELY DOES NOT INSERT A CLAIM. Filing a maintenance expense means a
+     *    request number, the L1/L2 auto-approval rule (which approves instantly for whoever
+     *    holds L1 and queues it for everyone else), the ledger posting, the BikeServiceClock
+     *    hook and the vehicle stamping. All of that already lives in RequestController::store.
+     *    A second copy would drift from it — this codebase has been bitten by exactly that
+     *    more than once — so the money goes through the real door and inherits every rule,
+     *    including ones added later.
+     *
+     * ⚠⚠ ONE JOB = ONE ROW. Both the service log and approved maintenance claims feed the same
+     *    countdown engine, and it keeps the best meter per type. Left unlinked, this pair would
+     *    show TWICE in Past services and — if the two meters ever disagreed — the higher one
+     *    would silently win with nothing saying they were the same job. `request_id` is what
+     *    collapses them back into one, so it is written here and nowhere else.
+     *
+     * ⚠ Failure is NOT fatal to the service. The caller keeps the reading and reports that the
+     *   bill did not file. The work happened either way.
+     *
+     * @return array{ok:bool, message:string, request_id?:int}
+     */
+    private function recordServiceBill(Request $request, array $data, $recordType, string $serviceDate, ?int $logId): array
+    {
+        try {
+            $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'expense')
+                ->where('is_active', 1)->first();
+            if (!$category) {
+                return ['ok' => false, 'message' => 'the expense category is not set up.'];
+            }
+
+            $jobName = $recordType->type_name ?? 'Maintenance';
+
+            /**
+             * 🧾 THE BILL PHOTO rides through to the real request, under the exact field name
+             *    RequestController::store reads (`attachment_image`) — so it is stored, named
+             *    and attached by the same code that handles a rider's own receipt, and shows
+             *    up wherever those already do.
+             *
+             * ⚠ Forwarded as the SAME UploadedFile instance rather than copied: its temp file
+             *   is still a genuine upload, so `isValid()` and the `image` rule still hold. A
+             *   copy would land as an ordinary file and fail that check.
+             */
+            $files = [];
+            if ($request->hasFile('bill_image')) {
+                $files['attachment_image'] = $request->file('bill_image');
+            }
+
+            /**
+             * ⚠⚠ THE BILL INHERITS THE READING FROM THE LOG JUST WRITTEN — it does not resend it
+             *    (review, 3-Sep). Resending meter/type/date made the bill door re-judge a reading
+             *    the service door had just ACCEPTED: a service recorded 2,000 km on landed fine,
+             *    then its own bill was refused as "far above this bike's last reading". Same
+             *    number, two verdicts, in one action. Passing `service_log_id` instead means
+             *    store() inherits the reading, marks it as inherited (so the plausibility check
+             *    stands aside exactly as it does for "Add the bill later"), and LINKS the pair
+             *    itself — one path for every bill, whether filed with the service or after it.
+             */
+            $sub = Request::create('/api/requests/store', 'POST', array_filter([
+                'category_id'        => $category->id,
+                'requester_user_id'  => (int) $data['rider_id'],
+                'title'              => $jobName,
+                'description'        => 'Filed with the service recorded on the Bikes screen'
+                                        . (isset($data['meter']) ? ' at ' . number_format((int) $data['meter']) . ' km' : '') . '.',
+                'amount'             => (float) $data['amount'],
+                'expense_category'   => 'Maintenance',
+                'service_log_id'     => $logId,
+                'payment_source_account_id' => $data['payment_source_account_id'] ?? null,
+                // ⚠ Bikes is Nizami Farms operations — ALWAYS business unit 1, never Khaas.
+                //   Stated explicitly (the same rule the web "New bike expense" modal states) so
+                //   a Khaas-mode manager like Qasim can never file a bike bill into the other
+                //   books, and so a future default change elsewhere cannot quietly move it.
+                'business_unit_id'   => 1,
+            ], fn ($v) => $v !== null), [], $files);
+            // The sub-request must act as the SAME signed-in user — the whole approval
+            // decision hangs on who is filing.
+            $sub->setUserResolver($request->getUserResolver());
+
+            $res  = app(\App\Http\Controllers\Request\RequestController::class)->store($sub);
+            $body = json_decode($res->getContent(), true);
+            if (($res->getStatusCode() < 200 || $res->getStatusCode() >= 300) || empty($body['success'])) {
+                return ['ok' => false, 'message' => $body['message'] ?? 'the request was refused.'];
+            }
+
+            $reqId = (int) ($body['request_id'] ?? 0);
+            // ⭐ The link is made by store() via attachBillToService — the ONE place that does
+            //   it. Only the note is ours, so the row reads as filed-with-bill in the history.
+            if ($reqId && $logId && \Illuminate\Support\Facades\Schema::hasColumn('t_fleet_service_log', 'request_id')) {
+                \DB::table('t_fleet_service_log')->where('id', $logId)
+                    ->update(['note' => 'Recorded on the Bikes screen with the bill']);
+            }
+
+            // ⭐ `auto_approved` is the server's own answer to "did this land in the ledger
+            //   already?" — it is true when the filer holds the approval levels. We echo it
+            //   rather than re-deriving it, so the message can never contradict what happened.
+            $approved = !empty($body['auto_approved']);
+            // ⚠ Say whether the BILL went with it. A manager who meant to attach one and did
+            //   not should learn that here, not weeks later when someone audits the expense.
+            $billed = !empty($files) ? ' Bill attached.' : ' No bill photo attached.';
+            return ['ok' => true, 'request_id' => $reqId, 'message' => 'Rs '
+                . number_format((float) $data['amount']) . ' expense '
+                . ($approved ? 'added and approved.' : 'sent for approval.') . $billed];
+        } catch (\Throwable $e) {
+            \Log::error('recordServiceBill failed', ['error' => $e->getMessage(), 'log' => $logId]);
+            return ['ok' => false, 'message' => 'it could not be filed.'];
+        }
+    }
+
+    /**
+     * 🧾 THE SERVICES A BILL CAN BE ATTACHED TO — what the picker on every bill form shows.
+     *
+     * ⭐ Owner ruling (3-Sep): a bill is tied to a reading by being CHOSEN, never matched on
+     *   meter or date. This is the list he chooses from: readings already recorded that no
+     *   live bill speaks for yet.
+     *
+     * ⚠ WHO MAY ASK ABOUT WHOM. Anyone may list their OWN un-billed services — a rider needs
+     *   this to bill his own service day. Asking about someone else needs the service right,
+     *   because the list says what work a named rider had done and when.
+     */
+    public function unbilledServices(Request $request)
+    {
+        $me  = (int) auth()->id();
+        $for = (int) ($request->query('rider_id') ?: $me);
+        if ($for !== $me && !$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $vehicleId = $request->query('vehicle_id');
+        return response()->json([
+            'success'  => true,
+            'rider_id' => $for,
+            'services' => app(\App\Services\Riders\ServiceRecordService::class)
+                ->unbilledServicesFor($for, $vehicleId ? (int) $vehicleId : null),
+        ]);
+    }
+
+    public function apiUnbilledServices(Request $r) { $this->mobileContext = true; return $this->unbilledServices($r); }
+
+    public function apiAmendServiceRecord(Request $r, $id)  { $this->mobileContext = true; return $this->amendServiceRecord($r, $id); }
+    public function apiDeleteServiceRecord(Request $r, $id) { $this->mobileContext = true; return $this->deleteServiceRecord($r, $id); }
+    public function apiCorrectClaimReading(Request $r, $id) { $this->mobileContext = true; return $this->correctClaimReading($r, $id); }
 
     // ---- mobile entries (Sanctum) -------------------------------------
     //

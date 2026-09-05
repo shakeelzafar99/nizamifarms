@@ -278,6 +278,16 @@
 .fl-vpending{margin-top:7px;font-size:12px;color:#3730a3;background:#eef2ff;
   border:1px solid #c7d2fe;border-left:3px solid #6366f1;border-radius:7px;padding:5px 8px;}
 .fl-vpending-cta{font-weight:700;text-decoration:underline;}
+/* ⚠ The attention strip — which bikes are asking for an action. Red = somebody is stuck
+   NOW, amber = something is due, indigo = informational. Only rendered when the machine
+   actually wants something, so a healthy fleet still reads as a calm grid. */
+.fl-vattn{margin-top:7px;display:flex;flex-wrap:wrap;gap:5px;}
+.fl-vattn-chip{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:999px;
+  background:#eef2ff;color:#3730a3;}
+.fl-vattn-chip.bad{background:#fee2e2;color:#991b1b;}
+.fl-vattn-chip.warn{background:#fef3c7;color:#92400e;}
+.fl-vattn-head{font-size:12px;font-weight:800;color:#b45309;margin:0 0 10px;}
+.fl-vattn-head.calm{color:#15803d;}
 /* An own bike whose owner is out on a company machine: exactly where it should be. */
 .fl-vkeeper.parked{color:#6b7280;}
 /* Standing "needs a home pin" nag — amber, informative, self-clearing. */
@@ -295,7 +305,22 @@
 .fl-vbtn.primary{background:#f59e0b;border-color:#f59e0b;color:#fff;}
 .fl-vbtn.primary:hover{background:#d97706;}
 
-.fl-vdetail{margin:0 16px 16px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;overflow:hidden;}
+/* ⚠ NOT overflow:hidden — that turns the panel into a scroll box, and a sticky header
+     inside one never sticks. Rounded corners are kept by rounding the header itself. */
+.fl-vdetail{margin:0 16px 16px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;}
+/* ⭐ The header carries the machine's identity AND its two actions, so it stays in view
+     while the manager reads down the page. */
+.fl-vdhead{position:sticky;top:0;z-index:6;border-radius:10px 10px 0 0;}
+.fl-vtbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 0 11px;margin-bottom:4px;
+          border-bottom:1px solid #f3f4f6;}
+.fl-vstep{display:inline-flex;align-items:center;border:1px solid #e5e7eb;border-radius:8px;background:#fff;}
+.fl-vstep button{border:0;background:none;cursor:pointer;font-size:14px;line-height:1;padding:5px 9px;color:#374151;}
+.fl-vstep button:disabled{color:#d1d5db;cursor:default;}
+.fl-vstep b{font-size:12px;font-weight:700;color:#111827;padding:0 5px;min-width:78px;text-align:center;}
+.fl-vchipbtn{padding:4px 10px;font-size:11.5px;border:1px solid #e5e7eb;border-radius:14px;background:#fff;
+             cursor:pointer;color:#374151;font-weight:600;}
+.fl-vchipbtn.on{background:#fff7ed;border-color:#fdba74;color:#9a3412;}
+.fl-vduechip{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:12px;}
 .fl-vdhead{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #e5e7eb;background:#fafafa;flex-wrap:wrap;}
 .fl-vdbody{padding:14px 16px;}
 .fl-vsec{margin-bottom:16px;}
@@ -530,6 +555,70 @@
 </div>
 
 {{-- ➕ ADD / EDIT a machine, and set the fixed base a van needs. --}}
+{{-- 🧾 THE BILL for a service being recorded (owner ask, 3-Sep).
+     ⚠⚠ This is a MODAL and not another window.prompt() for one reason: a prompt cannot carry a
+        FILE, and the owner's ask was that the bill itself rides along with the expense. The rest
+        of the Record-service flow stays the prompt chain it has always been — a manager who is
+        only entering a reading never sees this box at all.
+     ⭐ Everything money-shaped lives in here together: the amount, where it is paid from, the
+       bill photo, and the warning that says what will actually happen. --}}
+<div id="flSvcBillModal" onclick="if(event.target===this)flSvcBillClose()"
+     style="display:none;position:fixed;inset:0;z-index:4300;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:460px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b style="font-size:15px;color:#111827;">🧾 Add the bill</b>
+      <button type="button" onclick="flSvcBillClose()" title="Close"
+              style="margin-left:auto;border:0;background:none;font-size:20px;color:#9ca3af;cursor:pointer;">&times;</button>
+    </div>
+    <div style="padding:16px 18px;">
+      <div id="flSvcBillWhat" style="font-size:12.5px;color:#6b7280;margin-bottom:12px;"></div>
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">Amount (Rs)</label>
+      <input type="number" id="flSvcBillAmount" min="1" step="1" placeholder="e.g. 2400"
+             oninput="flSvcBillSync()"
+             style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">Paid from</label>
+      {{-- ⚠ No pre-selected option: this spends real money, so the account is always an
+           explicit choice rather than whatever happened to be first in the list. --}}
+      <select id="flSvcBillSource" onchange="flSvcBillSync()"
+              style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        <option value="">— choose an account —</option>
+      </select>
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">
+        📷 Bill photo <span style="font-weight:400;color:#9ca3af;">(the receipt from the workshop)</span>
+      </label>
+      <input type="file" id="flSvcBillPhoto" accept="image/*" onchange="flSvcBillSync()"
+             style="width:100%;font-size:12px;">
+
+      {{-- ⚠⚠ States the outcome for THIS user — an approver's expense posts to the ledger the
+           same second, everyone else's queues. A manager who believes it is queued when it in
+           fact posted is the failure this line exists to prevent. --}}
+      <div id="flSvcBillWarn" style="display:none;font-size:12px;color:#92400E;background:#FFFBEB;
+           border:1px solid #FCD34D;border-radius:8px;padding:9px 10px;margin-top:12px;"></div>
+
+      <div id="flSvcBillError" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:9px;"></div>
+
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button type="button" onclick="flSvcBillSkip()"
+                style="flex:1;border:1px solid #d1d5db;background:#fff;border-radius:8px;
+                       padding:9px;font-size:13px;font-weight:600;cursor:pointer;">
+          Record without a bill
+        </button>
+        <button type="button" id="flSvcBillSubmit" onclick="flSvcBillSave()"
+                style="flex:1;border:0;background:#111827;color:#fff;border-radius:8px;
+                       padding:9px;font-size:13px;font-weight:700;cursor:pointer;">
+          Record + add expense
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="flvEditModal" onclick="if(event.target===this)flvCloseEdit()"
      style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -779,6 +868,12 @@
            modal would have meant two copies of the meter/type/date rules. --}}
       <div id="flNewEditNote" style="display:none;font-size:11.5px;color:#3730a3;background:#eef2ff;
            border:1px solid #c7d2fe;border-radius:8px;padding:8px 10px;"></div>
+      {{-- 🧾 "This bill is for the service already recorded on …" (owner ruling, 3-Sep).
+           ⭐ Shown only when the manager arrived from an un-billed row. The odometer, the job
+             and the date are INHERITED from that reading by the server, so he types the amount
+             and attaches the receipt and nothing else — the whole point of the ruling. --}}
+      <div id="flNewSvcNote" style="display:none;font-size:11.5px;color:#065f46;background:#ecfdf5;
+           border:1px solid #a7f3d0;border-radius:8px;padding:8px 10px;"></div>
     </div>
     <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid #e5e7eb;">
       <button type="button" onclick="flCloseNew()"
@@ -1229,7 +1324,7 @@ function flRenderDetail(r) {
                     ? 'The machine he ended the day on'
                     : 'He was on this earlier in the day and handed it back before the day ended';
                 return '<span class="fl-vdaychip" style="' + (last ? '' : 'opacity:.7;') + '" title="' + tip + '">'
-                     + (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label)
+                     + flOwnerIcon(m) + ' ' + flEsc(m.label)
                      + (last ? '' : ' <span style="opacity:.8;">· handed back</span>') + '</span>';
             }).join(' <span class="fl-muted">→</span> ');
 
@@ -1252,7 +1347,7 @@ function flRenderDetail(r) {
                         rd = '<span class="fl-muted">no reading</span>';
                     }
                     const at = m.start_at || m.end_at;
-                    return '<div>' + (m.is_company ? '🏍 ' : '👤 ') + '<b>' + flEsc(m.label) + '</b> · ' + rd
+                    return '<div>' + flOwnerIcon(m) + ' <b>' + flEsc(m.label) + '</b> · ' + rd
                          + (at ? ' <span class="fl-muted">· ' + flEsc(at) + '</span>' : '') + '</div>';
                 }).join('')
                 + '</div>';
@@ -1275,7 +1370,7 @@ function flRenderDetail(r) {
                     ? 'Rs ' + m.rs_per_km.toFixed(2) + '/km' : '<span class="fl-muted">no rate</span>';
                 return '<div class="fl-mrow">' +
                     '<span class="fl-pill ' + (m.is_company ? 'fl-company' : 'fl-own') + '">' +
-                      (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label) + '</span>' +
+                      flOwnerIcon(m) + ' ' + flEsc(m.label) + '</span>' +
                     '<span class="fl-mkm">' + flNum(m.km_with_him) + ' km</span>' +
                     '<span class="fl-muted">' + m.days + ' day' + (m.days === 1 ? '' : 's') +
                       (m.shared_km ? ' · 🔁 ' + flNum(m.shared_km) + ' shared' : '') + '</span>' +
@@ -1288,6 +1383,14 @@ function flRenderDetail(r) {
                     '</div>';
             }).join('');
     }
+
+    // 🛠 What this rider has REPORTED about the bike, above the service figures —
+    //    "he says the brakes are going" is the context a manager needs BEFORE he reads
+    //    a countdown. Loaded separately (see flLoadTickets) because tickets have their
+    //    own audience rule; folding them into the Bikes payload would put two different
+    //    answers to "who may know this exists" in the codebase.
+    let ticketsHtml = '<div id="flWorkshop" data-uid="' + r.user_id + '"></div>'
+                    + '<div id="flTickets" data-uid="' + r.user_id + '"></div>';
 
     const svc = r.service;
     // ⚠ These figures are ONE job's story — the most urgent scheduled one, which the
@@ -1384,7 +1487,407 @@ function flRenderDetail(r) {
         '<button class="fl-dclose" onclick="flCloseDetail()" title="Close">&times;</button></div>' +
         '<div class="fl-dbody"><div class="fl-days">' + flKmSummary(r) + machinesHtml +
         (days || '<div class="fl-empty">Nothing recorded this month.</div>') +
-        '</div><div class="fl-side">' + svcHtml + '</div></div>';
+        '</div><div class="fl-side">' + ticketsHtml + svcHtml + '</div></div>';
+
+    // Fetched after the drawer is painted: the costs a manager opened this for must
+    // never wait on a ticket list, and an older server (no tickets table) simply
+    // leaves the panel empty.
+    flLoadTickets(r.user_id);
+    flLoadWorkshop(r.user_id);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🔧 WORKSHOP VISITS — "take this bike in on Friday".
+
+   ⭐ SAME endpoints the phone calls (WorkshopVisitController), so the desk and the
+     phone cannot enforce "who may schedule" differently.
+   ⚠ A visit does NOT change the rider's day: it is an errand on a normal paid
+     working day (owner ruling). The panel says so, because a manager who thinks
+     he has just booked a day off will plan the week wrong.
+   ⚠ The rider ACCEPTS it. A manager may stand in when the app is not working, and
+     that is shown as "accepted by X for him" — never as the rider confirming.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let flWorkshopSeq = 0;
+/* 📍 Phase 4 — registered workshops. Picking one makes it the rider's shift location for
+   that day, so his check-in there is on time by itself. Empty until a manager ticks a
+   location as a workshop, and then the prompt just asks for a free-text name as before. */
+let flWorkshopLocations = [];
+
+function flLoadWorkshop(uid) {
+    const box = document.getElementById('flWorkshop');
+    if (!box) return;
+    const seq = ++flWorkshopSeq;
+    fetch('/orders/riders-map/fleet/workshop?user_id=' + encodeURIComponent(uid),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (seq !== flWorkshopSeq || !j || !j.success) return;
+            flWorkshopLocations = j.workshops || [];
+            flRenderWorkshop(uid, j.visits || [], !!j.can_schedule);
+        })
+        .catch(() => {});
+}
+
+function flRenderWorkshop(uid, visits, canSchedule) {
+    const box = document.getElementById('flWorkshop');
+    if (!box) return;
+
+    const btn = canSchedule
+        ? '<button class="fl-btn" onclick="flScheduleWorkshop(' + uid + ')">🔧 Schedule workshop</button>'
+        : '';
+
+    if (!visits.length) {
+        box.innerHTML = '<h5>🔧 Workshop</h5>'
+            + '<div style="font-size:11.5px;color:#9ca3af;line-height:1.5;margin-bottom:6px;">'
+            + 'Nothing booked.</div>' + btn;
+        return;
+    }
+
+    box.innerHTML = '<h5>🔧 Workshop</h5>' + visits.map(v => {
+        const state = v.accepted
+            ? (v.accepted_on_behalf
+                ? '<span style="color:#166534;font-weight:700;">✓ accepted for him by '
+                  + flEsc(v.accepted_by_name || 'a manager') + '</span>'
+                : '<span style="color:#166534;font-weight:700;">✓ confirmed by the rider</span>')
+            : '<span style="color:#b45309;font-weight:700;">⏳ awaiting his confirmation</span>';
+        const missed = v.is_missed
+            ? '<div style="color:#b91c1c;font-weight:800;font-size:11.5px;margin-top:3px;">⚠ This date has passed — mark it done or move it.</div>'
+            : '';
+        return '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:6px;">'
+            + '<b style="font-size:12.5px;">' + flEsc(v.visit_date)
+            + (v.visit_time ? ' · ' + flEsc(v.visit_time) : '') + '</b>'
+            + '<div style="font-size:11px;color:#6b7280;margin-top:2px;">'
+            + flEsc(v.vehicle_name || 'bike')
+            + (v.workshop ? ' · ' + flEsc(v.workshop) : '')
+            + ' · ' + flEsc(v.purpose) + '</div>'
+            + (v.note ? '<div style="font-size:11px;color:#6b7280;margin-top:2px;">' + flEsc(v.note) + '</div>' : '')
+            + '<div style="font-size:11px;margin-top:4px;">' + state + '</div>'
+            + missed
+            + (canSchedule
+                ? '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">'
+                  + '<button class="fl-btn" onclick="flWorkshopDone(' + v.id + ')">Mark done</button>'
+                  + '<button class="fl-btn" onclick="flScheduleWorkshop(' + uid + ')">Move</button>'
+                  + '<button class="fl-btn" onclick="flWorkshopCancel(' + v.id + ')">Cancel</button>'
+                  + (v.accepted ? '' :
+                     '<button class="fl-btn" onclick="flWorkshopAccept(' + v.id + ')" '
+                     + 'title="Only when his app is not working — it is recorded as accepted on his behalf">'
+                     + 'Accept for him</button>')
+                  + '</div>'
+                : '')
+            + '</div>';
+    }).join('')
+    + '<div style="font-size:10.5px;color:#9ca3af;line-height:1.45;margin-bottom:6px;">'
+    + 'He still works and is still paid that day — set his shift or location around the appointment.</div>'
+    + btn;
+}
+
+function flScheduleWorkshop(uid, ticketId) {
+    const date = window.prompt(
+        'Workshop date (YYYY-MM-DD).\n\n'
+        + 'He still works that day as normal — this is an errand, not a day off.\n'
+        + 'Booking again on the same bike MOVES the existing date.',
+        flvTodayYmd());
+    if (date === null) return;
+    const day = String(date).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { alert('Give the date as YYYY-MM-DD.'); return; }
+
+    const time = window.prompt('Time (HH:MM), or leave blank for "sometime that day".', '');
+    if (time === null) return;
+    const t = String(time).trim();
+    if (t && !/^\d{2}:\d{2}$/.test(t)) { alert('Give the time as HH:MM, for example 11:00.'); return; }
+
+    /* 📍 A REGISTERED workshop also pins his shift location for the day, so he cannot be
+       marked late or remote for being where he was told to be. A free-text name does not —
+       the prompt says so, because that difference is the whole of Phase 4. */
+    let shop = '', locationId = null;
+    if (flWorkshopLocations.length) {
+        const lines = flWorkshopLocations.map((w, i) => (i + 1) + '. ' + w.name).join('\n');
+        const pick = window.prompt(
+            'Which workshop?\n\n' + lines
+            + '\n\nPick a number — he then checks in THERE, so no lateness lands on that day.'
+            + '\nOr type a name for a workshop that is not on the list (no check-in cover).',
+            '1');
+        if (pick === null) return;
+        const idx = parseInt(pick, 10) - 1;
+        if (!isNaN(idx) && idx >= 0 && idx < flWorkshopLocations.length) {
+            locationId = flWorkshopLocations[idx].id;
+            shop = flWorkshopLocations[idx].name;
+        } else {
+            shop = String(pick).trim();
+        }
+    } else {
+        const typed = window.prompt('Which workshop? (optional)', '');
+        if (typed === null) return;
+        shop = String(typed).trim();
+    }
+
+    const payload = { user_id: uid, visit_date: day };
+    if (t) payload.visit_time = t;
+    if (shop) payload.workshop = shop;
+    if (locationId) payload.location_id = locationId;
+    if (ticketId) payload.ticket_id = ticketId;
+
+    flPostWorkshop('', payload, function (res) {
+        // ⭐ Warnings are shown AFTER the visit is created, never as a block: an
+        //   appointment on his off day may be exactly what was agreed with him. What
+        //   matters is that the manager is not left unaware of it.
+        let msg = res.message || 'Saved.';
+        if (res.warnings && res.warnings.length) {
+            msg += '\n\n⚠ ' + res.warnings.join('\n⚠ ');
+        }
+        alert(msg);
+    });
+}
+
+function flWorkshopAccept(id) {
+    if (!window.confirm('Mark this as accepted on the rider’s behalf?\n\n'
+        + 'Use this only when his app is not working. It is recorded as accepted BY YOU FOR HIM, '
+        + 'not as his own confirmation.')) return;
+    flPostWorkshop('/' + id + '/accept', {});
+}
+
+function flWorkshopCancel(id) {
+    const why = window.prompt('Cancel this workshop visit.\n\nReason (optional) — the rider is told.', '');
+    if (why === null) return;
+    flPostWorkshop('/' + id + '/cancel', { reason: why || null });
+}
+
+/**
+ * ⭐ PHASE 3 — completing the visit RECORDS THE SERVICE. Giving a meter writes a typed
+ *   service record through the same engine "Record service" uses, against the job the
+ *   visit was booked for. That is the loop this whole round exists to close: a workshop
+ *   trip should never leave the countdown untouched.
+ * ⚠ The meter is optional — an inspection has nothing to record — but if it is given and
+ *   the type cannot be recorded (an "as conditions" job), the server refuses and the visit
+ *   stays OPEN rather than being marked done with no service behind it.
+ */
+function flWorkshopDone(id) {
+    const meter = window.prompt(
+        'Mark this workshop visit as done.\n\n'
+        + 'Odometer at the service (km) — this RECORDS the service against the job the visit '
+        + 'was booked for, so the right countdown resets.\n\n'
+        + 'Leave blank if nothing was serviced (an inspection, or the bill is being filed as a '
+        + 'maintenance request instead).', '');
+    if (meter === null) return;
+    const km = String(meter).replace(/[^0-9]/g, '');
+
+    const note = window.prompt('What was the outcome? (optional)', '');
+    if (note === null) return;
+
+    const payload = { outcome_note: note || null };
+    if (km) payload.meter = parseInt(km, 10);
+    flPostWorkshop('/' + id + '/done', payload);
+}
+
+function flPostWorkshop(suffix, payload, onOk) {
+    fetch('/orders/riders-map/fleet/workshop' + suffix, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) { alert(res.message || 'Could not save.'); return; }
+        if (onOk) onOk(res); else if (res.message) alert(res.message);
+        if (flSelected) flLoadWorkshop(flSelected);
+    })
+    .catch(() => alert('Could not save. Please try again.'));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🛠 BIKE TICKETS — the manager's side of what a rider reported.
+
+   ⭐ SAME ENDPOINTS THE PHONE CALLS (VehicleTicketController). Everything the desk
+     can do here — read, reply, close — the phone can do too, and both go through
+     VehicleTicketService, so a rule cannot be enforced on one surface and not the
+     other. That is the failure this whole round began with.
+   ⚠ `can_reply` / `can_close` come from the SERVER. The composer is hidden, not
+     merely disabled, when it says no: offering a box that will 422 is how someone
+     concludes the page is broken.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let flTicketSeq = 0;
+
+function flLoadTickets(uid) {
+    const box = document.getElementById('flTickets');
+    if (!box) return;
+    const seq = ++flTicketSeq;                       // last answer wins
+    // Filtered SERVER-side by rider — a fleet-wide list capped at 30 could silently drop
+    // this man's tickets on a busy day.
+    fetch('/orders/riders-map/fleet/tickets?status=all&limit=30&user_id=' + encodeURIComponent(uid),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (seq !== flTicketSeq || !j || !j.success) return;
+            flRenderTicketList(j.tickets || [], j.can_manage);
+        })
+        .catch(() => {});                            // a panel never breaks the drawer
+}
+
+function flTicketPill(t) {
+    const map = {
+        open:        ['#FEF3C7', '#92400E', 'Open'],
+        acknowledged:['#DBEAFE', '#1E40AF', 'Being looked at'],
+        scheduled:   ['#EDE9FE', '#5B21B6', 'Workshop set'],
+        closed:      ['#E5E7EB', '#4B5563', 'Closed'],
+    };
+    const m = map[t.status] || map.open;
+    return '<span style="background:' + m[0] + ';color:' + m[1] + ';font-size:10px;font-weight:800;'
+         + 'padding:2px 7px;border-radius:999px;">' + m[2] + '</span>';
+}
+
+function flRenderTicketList(list, canManage) {
+    const box = document.getElementById('flTickets');
+    if (!box) return;
+    if (!list.length) {
+        box.innerHTML = '<h5>🛠 Bike tickets</h5>'
+            + '<div style="font-size:11.5px;color:#9ca3af;line-height:1.5;">Nothing reported. '
+            + 'Faults a rider raises from his phone appear here.</div>';
+        return;
+    }
+    box.innerHTML = '<h5>🛠 Bike tickets</h5>' + list.map(t =>
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;"'
+        + ' onclick="flOpenTicket(' + t.id + ')">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">'
+        + '<b style="font-size:12.5px;">' + (t.urgent ? '🔴 ' : '') + flEsc(t.title) + '</b>'
+        + (t.unread ? '<span style="background:#dc2626;color:#fff;font-size:10px;font-weight:800;'
+                    + 'border-radius:999px;padding:1px 6px;">' + t.unread + '</span>' : '')
+        + '</div>'
+        + '<div style="font-size:11px;color:#6b7280;margin-top:3px;">'
+        + flEsc(t.vehicle_name || 'bike') + (t.opened_for_name ? ' · ' + flEsc(t.opened_for_name) : '')
+        + '</div>'
+        + '<div style="margin-top:5px;">' + flTicketPill(t) + '</div>'
+        + '</div>').join('')
+        + '<div id="flTicketThread"></div>';
+}
+
+function flOpenTicket(id) {
+    const wrap = document.getElementById('flTicketThread');
+    if (!wrap) return;
+    wrap.innerHTML = '<div style="font-size:11.5px;color:#9ca3af;padding:8px 0;">Loading…</div>';
+    fetch('/orders/riders-map/fleet/tickets/' + id, { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (!j || !j.success) { wrap.innerHTML = ''; return; }
+            const t = j.ticket || {};
+            const msgs = (j.messages || []).map(m => {
+                if (m.kind === 'system') {
+                    return '<div style="font-size:11px;color:#9ca3af;font-style:italic;text-align:center;margin:8px 0;">'
+                         + flEsc(m.body) + '</div>';
+                }
+                let inner = '';
+                if (m.kind === 'photo' && m.media_url) {
+                    inner += '<a href="' + flEsc(m.media_url) + '" target="_blank" rel="noopener">'
+                           + '<img src="' + flEsc(m.media_url) + '" style="max-width:100%;border-radius:6px;margin-top:4px;"></a>';
+                }
+                if (m.kind === 'voice' && m.media_url) {
+                    // A plain <audio> element — no library, plays in every browser the
+                    // office uses, and the file is served by the same /public-storage door.
+                    inner += '<audio controls preload="none" src="' + flEsc(m.media_url)
+                           + '" style="width:100%;margin-top:4px;"></audio>';
+                }
+                if (m.body) inner += '<div style="font-size:12.5px;color:#111827;margin-top:2px;">' + flEsc(m.body) + '</div>';
+                return '<div style="margin-bottom:9px;">'
+                     + '<div style="font-size:11px;font-weight:700;color:#374151;">' + flEsc(m.author_name || 'Someone')
+                     + ' <span style="font-weight:400;color:#9ca3af;">· ' + flEsc((m.created_at || '').substring(0, 16)) + '</span></div>'
+                     + inner + '</div>';
+            }).join('');
+
+            /* 📷 The desk can answer with a PHOTO too — "this is the part we ordered" is
+               often the whole reply. Voice is deliberately NOT offered here: a manager at a
+               keyboard types, and recording from a browser would add a second media path for
+               no gain. The rider's phone is where voice belongs. */
+            const composer = (t.can_reply === false) ? ''
+                : '<div style="display:flex;gap:6px;margin-top:8px;align-items:center;">'
+                  + '<input id="flTicketReply" placeholder="Reply…" maxlength="2000"'
+                  + ' style="flex:1;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:12.5px;">'
+                  + '<input type="file" id="flTicketPhotos" accept="image/*" multiple style="display:none;"'
+                  + ' onchange="flTicketPhotoPicked()">'
+                  + '<button class="fl-btn" title="Attach photos" '
+                  + 'onclick="document.getElementById(\'flTicketPhotos\').click()">📷</button>'
+                  + '<button class="fl-btn" onclick="flReplyTicket(' + id + ')">Send</button></div>'
+                  + '<div id="flTicketPhotoNote" style="font-size:11px;color:#6b7280;margin-top:4px;"></div>';
+
+            wrap.innerHTML = '<div style="border-top:1px solid #e5e7eb;margin-top:10px;padding-top:10px;">'
+                + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+                + '<b style="font-size:12.5px;">' + flEsc(t.title || '') + '</b>'
+                + '<span style="display:flex;gap:6px;">'
+                // 🔧 The commonest ANSWER to a reported fault is a workshop date, so it
+                //    is offered here rather than making a manager leave the thread. The
+                //    ticket id rides along: the visit writes itself into this thread and
+                //    moves the ticket to "workshop set".
+                + (j.can_manage
+                    ? '<button class="fl-btn" onclick="flScheduleWorkshop(' + (t.opened_for_user_id || t.opened_by) + ', ' + id + ')">🔧 Schedule workshop</button>'
+                    : '')
+                + (j.can_close ? '<button class="fl-btn" onclick="flCloseTicket(' + id + ')">Close ticket</button>' : '')
+                + '</span>'
+                + '</div>'
+                + '<div style="max-height:280px;overflow:auto;margin-top:8px;">' + msgs + '</div>'
+                + composer
+                + (t.can_reply === false
+                    ? '<div style="font-size:11px;color:#9ca3af;margin-top:8px;line-height:1.5;">Closed too long ago to reply to. '
+                      + 'The rider can report it again if it is still happening.</div>'
+                    : '')
+                + '</div>';
+        })
+        .catch(() => { wrap.innerHTML = ''; });
+}
+
+/** Say how many photos are staged, so the manager knows they will go with the reply. */
+function flTicketPhotoPicked() {
+    const input = document.getElementById('flTicketPhotos');
+    const note  = document.getElementById('flTicketPhotoNote');
+    if (!input || !note) return;
+    const n = input.files ? input.files.length : 0;
+    // ⚠ 8 is the server's own cap (`photos|array|max:8`) — say so now rather than 422 later.
+    if (n > 8) { note.textContent = 'Only 8 photos at a time — the first 8 will be sent.'; return; }
+    note.textContent = n ? (n === 1 ? '1 photo attached' : n + ' photos attached') : '';
+}
+
+function flReplyTicket(id) {
+    const el = document.getElementById('flTicketReply');
+    const body = el ? el.value.trim() : '';
+    const input = document.getElementById('flTicketPhotos');
+    const files = input && input.files ? Array.from(input.files).slice(0, 8) : [];
+    if (!body && !files.length) return;
+
+    const fd = new FormData();
+    if (body) fd.append('body', body);
+    files.forEach(f => fd.append('photos[]', f));
+
+    fetch('/orders/riders-map/fleet/tickets/' + id + '/reply', {
+        method: 'POST',
+        headers: { 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                   'Accept': 'application/json' },
+        body: fd
+    }).then(r => r.json()).then(res => {
+        if (!res.success) { alert(res.message || 'Could not send.'); return; }
+        if (res.reopened) alert('That ticket was closed — your reply has re-opened it.');
+        // ⚠ The reply can succeed while a photo did not — say so rather than swallowing it.
+        if (res.attachments_failed > 0) {
+            alert('Sent, but ' + res.attachments_failed + ' photo(s) could not be uploaded.');
+        }
+        flOpenTicket(id);
+        if (flSelected) flLoadTickets(flSelected);
+    }).catch(() => alert('Could not send. Please try again.'));
+}
+
+function flCloseTicket(id) {
+    const note = window.prompt('Close this ticket.\n\nAdd a note (optional) — the rider sees it.', '');
+    if (note === null) return;
+    fetch('/orders/riders-map/fleet/tickets/' + id + '/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+        body: JSON.stringify({ note: note || null })
+    }).then(r => r.json()).then(res => {
+        if (!res.success) { alert(res.message || 'Could not close.'); return; }
+        flOpenTicket(id);
+        if (flSelected) flLoadTickets(flSelected);
+    }).catch(() => alert('Could not close. Please try again.'));
 }
 
 /**
@@ -1871,7 +2374,16 @@ function flMarkServiced(uid, suggested) {
     //    resolved rows; use them, and fall back to the raw list only when he is not the
     //    rider on screen (nothing else to go on, and a wrong-but-labelled number beats
     //    no prompt at all).
-    const fromRider = (flRider && flRider.user_id === uid && Array.isArray(flRider.service_schedule))
+    //
+    // ⚠ `&& .length` matters: an EMPTY array is truthy, so a rider whose schedule came
+    //   back empty (a transient read failure in the rider-keyed reconstruction) would
+    //   have pinned schedTypes to [] and offered no types at all — and since the server
+    //   now REFUSES an untyped meter, that would be a dead end with nothing to pick.
+    //   Falling through to the raw list keeps a way forward. (When no scheduled type
+    //   exists at all, both lists are empty and the server accepts untyped, as before
+    //   types existed — so the two sides still agree.)
+    const fromRider = (flRider && flRider.user_id === uid && Array.isArray(flRider.service_schedule)
+                       && flRider.service_schedule.length)
         ? flRider.service_schedule : null;
     const schedTypes = (fromRider || (flData && flData.maint_types) || [])
         .filter(t => t.interval_km > 0);
@@ -1910,9 +2422,145 @@ function flMarkServiced(uid, suggested) {
     const meter = parseInt(String(v).replace(/[^0-9]/g, ''), 10);
     if (!meter || meter < 0) { alert('Enter the odometer reading in kilometres.'); return; }
 
+    // 📅 WHEN it was done. Work handed in on Monday and recorded on Wednesday belongs
+    // to MONDAY — the countdown runs from the service date, so stamping today would
+    // push the next due out by however long the paperwork took. Pre-filled with today,
+    // so pressing Enter is exactly the old behaviour.
+    const today = flvTodayYmd();
+    const dRaw = window.prompt(
+        'Date of this service (YYYY-MM-DD):\n\nLeave as today unless the work was done earlier.',
+        today);
+    if (dRaw === null) return;
+    const day = String(dRaw).trim();
+    if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        alert('Give the date as YYYY-MM-DD, for example ' + today + '.');
+        return;
+    }
+    // A service cannot have happened in the future; the server refuses one too, but
+    // saying so here keeps the reading the manager just typed.
+    if (day && day > today) { alert('That date is in the future.'); return; }
+
     const payload = { rider_id: uid, meter: meter };
     if (typeId) payload.maintenance_type_id = typeId;
-    flPostService(payload);
+    if (day && day !== today) payload.date = day;
+
+    /* ⭐ The bill lives in its own small modal, because a window.prompt cannot carry a FILE
+         and the owner's ask is that the bill photo rides along with the expense. Everything
+         above here is the prompt chain this flow has always been. */
+    flSvcBillOpen(payload, chosen ? chosen.name : 'Service');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   🧾 THE BILL — optional, and the money half of "Record service".
+
+   ⭐ "Record without a bill" is exactly what this flow always did: the reading is recorded and
+     nothing is spent. That is the common case — a manager entering a meter — and it stays one
+     click away.
+   ⚠⚠ An amount here SPENDS REAL MONEY. So nothing is pre-filled, the account is always an
+      explicit choice, and the warning states what will happen to THIS user before he commits:
+      an approver's expense posts to the ledger the same second, everyone else's queues.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let flSvcBillPayload = null;
+
+function flSvcBillOpen(payload, jobName) {
+    flSvcBillPayload = payload;
+    document.getElementById('flSvcBillWhat').textContent =
+        jobName + ' at ' + flNum(payload.meter) + ' km. Add the workshop bill, or record the reading on its own.';
+    document.getElementById('flSvcBillAmount').value = '';
+    document.getElementById('flSvcBillPhoto').value = '';
+    document.getElementById('flSvcBillError').style.display = 'none';
+
+    const sel = document.getElementById('flSvcBillSource');
+    const sources = (flData && flData.pay_sources) ? flData.pay_sources : [];
+    sel.innerHTML = '<option value="">- choose an account -</option>'
+        + sources.map(a => '<option value="' + a.id + '">' + flEsc(a.name || a.account_name) + '</option>').join('');
+    /* No account available to this user means the expense simply cannot be filed here. The
+       no-bill path still works, so say so rather than offering a box that would 422. */
+    sel.disabled = !sources.length;
+
+    flSvcBillSync();
+    document.getElementById('flSvcBillModal').style.display = 'flex';
+}
+
+function flSvcBillClose() {
+    document.getElementById('flSvcBillModal').style.display = 'none';
+    flSvcBillPayload = null;
+}
+
+/** Live: the warning appears the moment an amount is typed, and says what will happen. */
+function flSvcBillSync() {
+    const amt  = parseInt(document.getElementById('flSvcBillAmount').value, 10);
+    const warn = document.getElementById('flSvcBillWarn');
+    const btn  = document.getElementById('flSvcBillSubmit');
+    if (!(amt > 0)) {
+        warn.style.display = 'none';
+        btn.textContent = 'Record + add expense';
+        return;
+    }
+    /* flApproval.levels is what the SERVER itself uses to decide, so this copy can never
+       contradict what actually happens. */
+    const auto = !!(flApproval && flApproval.levels && flApproval.levels.indexOf(1) !== -1);
+    const hasPhoto = !!document.getElementById('flSvcBillPhoto').files.length;
+    warn.innerHTML = 'This will add an expense of <b>Rs ' + flNum(amt) + '</b> in the system.<br>'
+        + (auto
+            ? 'It will be <b>approved immediately</b> and posted to the ledger, because you are an approver.'
+            : 'It will go for <b>approval</b> before it reaches the ledger.')
+        + (hasPhoto ? '' : '<br><span style="color:#b45309;">No bill photo chosen yet.</span>');
+    warn.style.display = '';
+    btn.textContent = 'Record + add Rs ' + flNum(amt);
+}
+
+/** Record the service alone - the original behaviour, kept one click away. */
+function flSvcBillSkip() {
+    const p = flSvcBillPayload;
+    flSvcBillClose();
+    if (p) flPostService(p);
+}
+
+function flSvcBillSave() {
+    const p = flSvcBillPayload;
+    if (!p) return;
+    const err  = document.getElementById('flSvcBillError');
+    const amt  = parseInt(document.getElementById('flSvcBillAmount').value, 10);
+    const src  = document.getElementById('flSvcBillSource').value;
+    const file = document.getElementById('flSvcBillPhoto').files[0] || null;
+
+    if (!(amt > 0)) { err.textContent = 'Enter the amount, or choose "Record without a bill".'; err.style.display = ''; return; }
+    if (!src)       { err.textContent = 'Choose which account this was paid from.'; err.style.display = ''; return; }
+    err.style.display = 'none';
+
+    /* multipart, because of the photo. The server accepts both shapes, so the no-bill path
+       still posts plain JSON exactly as it always did. */
+    const fd = new FormData();
+    fd.append('rider_id', p.rider_id);
+    fd.append('meter', p.meter);
+    if (p.maintenance_type_id) fd.append('maintenance_type_id', p.maintenance_type_id);
+    if (p.date) fd.append('date', p.date);
+    fd.append('amount', amt);
+    fd.append('payment_source_account_id', src);
+    if (file) fd.append('bill_image', file);
+
+    const btn = document.getElementById('flSvcBillSubmit');
+    btn.disabled = true; btn.textContent = 'Saving...';
+
+    fetch(FL_BASE + '/mark-serviced', {
+        method: 'POST',
+        headers: {'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: fd
+    })
+    .then(r => r.json())
+    .then(res => {
+        btn.disabled = false; flSvcBillSync();
+        if (!res.success) { err.textContent = res.message || 'Could not save.'; err.style.display = ''; return; }
+        flSvcBillClose();
+        if (res.message) alert(res.message);
+        flLoad(flMonth);
+        flSelectRider(p.rider_id);
+    })
+    .catch(() => {
+        btn.disabled = false; flSvcBillSync();
+        err.textContent = 'Could not save. Please try again.'; err.style.display = '';
+    });
 }
 
 /** The SCHEDULE — how often this bike falls due. Never records a service. */
@@ -1956,7 +2604,90 @@ function flPostService(payload) {
 // =============================================
 let flNewCat = 'Petrol';
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   🏍️ THE SAME TWO ACTIONS, STARTED FROM THE MACHINE (owner ask, 3-Sep):
+   "new maintenance should also be an option here, currently it's only in the riders section".
+
+   ⭐⭐ Both REUSE the existing forms rather than adding a second way to do the same thing.
+      A claim filed from here goes through `/requests` exactly as it does from the Riders tab,
+      so the L1/L2 auto-approval rule, the ledger posting and the type gate are the ones
+      already in place — not a copy of them that would drift.
+   ⚠ The rider is the machine's CURRENT KEEPER: on this screen the bike is the subject, and a
+     claim still has to belong to a person. No keeper → the buttons are not shown at all.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function flvNewMaintenance(keeperUserId) {
+    /* ⚠ The keeper is passed IN from the render, where the open machine is in scope.
+         `flvData` holds the vehicle LIST payload, never the open machine — reading
+         `flvData.vehicle` here would always be undefined and the button would do nothing
+         but apologise. Caught before it shipped; a JS parse check cannot see this. */
+    if (!keeperUserId) { alert('This machine has no keeper right now, so a claim has nobody to belong to.'); return; }
+    flOpenNew('Maintenance');
+    const sel = document.getElementById('flNewRider');
+    if (sel) {
+        sel.value = String(keeperUserId);
+        // Fire the same change the manager's own click would, so the vehicle picker and the
+        // per-km context load for this rider exactly as they normally do.
+        sel.dispatchEvent(new Event('change'));
+    }
+}
+
+function flvRecordService(keeperUserId, currentMeter) {
+    if (!keeperUserId) { alert('This machine has no keeper right now, so there is nobody to record the service against.'); return; }
+    // The same prompt chain the Riders tab uses, seeded with THIS machine's odometer.
+    flMarkServiced(keeperUserId, currentMeter || '');
+}
+
+/* 🧾 Which already-recorded service this bill is for. Null = a new service, which is every
+     claim filed the ordinary way. Cleared on every open of the modal — a stale id would
+     attach the next claim to the wrong reading. */
+let flNewSvcLogId = null;
+
+/**
+ * 🧾 ADD THE BILL to a service that was recorded without one (owner ask, 3-Sep):
+ * "in case they added meter readings for the service but later on want to add the bill
+ *  that was handed over to them."
+ *
+ * ⚠⚠ THIS IS THE MANAGER'S PATH, and the data says so: every service log on the system was
+ *    recorded by Shabib or Qasim, all of them un-billed. A rider's own form has always forced
+ *    an amount, so he never leaves a reading behind — only a manager does.
+ *
+ * ⭐ The meter, the job and the date come from the READING; he supplies the money. Nothing is
+ *   retyped and nothing can drift, because the server inherits them from the log itself.
+ */
+function flvAddBill(logId, riderId, label) {
+    // The label is derived HERE from the loaded history, never passed through an inline
+    // onclick (a quoted string inside a double-quoted attribute truncates it).
+    if (!label) {
+        const s = ((typeof flvData !== 'undefined' && flvData && flvData.service_history) || [])
+            .find(r => Number(r.log_id) === Number(logId));
+        label = s
+            ? flvDate(s.date) + ' · ' + (s.kind || 'Service') + (s.meter ? ' · ' + flNum(s.meter) + ' km' : '')
+            : 'the recorded service';
+    }
+    flOpenNew('Maintenance');
+    flNewSvcLogId = logId;
+    const sel = document.getElementById('flNewRider');
+    if (sel && riderId) { sel.value = String(riderId); sel.dispatchEvent(new Event('change')); }
+    // The reading is fixed by the service — offering the boxes would invite a contradiction.
+    const mw = document.getElementById('flNewMeterWrap');
+    if (mw) mw.style.display = 'none';
+    const sw = document.getElementById('flNewSvcWrap');
+    if (sw) sw.style.display = 'none';
+    const note = document.getElementById('flNewSvcNote');
+    if (note) {
+        note.innerHTML = '🧾 This bill is for the service already recorded — <b>' + flEsc(label) + '</b>.<br>'
+                       + 'Its odometer, job and date are taken from that record. Just enter the amount.';
+        note.style.display = '';
+    }
+    const t = document.getElementById('flNewTitle');
+    if (t) t.textContent = '🧾 Add the bill';
+}
+
 function flOpenNew(cat) {
+    // ⚠ Cleared FIRST: every path into this modal must start with no service attached.
+    flNewSvcLogId = null;
+    const svcNote = document.getElementById('flNewSvcNote');
+    if (svcNote) svcNote.style.display = 'none';
     if (!flExpenseCategoryId) {
         alert('The "Expense" request category is not configured, so a claim cannot be filed from here.');
         return;
@@ -2233,6 +2964,13 @@ function flNewRiderChanged() {
  */
 let flNewBikeSeq = 0;
 
+/* ⭐ THE EFFECTIVE SCHEDULE of the machine this claim will land on, so the
+   "what was done" list can print the interval THIS bike runs instead of the
+   type's standard one. Arrives with the same /for-user response that names the
+   bike; null whenever no machine is in scope, in which case the type's own
+   `data-due` label stands. Display only — the form still posts the type id. */
+let flNewSched = null;
+
 /* ⭐⭐ THE DAY'S MACHINES — state for the picker.
    flNewCtx     = the petrol-context response (machines, km, existing claims)
    flNewVehId   = the machine the manager picked, null = let the server decide
@@ -2281,7 +3019,7 @@ function flNewLoadVehicles() {
                     + 'border:1px solid #d1d5db;background:#fff;border-radius:999px;padding:6px 11px;'
                     + 'font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;'
                     + (claimed ? 'opacity:.65;' : '') + '">'
-                    + (v.is_company ? '🚚' : '🏍️') + ' <b>' + flEsc(v.label) + '</b>'
+                    + flMachineIcon(v) + ' <b>' + flEsc(v.label) + '</b>'
                     + (km !== null ? ' <span style="color:#6b7280;">' + flNum(km) + ' km</span>' : '')
                     + (claimed ? ' <span style="color:#b45309;">' + (v.claim.status === 'approved' ? '✅' : '⏳') + '</span>' : '')
                     + '</button>';
@@ -2394,7 +3132,12 @@ function flNewWhichBike() {
     const uid  = document.getElementById('flNewRider').value;
     const date = document.getElementById('flNewDate').value;
     flNewLoadVehicles();        // ⭐ the day's machines, in parallel with the label
-    if (!uid) { el.style.display = 'none'; el.textContent = ''; flRenderLastMaint(null); return; }
+    if (!uid) {
+        el.style.display = 'none'; el.textContent = '';
+        flRenderLastMaint(null);
+        flNewSched = null; flNewSvcChanged();
+        return;
+    }
 
     const seq = ++flNewBikeSeq;        // last answer wins, never a stale one
     fetch(FLV_BASE + '/for-user?user_id=' + encodeURIComponent(uid)
@@ -2404,15 +3147,30 @@ function flNewWhichBike() {
         .then(res => {
             if (seq !== flNewBikeSeq) return;
             const v = res && res.vehicle;
-            if (!v) { el.style.display = 'none'; el.textContent = ''; flRenderLastMaint(null); return; }
+            if (!v) {
+                el.style.display = 'none'; el.textContent = '';
+                flRenderLastMaint(null);
+                flNewSched = null; flNewSvcChanged();
+                return;
+            }
             el.style.display = '';
             el.innerHTML = (v.vtype === 'van' ? '🚚' : '🏍️')
                 + ' This will be recorded against <b>' + flEsc(v.name) + '</b>'
                 + (v.is_company ? '' : ' <span style="color:#9ca3af;">(his own bike)</span>');
             // ⭐ …and what that machine already has on record.
             flRenderLastMaint(res.last_maintenance || null);
+            // ⭐ …and how often each job is due ON THIS BIKE — re-render the due line,
+            //    because a type may already be selected when the machine resolves.
+            flNewSched = Array.isArray(res.service_schedule) ? res.service_schedule : null;
+            flNewSvcChanged();
         })
-        .catch(() => { if (seq === flNewBikeSeq) { el.style.display = 'none'; flRenderLastMaint(null); } });
+        .catch(() => {
+            if (seq === flNewBikeSeq) {
+                el.style.display = 'none';
+                flRenderLastMaint(null);
+                flNewSched = null; flNewSvcChanged();
+            }
+        });
 }
 
 /**
@@ -2712,10 +3470,24 @@ function flNewSvcChanged() {
         ? 'The odometer at the moment of filling — this is what links the fill to the km ridden.'
         : (bucket === 'regular' ? 'The odometer at the service — this resets the bike\'s service-due clock on approval.' : '');
 
-    // "every 1,200 km" / "as conditions" — the manager's own schedule for this job.
+    // "every 1,200 km" / "as conditions" — how often this job is due.
+    // ⭐ THIS BIKE's schedule when the registry could name the machine, the type's own
+    //   standard one otherwise. `data-due` carries only the latter (the option list is
+    //   built from the raw type rows, with no vehicle in scope), which is how a picker
+    //   could print a different interval from the service panel beside it.
     const due = document.getElementById('flNewSvcDue');
     const svcOpt = document.getElementById('flNewServiceType').selectedOptions[0];
-    if (due) due.textContent = (svcOpt && svcOpt.dataset && svcOpt.dataset.due) ? ('Due ' + svcOpt.dataset.due) : '';
+    let dueTxt = (svcOpt && svcOpt.dataset && svcOpt.dataset.due) ? svcOpt.dataset.due : '';
+    const tid = svcOpt ? /^type:(\d+)$/.exec(svcOpt.value || '') : null;
+    if (tid && Array.isArray(flNewSched)) {
+        const row = flNewSched.find(s => String(s.id) === tid[1]);
+        if (row && row.interval_km > 0) {
+            dueTxt = 'every ' + flNum(row.interval_km) + ' km'
+                   + (row.interval_overridden && row.interval_source_label
+                      ? ' — ' + row.interval_source_label : '');
+        }
+    }
+    if (due) due.textContent = dueTxt ? ('Due ' + dueTxt) : '';
 }
 
 function flSubmitNew() {
@@ -2777,6 +3549,9 @@ function flSubmitNew() {
         else body.service_type = svc;
     }
     if (payId) body.payment_source_account_id = payId;
+    /* 🧾 The service this bill belongs to. The server validates it, inherits its reading, and
+       refuses if that service already carries a live bill — the double-money guard. */
+    if (flNewSvcLogId) body.service_log_id = flNewSvcLogId;
     // Only ever sent with a bank source — the server drops it otherwise, but a
     // cash claim should not carry a bank id in the first place.
     if (payId && payIsOnline && flNewBankId) body.receiving_account_id = flNewBankId;
@@ -2847,6 +3622,19 @@ function flMonthLabel(m) {
     if (!m) return '';
     const x = new Date(m + '-01T12:00:00');
     return isNaN(x) ? m : x.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+// ⭐ WHAT THE MACHINE IS — the registry's `vtype` ('bike' | 'van') and nothing else.
+//   `is_company` answers a different question (whose fuel we buy) and was standing in
+//   for this: it drew a company BIKE as a van, and every van in a company/own pairing
+//   as a bike. Unknown vtype ⇒ bike, which is what those payloads always showed.
+function flMachineIcon(v) {
+    return (v && String(v.vtype || '') === 'van') ? '🚚' : '🏍️';
+}
+// The company/own pill: WHOSE it is decides between the machine and the person, and
+// only then does the machine's own shape pick the glyph.
+function flOwnerIcon(m) {
+    if (!m || !m.is_company) return '👤';
+    return String(m.vtype || '') === 'van' ? '🚚' : '🏍';
 }
 function flEsc(s) {
     return String(s === null || s === undefined ? '' : s)
@@ -3002,9 +3790,24 @@ function flvRenderGrid(list) {
     //   server computes from the OPEN ASSIGNMENT (never the stale profile mirror).
     const freeRiders = ((flvData && flvData.riders) || []).filter(r => !r.has_vehicle);
 
+    /* ⚠ NEEDS-ATTENTION FIRST, WITHIN each column (owner review, Sep-2026). The columns
+       themselves stay — "on the road" and "parked" answer a different question and merging
+       them would lose that — but inside each one the machine that wants something now sorts
+       above the ones that do not. Rank comes from the SAME server map the phone sorts by
+       (FleetAttentionService); an older payload leaves every rank undefined and the order is
+       exactly what it was. */
+    const attnRank = v => (flvData && flvData.attention
+        && flvData.attention[String(v.id)] ? flvData.attention[String(v.id)].rank : 99);
     const company = a => (a.is_company ? 0 : 1);
-    onRoad.sort((a, b) => company(a) - company(b) || a.name.localeCompare(b.name));
-    idle.sort((a, b) => company(a) - company(b) || a.name.localeCompare(b.name));
+    onRoad.sort((a, b) => attnRank(a) - attnRank(b) || company(a) - company(b) || a.name.localeCompare(b.name));
+    idle.sort((a, b) => attnRank(a) - attnRank(b) || company(a) - company(b) || a.name.localeCompare(b.name));
+
+    /* A count at the top, so a calm list is trustworthy rather than merely quiet. */
+    const attnCount = list.filter(v => v.is_active && attnRank(v) < 99).length;
+    const attnBanner = attnCount
+        ? '<div class="fl-vattn-head">⚠ ' + attnCount + (attnCount === 1 ? ' bike needs' : ' bikes need')
+          + ' attention — shown first in each column</div>'
+        : '<div class="fl-vattn-head calm">✓ Nothing needs attention right now</div>';
 
     const left = '<div class="fl-vcol">'
         + '<h4 class="fl-vcolh">🛣️ On the road <span>' + onRoad.length + '</span></h4>'
@@ -3032,7 +3835,7 @@ function flvRenderGrid(list) {
             : '')
         + '</div>';
 
-    grid.innerHTML = '<div class="fl-vsplit">' + left + right + '</div>';
+    grid.innerHTML = attnBanner + '<div class="fl-vsplit">' + left + right + '</div>';
 }
 
 /**
@@ -3155,6 +3958,25 @@ function flvCard(v, keeperOf) {
           + ' — <span class="fl-vpending-cta">approve it above</span></div>'
         : '';
 
+    /* ⚠ THE ATTENTION STRIP (owner review, Sep-2026): "will it be clear which bikes are
+       asking for an action?" Every card looked identical, so an urgent ticket or a missed
+       workshop visit was invisible until you opened the machine. Comes from the SAME
+       server map the mobile list reads (FleetAttentionService) and the columns sort by the
+       same rank — the desk and the phone cannot disagree about which bike is worst.
+       ⚠ Rendered ONLY when something is actually wanted, so a healthy fleet stays calm.
+       ⚠ `pending` is already shown by pendChip above; it is dropped here to avoid saying
+         the same thing twice on one card. */
+    const attn = (flvData && flvData.attention) ? flvData.attention[String(v.id)] : null;
+    const attnChips = (attn && attn.flags || []).filter(f => f.k !== 'waiting');
+    const attnStrip = attnChips.length
+        ? '<div class="fl-vattn">' + attnChips.map(f => {
+            const bad  = (f.k === 'stranded' || f.k === 'missed' || f.k === 'overdue');
+            const warn = (f.k === 'today' || f.k === 'unconfirmed');
+            return '<span class="fl-vattn-chip' + (bad ? ' bad' : (warn ? ' warn' : '')) + '">'
+                 + flEsc(f.text) + '</span>';
+          }).join('') + '</div>'
+        : '';
+
     const keeper = v.keeper_name
         ? '<div class="fl-vkeeper">👤 <b>' + flEsc(v.keeper_name) + '</b>'
             + (v.assigned_on ? ' <span style="color:#9ca3af;">since ' + flvDate(v.assigned_on) + '</span>' : '')
@@ -3189,6 +4011,7 @@ function flvCard(v, keeperOf) {
       +   '</div>'
       +   keeper
       +   pendChip
+      +   attnStrip
       /* ⭐ STANDING ALERT (owner ruling Aug-4): a company machine whose overnight
          and morning meter checks have nowhere to measure from. It stays on the
          card until the pin is saved, then disappears by itself — nothing to
@@ -3233,10 +4056,80 @@ function flvCard(v, keeperOf) {
  *   loaded at all.
  */
 let flvDetailMode = 'money';
+
+/* ⭐ Which slice of the service history is on screen: all | regular | repairs | unclassified.
+     Lives out here so a re-render (adding a bill, correcting a reading) does not throw the
+     manager back to "All" mid-task. Reset on each open, like flvDetailMode. */
+let flvHistFilter = 'all';
+
+/* ⭐⭐ ONE CLOCK FOR THE WHOLE PANEL (owner, 3-Sep: "I still can't see day by day or the
+     maintenance history for previous months… how do I even use this?").
+
+   The page used to have TWO time controls: these period chips, and the month picker in the
+   SCREEN header — which scrolls out of sight the moment a vehicle is opened. Everything
+   money-shaped (the fuel list, day-by-day, the month cost tile) obeyed that hidden picker, so
+   a manager looking at August saw September's emptiness and had no visible way to move.
+
+   Now: `flvMonth` is the panel's own month and `flvRange` the width of the window around it.
+   Both live in ONE bar at the top of the panel, and everything below reads them.
+ ⚠ `flvMonth` drives the SERVER fetch (the fuel list and day-by-day are built per month), so
+   changing it reloads; the range is a client-side filter over the all-time record and does not. */
+let flvMonth = null;               // 'YYYY-MM' — null until a vehicle is opened
+let flvRange = 'q';                // month | q | year | all
+let flvHistShowAll = false;
+/* Which view of the ACTIVITY section: the service record, the month's fuel, or the
+   kilometre audit. The last two only exist per month — see flvSetView. */
+let flvView = 'list';              // list | fuel | days
+/* ⚠ Guards the one-time ‘jump to the last month with activity’ so it cannot loop. */
+let flvMonthAuto = false;
+
+function flvHistRerender() {
+    if (flvLastRes) flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+}
+function flvSetHistFilter(k) { flvHistFilter = k; flvHistShowAll = false; flvHistRerender(); }
+function flvHistMore()       { flvHistShowAll = !flvHistShowAll; flvHistRerender(); }
+
+/* Widen or narrow the window. ⚠ The month-only views cannot survive a wider window — there
+   is no such thing as ‘day by day over a year’ here — so they fall back to the record. */
+function flvSetRange(k) {
+    flvRange = k;
+    flvHistShowAll = false;
+    if (k !== 'month' && flvView !== 'list') flvView = 'list';
+    flvHistRerender();
+}
+
+/* Switch what the ACTIVITY section shows. Fuel and the kilometre audit are built per month,
+   so choosing one narrows the window to a month rather than showing a misleading partial. */
+function flvSetView(v) {
+    flvView = v;
+    flvHistShowAll = false;
+    if (v !== 'list' && flvRange !== 'month') { flvRange = 'month'; }
+    if (v === 'days') { flvSetDetailMode('days'); return; }   // that loader also redraws
+    flvDetailMode = 'money';
+    flvHistRerender();
+}
+
+/* Step the panel's own month. ⚠ Refetches, because the fuel list and the kilometre audit are
+   built server-side for one month; the record and the cost tiles come back with it. */
+function flvShiftMonth(delta) {
+    if (!flvLastRes) return;
+    const base = (flvMonth || flvLastRes.month || flMonth || '').slice(0, 7);
+    const m = base.match(/^(\d{4})-(\d{2})$/);
+    if (!m) return;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1 + delta, 1);
+    const next = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    // Never step into the future — there is nothing there to read.
+    const now = new Date();
+    const cap = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    if (next > cap) return;
+    flvMonth = next;
+    flvHistShowAll = false;
+    flvOpen(flvLastRes.vehicle.id, true);   // keep the panel open, reload for the new month
+}
 let flvLastRes = null;
 const flvDaysCache = {};          // 'vehicleId|month' → the day payload
 
-function flvDaysKey(res) { return res.vehicle.id + '|' + (res.month || flMonth); }
+function flvDaysKey(res) { return res.vehicle.id + '|' + (flvMonth || res.month || flMonth); }
 
 function flvSetDetailMode(mode) {
     flvDetailMode = mode;
@@ -3247,7 +4140,7 @@ function flvSetDetailMode(mode) {
         flvDaysCache[key] = { loading: true };
         flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
         fetch(FLV_BASE + '/' + flvLastRes.vehicle.id + '/days?month='
-              + encodeURIComponent(flvLastRes.month || flMonth),
+              + encodeURIComponent(flvMonth || flvLastRes.month || flMonth),
               { headers: { 'Accept': 'application/json' } })
             .then(r => r.json())
             .then(res => { flvDaysCache[key] = res && res.success ? res : { error: true }; })
@@ -3264,9 +4157,19 @@ function flvSetDetailMode(mode) {
 }
 
 /** Expand one vehicle: condition photos, who has had it, and its service state. */
-function flvOpen(id) {
+function flvOpen(id, keepMonth) {
+    /* ⚠ `keepMonth` is the month stepper reloading the SAME machine. Everything else is a
+       fresh open and starts from the defaults, so one bike's filters never leak to the next. */
+    if (!keepMonth || flvOpenId !== id) {
+        flvDetailMode = 'money';   // every open starts on the cheap view
+        flvHistFilter = 'all';     // …showing every kind, not the last filter used
+        flvRange      = 'q';       // …over the last 3 months
+        flvView       = 'list';    // …on the record, not a month-only view
+        flvMonth      = null;      // …and on the month the screen is showing
+        flvMonthAuto  = false;
+    }
     flvOpenId = id;
-    flvDetailMode = 'money';      // every open starts on the cheap view
+    flvHistShowAll = false;
     const box = document.getElementById('flVehDetail');
     box.style.display = '';
     box.innerHTML = '<div class="fl-vdbody">Loading…</div>';
@@ -3274,12 +4177,39 @@ function flvOpen(id) {
 
     // ⚠ Pass the month the manager is actually looking at. Without it the popover
     //   always reported the CURRENT month while the table behind it showed another.
-    fetch(FLV_BASE + '/' + id + '?month=' + encodeURIComponent(flMonth),
+    /* ⚠⚠ `all_time=1` — otherwise the history is a 24-row window with NO way to reach an older
+         month, which is exactly the complaint: "there's no way to change the month or see
+         previous months' history". The whole record comes down once (capped at 200 rows for one
+         machine) and the range chips below filter it in the browser, so changing period costs
+         no round trip. The MONTH still goes up because "This month" and the day-by-day audit
+         are month-scoped and must follow the picker at the top of the screen. */
+    fetch(FLV_BASE + '/' + id + '?all_time=1&month=' + encodeURIComponent(flvMonth || flMonth),
           { headers: { 'Accept': 'application/json' } })
         .then(r => r.json())
         .then(res => {
             if (!res.success) throw new Error(res.message || 'Failed');
             flvLastRes = res;
+            flvMonth = (res.month || flvMonth || flMonth || '').slice(0, 7);
+
+            /* ⭐ OPEN ON A MONTH THAT HAS SOMETHING IN IT. On the 3rd of a month a machine
+               has usually done nothing yet, and greeting a manager with three zeros and an
+               empty list is what made this page look broken. If the month we landed on is
+               empty and the record knows a later-used month, go there once.
+             ⚠ Once only (flvMonthAuto), and never over an explicit step. */
+            if (!flvMonthAuto && !keepMonth) {
+                flvMonthAuto = true;
+                const w = (res.cost_summary && res.cost_summary.windows && res.cost_summary.windows.month) || {};
+                const spent = (w.regular_rs || 0) + (w.repairs_rs || 0) + (w.fuel_rs || 0)
+                            + (w.unclassified_rs || 0) + (w.waiting_rs || 0);
+                const claims = (res.claims || []).length;
+                if (!spent && !claims) {
+                    const newest = (res.service_history || [])
+                        .map(r => String(r.date || '').slice(0, 7))
+                        .filter(m => /^\d{4}-\d{2}$/.test(m) && m < flvMonth)
+                        .sort().pop();
+                    if (newest) { flvMonth = newest; flvOpen(id, true); return; }
+                }
+            }
             flvRenderDetail(res.vehicle, res.can_manage, res);
         })
         .catch(() => { box.innerHTML = '<div class="fl-vdbody">Could not load that vehicle.</div>'; });
@@ -3610,18 +4540,108 @@ function flvRenderDetail(v, canManage, res) {
             + '</div>').join('')
         : '<div style="font-size:12px;color:#9ca3af;">Nothing filed for this machine this month.</div>';
 
-    /* ⭐ Two halves of the same month (owner ruling Aug-5): what it COST, and where
-       the kilometres behind that cost went. The diagnostic line above the toggle
-       belongs to both, so it stays put when the manager switches. */
-    const modeBtn = (m, label) =>
-        '<button type="button" class="fl-vbtn" style="padding:3px 9px;font-size:11.5px;'
-      + (flvDetailMode === m ? 'background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:700;' : '')
-      + '" onclick="flvSetDetailMode(\'' + m + '\')">' + label + '</button>';
-    const spend = avLine
-        + '<div style="display:flex;gap:6px;margin:0 0 9px;">'
-        + modeBtn('money', '💰 Fuel &amp; maintenance') + modeBtn('days', '📅 Day by day')
-        + '</div>'
-        + (flvDetailMode === 'days' ? flvDaysHtml(res) : money);
+    /* ⭐⭐ ONE TIME BAR for the whole panel. The month stepper and the width of the window
+         sit together, at the top, INSIDE the panel — the screen-header picker scrolls away
+         the moment a vehicle is opened, which is why previous months were unreachable.
+       ⚠ The stepper is only meaningful on a single month; on wider windows it is disabled
+         rather than hidden, so the control does not jump around as the manager switches. */
+    /* ⚠ Settle the panel's month HERE, once, before anything reads it. The bar showed
+       `res.month` while the record's month filter fell back to the CURRENT month, so a panel
+       opened on August could label itself August and then filter to September — two answers
+       to “which month am I looking at”, which is the bug this whole round exists to kill. */
+    if (!flvMonth) flvMonth = (res.month || flMonth || '').slice(0, 7);
+    const shownMonth = flvMonth;
+    const nowM = (() => { const n = new Date();
+        return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0'); })();
+    const rangeChip = (k, label) =>
+        '<button type="button" class="fl-vchipbtn' + (flvRange === k ? ' on' : '') + '"'
+      + ' onclick="flvSetRange(\'' + k + '\')">' + label + '</button>';
+    const timeBar =
+        '<div class="fl-vtbar">'
+      +   '<span class="fl-vstep">'
+      +     '<button type="button" onclick="flvShiftMonth(-1)" title="Previous month">‹</button>'
+      +     '<b>' + flEsc(flMonthLabel(shownMonth)) + '</b>'
+      +     '<button type="button" onclick="flvShiftMonth(1)" title="Next month"'
+      +       (shownMonth >= nowM ? ' disabled' : '') + '>›</button>'
+      +   '</span>'
+      +   rangeChip('month', 'That month') + rangeChip('q', 'Last 3 months')
+      +   rangeChip('year', 'This year') + rangeChip('all', 'All time')
+      + '</div>';
+
+    /* ⭐ ACTIVITY — what happened to this machine, in one place. The record (services and
+       maintenance, all-time capable) is the default; fuel and the kilometre audit are
+       month-shaped and say so on the chip, so nobody reads a month's fuel as a year's. */
+    const viewChip = (k, label) =>
+        '<button type="button" class="fl-vchipbtn' + (flvView === k ? ' on' : '') + '"'
+      + ' onclick="flvSetView(\'' + k + '\')">' + label + '</button>';
+    const activity =
+        '<div class="fl-vsec">'
+      +   '<h4>Activity</h4>'
+      +   '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px;">'
+      +     viewChip('list', '🛠 Service &amp; repairs')
+      +     viewChip('fuel', '⛽ Fuel — ' + flEsc(flMonthLabel(shownMonth)))
+      +     viewChip('days', '📅 Day by day — ' + flEsc(flMonthLabel(shownMonth)))
+      +   '</div>'
+      +   (flvView === 'list' ? flvServiceHistoryHtml(res)
+         : flvView === 'days' ? avLine + flvDaysHtml(res)
+         :                      avLine + money)
+      + '</div>';
+
+    /* ⭐⭐ WHAT HAS THIS MACHINE COST (owner ask, 3-Sep). The page showed one month with every
+         non-fuel claim under a single "maintenance" figure, so "is my money going on scheduled
+         upkeep or on things breaking, this month and over its life" could not be read at all.
+       ⚠ Fuel is kept in its OWN column, never folded in — the machine's Rs/km averages are
+         computed from it (owner ruling).
+       ⚠ "Unclassified" is shown, never absorbed: 109 legacy rows genuinely say nothing about
+         which kind of work they paid for, and a total that hides that is a lie. */
+    /* The headline of the service schedule, for the sticky header. ⚠ Reads the SAME
+       `v.service` the schedule below reads — one source, so they can never disagree. */
+    const sv = v.service || {};
+    const dueChip = (sv.due_in_km === null || sv.due_in_km === undefined)
+        ? (sv.interval_km ? '<span class="fl-vduechip" style="background:#f3f4f6;color:#6b7280;">'
+                            + '🛢 no service recorded</span>' : '')
+        : '<span class="fl-vduechip" style="'
+          + (sv.due_in_km < 0 ? 'background:#fef2f2;color:#b91c1c;'
+             : sv.due_in_km < 300 ? 'background:#fffbeb;color:#b45309;'
+             : 'background:#f0fdf4;color:#15803d;') + '">'
+          + '🛢 ' + flEsc(sv.due_type_name || 'Service') + ' '
+          + (sv.due_in_km < 0 ? flNum(-sv.due_in_km) + ' km overdue'
+                              : 'due in ' + flNum(sv.due_in_km) + ' km')
+          + '</span>';
+
+    const cs = (res && res.cost_summary && res.cost_summary.windows) || null;
+    const costStrip = cs
+        ? '<div class="fl-vsec"><h4>What it has cost</h4>'
+          + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+          + [['month', flMonthLabel((flvMonth || res.month || flMonth || '').slice(0, 7))],
+             ['quarter', 'Last 3 months'], ['year', 'This year'], ['lifetime', 'Lifetime']]
+              .map(([k, label]) => {
+                  const w = cs[k] || {};
+                  const line = (lbl, rs, colour) => (rs > 0
+                      ? '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:' + colour + ';">'
+                        + '<span>' + lbl + '</span><b>' + flNum(rs) + '</b></div>' : '');
+                  /* ⭐ The tile matching the chosen window is lit, so the number the manager
+                       is reading is visibly the one the clock above is set to. */
+                  const liveKey = flvRange === 'q' ? 'quarter' : flvRange === 'all' ? 'lifetime' : flvRange;
+                  const on = (k === liveKey);
+                  return '<div style="flex:1 1 150px;min-width:150px;border:1px solid ' + (on ? '#fdba74' : '#e5e7eb') + ';border-radius:9px;background:' + (on ? '#fffbf5' : '#fff') + ';padding:9px 11px;">'
+                       + '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;margin-bottom:5px;">' + label + '</div>'
+                       + (line('🛢 Regular', w.regular_rs, '#374151')
+                          || line('🛢 Regular', 0, '#374151'))
+                       + line('🔧 Repairs', w.repairs_rs, '#374151')
+                       + line('⛽ Fuel', w.fuel_rs, '#374151')
+                       + line('❓ Unclassified', w.unclassified_rs, '#b45309')
+                       + line('⏳ Waiting', w.waiting_rs, '#9a3412')
+                       + ((w.regular_rs + w.repairs_rs + w.fuel_rs + w.unclassified_rs + w.waiting_rs) === 0
+                            ? '<div style="font-size:12px;color:#9ca3af;">Nothing filed</div>' : '')
+                       + '</div>';
+              }).join('')
+          + '</div>'
+          + '<div style="font-size:11px;color:#9ca3af;margin-top:7px;">'
+          + 'Approved money only. “Waiting” is filed but not yet approved. “Unclassified” is older '
+          + 'work filed before the named service list existed — it is counted, not hidden.</div>'
+          + '</div>'
+        : '';
 
     const photos = (v.photos || []).length
         ? '<div class="fl-vstrip">' + v.photos.map(p =>
@@ -3653,11 +4673,38 @@ function flvRenderDetail(v, canManage, res) {
       +     (v.keeper_name ? 'with <b style="color:#111827;">' + flEsc(v.keeper_name) + '</b>' : 'unassigned')
       +     (v.current_meter !== null ? ' · ' + flNum(v.current_meter) + ' km' : '')
       +   '</div>'
-      +   '<button type="button" class="fl-vbtn" style="margin-left:auto;" onclick="flvCloseDetail()">Close</button>'
+      /* ⭐ WHEN IS IT DUE — in the header, because it is one of the two questions this page
+           exists to answer and it used to need a scroll. Named job, not a bare number, so
+           “due in 920 km” cannot be read as the wrong service. The full per-type schedule is
+           still below; this is the headline of it. */
+      +   (dueChip || '')
+      /* ⭐ VEHICLE-CENTRIC ACTIONS (owner ask, 3-Sep): "new maintenance should also be an
+           option here, currently it's only in the riders section". Both open the SAME forms
+           the Riders tab uses, pre-set to this machine and its keeper — so the approval rule,
+           the ledger posting and the type gate are the ones already in place, not a second
+           copy. Shown only when there is a keeper to file against, and only to someone who
+           may do it. */
+      +   ((v.keeper_user_id && res && res.can_log_meters)
+            ? '<button type="button" class="fl-vbtn" style="margin-left:auto;" '
+              + 'onclick="flvNewMaintenance(' + v.keeper_user_id + ')">➕ New maintenance</button>'
+              + '<button type="button" class="fl-vbtn" onclick="flvRecordService(' + v.keeper_user_id + ',' + (v.current_meter || 0) + ')">🛠 Record service</button>'
+            : '')
+      +   '<button type="button" class="fl-vbtn" style="' + ((v.keeper_user_id && res && res.can_log_meters) ? '' : 'margin-left:auto;') + '" onclick="flvCloseDetail()">Close</button>'
       + '</div>'
       + '<div class="fl-vdbody">'
-      +   '<div class="fl-vsec">'
-      +     '<h4>Condition</h4>' + photos
+      /* ⭐⭐ COST FIRST. It was sitting BELOW the whole service record, so a manager scrolled
+           past forty rows to reach the numbers he opened the page for. It is the summary of
+           everything under it and belongs at the top. */
+      /* ⭐⭐ THE ORDER A MANAGER READS IN: when am I looking at → what did it cost → what is
+           due → what happened. Condition and the keeper log are reference, and fold away. */
+      +   timeBar
+      +   costStrip
+      /* ⚠ Condition photos were the FIRST thing on this screen and are rarely why it was
+           opened. Collapsed, not removed — the upload form and the dated record are all still
+           in here, one click away. */
+      +   '<details class="fl-vsec"><summary style="cursor:pointer;font-weight:700;font-size:13px;color:#374151;">'
+      +     'Condition photos' + ((v.photos || []).length ? ' (' + v.photos.length + ')' : '') + '</summary>'
+      +     '<div style="margin-top:8px;">' + photos
       /* ⭐ The condition record is DATED (owner ask, Aug-2026): these photos exist to
          prove what a machine looked like on the day it changed hands, and a handover
          is often photographed later than it happened. Until now the upload sent no
@@ -3678,7 +4725,7 @@ function flvRenderDetail(v, canManage, res) {
             + '<button type="button" class="fl-vbtn" onclick="flvUploadMore(' + v.id + ')">Add photos</button>'
             + '</div>'
           : '')
-      +   '</div>'
+      +   '</div></details>'
       +   '<div class="fl-vsec">'
       +     '<h4>Service</h4>'
       +     '<div style="font-size:12.5px;color:#374151;line-height:1.7;">'
@@ -3698,14 +4745,14 @@ function flvRenderDetail(v, canManage, res) {
               : '')
       +     '</div>'
       +     flvScheduleHtml(res)
-      +     flvServiceHistoryHtml(res)
       +   '</div>'
-      +   '<div class="fl-vsec">'
-      +     '<h4>This month</h4>' + spend
-      +   '</div>'
-      +   '<div class="fl-vsec">'
-      +     '<h4>Who has had it</h4>' + history
-      +   '</div>'
+      /* ⭐ The record itself gets its OWN section rather than trailing off the end of the
+           schedule — it is the longest thing here and needs its own controls. */
+      +   activity
+      /* ⭐ Rarely-needed sections collapse (owner: "it seems messy"). Nothing is removed —
+           photos and keeper history are one click away instead of in the way. */
+      +   '<details class="fl-vsec"><summary style="cursor:pointer;font-weight:700;font-size:13px;color:#374151;">'
+      +     'Who has had it</summary><div style="margin-top:8px;">' + history + '</div></details>'
       + '</div>';
 }
 
@@ -3731,20 +4778,251 @@ function flvServiceHistoryHtml(res) {
     const h = (res && res.service_history) || [];
     if (!h.length) return '';
 
-    return '<h4 style="margin:14px 0 6px;">Past services</h4>'
-        + h.map(s =>
+    /* ⭐ MANUAL records (no bill) now appear here alongside the claims, and are the only
+       rows that can be CORRECTED from this screen — `log_id` is what says so. A claim
+       carries money and is amended through the claims flow instead.
+       ⚠ Until this list existed, a "Record service" row fed every countdown while appearing
+         on no screen at all: that is how log #8 sat misfiled and needed SQL to find. */
+    const canFix = flvData && flvData.can_log_meters;
+
+    /* ⭐ FILTER THE HISTORY (owner: "it seems messy with all services day by day"). The bucket
+         is already on every row — regular / repairs / unclassified — so this only decides what
+         is drawn. ⚠ Counts are shown so an empty filter reads as "none of these", never as a
+         broken list. `flvHistFilter` lives outside this function so it survives a re-render. */
+    /* ⭐⭐ A PERIOD, AND A LIMIT (owner, 3-Sep: "no way to change the month or see previous
+         months' history … how do I even use this?"). The whole record is fetched once
+         (`all_time=1`), so both controls are pure filters — changing period costs no round trip.
+       ⚠ Ranges, not a month stepper: a manager asks "this month / this year / ever", and a
+         stepper would make him click back through empty months to find the one with the work in
+         it. The month PICKER at the top of the screen still drives "This month" below. */
+    const inRange = r => {
+        if (flvRange === 'all') return true;
+        const d = String(r.date || '');
+        const now = new Date();
+        const ym = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+        if (flvRange === 'month') return d.slice(0, 7) === (flvMonth || ym);
+        if (flvRange === 'year')  return d.slice(0, 4) === String(now.getFullYear());
+        if (flvRange === 'q') {
+            const from = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+            return d >= (from.getFullYear() + '-' + String(from.getMonth() + 1).padStart(2, '0') + '-01');
+        }
+        return true;
+    };
+    const inWindow = h.filter(inRange);
+    const counts = inWindow.reduce((m, r) => { const b = r.bucket || 'unclassified'; m[b] = (m[b] || 0) + 1; return m; }, {});
+    const btn = (on, onclick, label) =>
+        '<button type="button" class="fl-vbtn" style="padding:2px 8px;font-size:11px;'
+      + (on ? 'background:#fff7ed;border-color:#fdba74;color:#9a3412;font-weight:700;' : '')
+      + '" onclick="' + onclick + '">' + label + '</button>';
+
+    const chip = (k, label) => {
+        const n = k === 'all' ? inWindow.length : (counts[k] || 0);
+        if (k !== 'all' && !n) return '';          // never offer a filter that shows nothing
+        return btn(flvHistFilter === k, 'flvSetHistFilter(\'' + k + '\')', label + ' ' + n);
+    };
+
+    const filtered = flvHistFilter === 'all'
+        ? inWindow : inWindow.filter(r => (r.bucket || 'unclassified') === flvHistFilter);
+
+    /* ⚠ A LIMIT, with a way past it. The list ran to every row it had — forty of them on an
+         older bike — which is why the cost summary underneath was never reached. Ten is enough
+         to answer "what happened lately"; the count on the button says what is being held back,
+         so nothing is hidden, only folded. */
+    const CAP = 10;
+    const shown = flvHistShowAll ? filtered : filtered.slice(0, CAP);
+    const more  = filtered.length - shown.length;
+
+    return ''
+        + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">'
+        +   chip('all', 'All') + chip('regular', '🛢 Regular') + chip('repairs', '🔧 Repairs')
+        +   chip('unclassified', '❓ Unclassified')
+        + '</div>'
+        + (filtered.length ? '' : '<div style="font-size:12px;color:#9ca3af;">Nothing of that kind in this period.</div>')
+        + shown.map(s =>
             '<div class="fl-vhrow">'
           +   '<span style="min-width:120px;">' + flvDate(s.date) + '</span>'
           +   '<span style="flex:1;min-width:0;">' + flEsc(s.kind || 'Maintenance')
           +     (s.meter ? ' <span style="color:#9ca3af;">at ' + flNum(s.meter) + ' km</span>' : '')
           +     (s.by_name ? ' <span style="color:#9ca3af;">· by ' + flEsc(s.by_name) + '</span>' : '')
           +     (s.status === 'pending' ? ' <span class="fl-vchip due">waiting</span>' : '')
+          /* ⚠ A hand-recorded row now carries its bill's status too (review, 3-Sep). A bill that
+                was REJECTED must not sit there reading as paid money — the work still happened
+                and the reading still counts, but the Rs figure did not clear. */
+          +     (s.status === 'rejected' ? ' <span class="fl-vchip unk" title="The bill filed with this service was rejected — the reading still counts, the money did not clear">bill rejected</span>' : '')
+          +     (s.manual
+                  ? ' <span class="fl-vchip unk" title="'
+                    + (s.bill_id
+                        ? 'Recorded by hand on the Bikes screen, with its bill filed at the same time'
+                        : 'Recorded by hand on the Bikes screen — no bill filed')
+                    + '">recorded' + (s.bill_id ? ' + bill' : '') + '</span>'
+                  : '')
           +     (s.stamped === false
                   ? ' <span class="fl-vchip unk" title="Attributed by who held this machine on that date, '
                     + 'rather than recorded against it at the time">from history</span>' : '')
+          +     (s.log_id && canFix
+                  ? ' <a href="#" onclick="flFixServiceRecord(' + s.log_id + ');return false;" '
+                    + 'style="font-size:11px;font-weight:700;">Edit</a>'
+                    + ' <a href="#" onclick="flRemoveServiceRecord(' + s.log_id + ');return false;" '
+                    + 'style="font-size:11px;font-weight:700;color:#b91c1c;">Remove</a>'
+                  : '')
+          /* 🧾 ADD THE BILL — a service recorded without one, and the receipt turned up later
+                (owner ask, 3-Sep). Only on rows that have no LIVE bill: `bill_id` is cleared by
+                the server the moment a linked claim is rejected, so a rejected bill's service
+                offers this again rather than sitting there looking paid. */
+          +     (s.log_id && !s.bill_id && canFix
+                  /* ⚠⚠ ID ONLY in the inline onclick — the label is rebuilt inside flvAddBill from
+                        the row. JSON.stringify here put DOUBLE QUOTES inside this double-quoted
+                        attribute and truncated it, so the link never fired (same trap as
+                        "New own bike", 14 Aug). */
+                  ? ' <a href="#" onclick="flvAddBill(' + s.log_id + ',' + (s.rider_id || 0) + ');return false;" '
+                    + 'title="Attach the workshop bill to this service. Its odometer, job and date are kept." '
+                    + 'style="font-size:11px;font-weight:700;color:#047857;">Add the bill</a>'
+                  : '')
+          /* ✏️ A CLAIM's READING is correctable too (Sep-3) — approved ones included.
+             ⚠⚠ Only the odometer and which job it was. The amount, the date and the vehicle
+                stay locked behind editClaim, which still refuses an approved claim outright:
+                money in the ledger is reversed and re-filed, never quietly edited.
+             ⚠ Until this existed, the panel could read "Oil Change 767 km overdue" off a typo
+                on an approved claim that NOBODY could reach — the only workaround being to
+                record a manual service and leave the wrong figure in the history for ever.
+             ⭐ No Remove: deleting a claim is deleting a payment. */
+          +     (!s.log_id && s.req_id && canFix
+                  ? ' <a href="#" onclick="flFixClaimReading(' + s.req_id + ');return false;" '
+                    + 'title="Correct the odometer or which service this was. The amount is not touched." '
+                    + 'style="font-size:11px;font-weight:700;">Edit reading</a>'
+                  : '')
           +   '</span>'
-          +   '<span>Rs ' + flNum(s.amount) + '</span>'
-          + '</div>').join('');
+          /* ⭐ A hand-recorded row can now carry its BILL (Sep-3): the manager records the
+                work and its cost in one action, and the claim half is dropped from this list so
+                the job appears once. So "no bill" is only true when there genuinely is none. */
+          +   '<span>' + ((s.manual && !(s.amount > 0))
+                            ? '<span style="color:#9ca3af;">no bill</span>'
+                            : 'Rs ' + flNum(s.amount)) + '</span>'
+          + '</div>').join('')
+        /* The rest of the record is one click away, and the button says how much. */
+        + (more > 0
+            ? '<div style="margin-top:6px;">' + btn(false, 'flvHistMore()',
+                'Show ' + more + ' more') + '</div>'
+            : (flvHistShowAll && filtered.length > CAP
+                ? '<div style="margin-top:6px;">' + btn(false, 'flvHistMore()', 'Show fewer') + '</div>'
+                : ''));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ✏️ CORRECT A SERVICE RECORD (owner ask, 3-Sep): "Qasim or Shabib or Taimur can
+   modify these service dates later on as well if needed."
+
+   ⚠⚠ These rows used to be INSERT-ONLY. A record filed against the wrong job, day or
+      odometer could only be fixed with hand-written SQL — the situation log #8 left us
+      in. Same permission as recording one: if you can write it, you can fix it.
+   ⚠ Only MANUAL records. A claim carries money and is amended through the claims flow.
+   ⭐ The countdown is DERIVED from these rows, so a correction self-corrects every
+     surface — there is no frozen figure to chase afterwards.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════
+   ✏️ CORRECT THE READING ON A MAINTENANCE CLAIM (owner ask, 3-Sep)
+
+   ⚠⚠ THE TWO FIELDS HERE ARE NOT MONEY. The odometer and which job was done are
+      OBSERVATIONS about a machine; the amount, the date and the vehicle decide what was
+      spent, which period it lands in and which bike carries it. Only the observations are
+      editable — the server enforces that, this dialog just never offers the rest.
+
+   ⚠ The countdown is DERIVED from this row, so the correction self-corrects the schedule
+     panel, the alerts, the rider's chip and this card at once.
+   ══════════════════════════════════════════════════════════════════════ */
+function flFixClaimReading(reqId) {
+    const types = (flData && flData.maint_types || []).filter(t => t.interval_km > 0);
+    const payload = {};
+
+    if (types.length) {
+        const lines = types.map((t, i) => (i + 1) + '. ' + t.name).join('\n');
+        const pick = window.prompt(
+            'Which service was actually done?\n\n' + lines
+            + '\n\nLeave blank to keep the job it is recorded against.', '');
+        if (pick === null) return;
+        if (String(pick).trim() !== '') {
+            const idx = parseInt(pick, 10) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= types.length) { alert('That is not one of the listed services.'); return; }
+            payload.maintenance_type_id = types[idx].id;
+        }
+    }
+
+    const km = window.prompt(
+        'Odometer at the service (km).\n\nLeave blank to keep it.\n\n'
+        + 'The bill amount and its date are NOT changed by this.', '');
+    if (km === null) return;
+    const kmN = String(km).replace(/[^0-9]/g, '');
+    if (kmN) payload.meter = parseInt(kmN, 10);
+
+    if (!Object.keys(payload).length) { alert('Nothing was changed.'); return; }
+
+    fetch(FL_BASE + '/claim-readings/' + reqId, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: JSON.stringify(payload)
+    }).then(r => r.json()).then(res => {
+        alert(res.message || (res.success ? 'Saved.' : 'Could not save.'));
+        if (res.success && typeof flvLoad === 'function') { flvLoad(); if (flvOpenId) flvOpen(flvOpenId); }
+    }).catch(() => alert('Could not save. Please try again.'));
+}
+
+function flFixServiceRecord(logId) {
+    const types = (flData && flData.maint_types || []).filter(t => t.interval_km > 0);
+    const payload = {};
+
+    if (types.length) {
+        const lines = types.map((t, i) => (i + 1) + '. ' + t.name).join('\n');
+        const pick = window.prompt(
+            'Which service was actually done?\n\n' + lines
+            + '\n\nLeave blank to keep the job it is recorded against.', '');
+        if (pick === null) return;
+        if (String(pick).trim() !== '') {
+            const idx = parseInt(pick, 10) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= types.length) { alert('That is not one of the listed services.'); return; }
+            payload.maintenance_type_id = types[idx].id;
+        }
+    }
+
+    const km = window.prompt('Odometer at the service (km).\n\nLeave blank to keep it.', '');
+    if (km === null) return;
+    const kmN = String(km).replace(/[^0-9]/g, '');
+    if (kmN) payload.meter = parseInt(kmN, 10);
+
+    const day = window.prompt('Date of the service (YYYY-MM-DD).\n\nLeave blank to keep it.', '');
+    if (day === null) return;
+    const d = String(day).trim();
+    if (d) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { alert('Give the date as YYYY-MM-DD.'); return; }
+        if (d > flvTodayYmd()) { alert('That date is in the future.'); return; }
+        payload.date = d;
+    }
+
+    if (!Object.keys(payload).length) { alert('Nothing was changed.'); return; }
+
+    fetch(FL_BASE + '/service-records/' + logId, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''},
+        body: JSON.stringify(payload)
+    }).then(r => r.json()).then(res => {
+        alert(res.message || (res.success ? 'Saved.' : 'Could not save.'));
+        if (res.success && typeof flvLoad === 'function') { flvLoad(); if (flvOpenId) flvOpen(flvOpenId); }
+    }).catch(() => alert('Could not save. Please try again.'));
+}
+
+function flRemoveServiceRecord(logId) {
+    if (!window.confirm('Remove this service record?\n\n'
+        + 'The countdowns are worked out from these records, so removing it will move the '
+        + 'next-due figures back. Do this only if the service did not actually happen.')) return;
+    fetch(FL_BASE + '/service-records/' + logId, {
+        method: 'DELETE',
+        headers: {'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''}
+    }).then(r => r.json()).then(res => {
+        alert(res.message || (res.success ? 'Removed.' : 'Could not remove.'));
+        if (res.success && typeof flvLoad === 'function') { flvLoad(); if (flvOpenId) flvOpen(flvOpenId); }
+    }).catch(() => alert('Could not remove. Please try again.'));
 }
 
 function flvScheduleHtml(res) {

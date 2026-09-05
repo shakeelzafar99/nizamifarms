@@ -1114,7 +1114,9 @@
         @foreach($invoicesByRider as $riderData)
         <div class="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden hover:shadow-lg transition-shadow">
             <!-- Rider Header -->
-            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-3 flex items-center justify-between">
+            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 px-4 py-3 flex items-center justify-between cursor-pointer select-none"
+                 onclick="dcToggleRider({{ $riderData['account']->id }})"
+                 title="Click to collapse or expand this rider's invoices">
                 <div class="flex items-center gap-3">
                     <div class="w-10 h-10 bg-white bg-opacity-20 rounded-full flex items-center justify-center border-2 border-white">
                         <span class="text-white font-bold text-lg">
@@ -1136,11 +1138,24 @@
                         @endif
                     </div>
                 </div>
-                <div class="text-right">
-                    <p class="text-xs text-purple-100">Total Outstanding</p>
-                    <p class="text-2xl font-bold text-white">Rs. {{ number_format($riderData['total_outstanding'], 2) }}</p>
+                <div class="flex items-center gap-3">
+                    <div class="text-right">
+                        <p class="text-xs text-purple-100">Total Outstanding</p>
+                        <p class="text-2xl font-bold text-white">Rs. {{ number_format($riderData['total_outstanding'], 2) }}</p>
+                    </div>
+                    {{-- Collapse chevron. Purely decorative: the whole header is
+                         the click target, so this never needs its own handler. --}}
+                    <span id="dc-rider-chev-{{ $riderData['account']->id }}"
+                          class="text-white text-xl leading-none" style="width:14px;text-align:center;">&#9662;</span>
                 </div>
             </div>
+
+            {{-- Everything below the header collapses together (invoice table +
+                 the quick-actions footer), so a collapsed card is just the
+                 purple summary bar: rider, invoice count and total outstanding.
+                 Expanded by default — collapsing is a per-session choice, and
+                 the page never auto-reloads, so nothing resets under him. --}}
+            <div id="dc-rider-body-{{ $riderData['account']->id }}">
 
             <!-- Invoices Table -->
             <div class="overflow-x-auto">
@@ -1366,6 +1381,7 @@
                     View Ledger →
                 </a>
             </div>
+            </div>{{-- /dc-rider-body --}}
         </div>
         @endforeach
     </div>
@@ -2257,6 +2273,17 @@ document.addEventListener('keydown', function (e) {
 
 // Glance chip → the section it summarises. Restores a maximized pane first,
 // otherwise the scroll happens behind the overlay and looks like nothing did.
+// Sep-2026 — collapse an individual rider closing card. Same interaction the
+// Payment Follow-up groups and the Petrol/Maintenance panels use: a plain
+// class toggle, no persistence, nothing sent to the server.
+function dcToggleRider(accountId) {
+    var body = document.getElementById('dc-rider-body-' + accountId);
+    if (!body) { return; }
+    var collapsed = body.classList.toggle('hidden');
+    var chev = document.getElementById('dc-rider-chev-' + accountId);
+    if (chev) { chev.innerHTML = collapsed ? '&#9656;' : '&#9662;'; }
+}
+
 function dcJump(id) {
     dcRestoreMax();
     var el = document.getElementById(id);

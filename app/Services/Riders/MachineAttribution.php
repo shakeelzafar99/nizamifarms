@@ -260,6 +260,10 @@ class MachineAttribution
                 $handovers[$vid] ?? [],
                 $logs[$vid] ?? []
             );
+            // ⭐ WHAT THE MACHINE IS — carried alongside the walk rather than threaded
+            //   through its signature. `walk()` reasons about odometers, not body shapes;
+            //   the registry already knows, and the rider lens picks it up from here.
+            $out['vehicles'][$vid]['vtype'] = ((string) ($v->vtype ?? '')) === 'van' ? 'van' : 'bike';
         }
 
         $out['riders'] = $this->rollUpRiders($out['vehicles'], $names);
@@ -986,7 +990,8 @@ class MachineAttribution
     private function rollUpRiders(array $vehicles, array $names): array
     {
         $riders = [];
-        $touch = function (&$riders, $uid, $vid, $label, $isCompany) use ($names) {
+        // $vtype ('bike' | 'van') defaults to the bike so an older caller behaves as before.
+        $touch = function (&$riders, $uid, $vid, $label, $isCompany, $vtype = 'bike') use ($names) {
             if (!isset($riders[$uid])) {
                 $riders[$uid] = [
                     'user_id' => $uid, 'name' => $names[$uid] ?? null,
@@ -998,6 +1003,9 @@ class MachineAttribution
             if ($vid !== null && !isset($riders[$uid]['machines'][$vid])) {
                 $riders[$uid]['machines'][$vid] = [
                     'vehicle_id' => $vid, 'label' => $label, 'is_company' => $isCompany,
+                    // What the machine IS. Every screen drawing this row had only
+                    // is_company to go on and used it as a stand-in for "van".
+                    'vtype' => $vtype === 'van' ? 'van' : 'bike',
                     'work_km' => 0, 'offduty_km' => 0, 'shared_km' => 0,
                     'transfer_km' => 0, 'unattributed_km' => 0, 'days' => 0,
                     'fuel_rs' => 0.0, 'maint_rs' => 0.0,
@@ -1021,7 +1029,7 @@ class MachineAttribution
                 ];
                 if (isset($map[$l['kind']]) && $l['user_id'] !== null) {
                     $uid = $l['user_id'];
-                    $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                    $touch($riders, $uid, $vid, $v['label'], $v['is_company'], $v['vtype'] ?? 'bike');
                     $riders[$uid][$map[$l['kind']]] += $l['km'];
                     $riders[$uid]['machines'][$vid][$map[$l['kind']]] += $l['km'];
                     continue;
@@ -1031,7 +1039,7 @@ class MachineAttribution
                     $field = $l['kind'] === 'shared' ? 'shared_km' : 'transfer_km';
                     foreach ([$l['from_user'], $l['to_user']] as $uid) {
                         if ($uid === null) continue;
-                        $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                        $touch($riders, $uid, $vid, $v['label'], $v['is_company'], $v['vtype'] ?? 'bike');
                         $riders[$uid][$field] += $l['km'];
                         $riders[$uid]['machines'][$vid][$field] += $l['km'];
                     }
@@ -1041,7 +1049,7 @@ class MachineAttribution
             foreach ($v['days'] as $row) {
                 $uid = $row['user_id'];
                 if ($uid === null) continue;
-                $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                $touch($riders, $uid, $vid, $v['label'], $v['is_company'], $v['vtype'] ?? 'bike');
                 $riders[$uid]['days'][$row['date']][] = array_merge($row, [
                     'vehicle_id' => $vid, 'vehicle_label' => $v['label'],
                     'is_company' => $v['is_company'],
@@ -1060,7 +1068,7 @@ class MachineAttribution
             // when he never produced a usable reading on it (that is exactly the
             // Farooq case the red banner was complaining about).
             foreach ($v['spend'] as $uid => $s) {
-                $touch($riders, $uid, $vid, $v['label'], $v['is_company']);
+                $touch($riders, $uid, $vid, $v['label'], $v['is_company'], $v['vtype'] ?? 'bike');
                 $riders[$uid]['machines'][$vid]['reconciles'] = $v['reconciles'];
                 foreach (['fuel_rs', 'maint_rs', 'fuel_pending_rs', 'maint_pending_rs'] as $k) {
                     $riders[$uid]['machines'][$vid][$k] += $s[$k];

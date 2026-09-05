@@ -110,10 +110,15 @@ class ReportsController extends Controller
      * straight into the same renderSection() the expense/vendor sections use. Reads the same
      * SalaryCostService the summary does, so the two always agree; Khaas rows hidden for
      * users without access.
+     *
+     * Sep-2026 — ALSO returns `by_employee` (salary is a MONTHLY thing, so a list of people reads
+     * better than a list of dates). Built in the SAME loop from the SAME rows as `by_date`, so the
+     * two groupings can never disagree, and `by_date` is kept so the old view and any installed APK
+     * keep working. One person paid in both BUs stays ONE row carrying both bu_codes.
      */
     private function salariesDetail(int $nfBuId, int $khaasBuId, string $start, string $end, bool $canViewKhaas): array
     {
-        $byDate = []; $nfTotal = 0.0; $khTotal = 0.0; $count = 0;
+        $byDate = []; $byEmp = []; $nfTotal = 0.0; $khTotal = 0.0; $count = 0;
 
         // Same engine as the summary above (and as HQ), so this drill always sums to the
         // Salaries figure it opens from. Rows are grouped by the date the money moved; an
@@ -124,24 +129,75 @@ class ReportsController extends Controller
             if (!isset($byDate[$date])) {
                 $byDate[$date] = ["date" => $date, "total" => 0.0, "items" => []];
             }
+            $buCode = $r["is_khaas"] ? "KHAAS" : "NF";
+            $source = $r["kind"] === "advance_open" ? "Advance — salary not paid yet"
+                : ($r["kind"] === "slip" ? "Slip" : "Payroll");
+
             $byDate[$date]["items"][] = [
                 "employee" => $r["employee"],
                 "amount"   => $r["amount"],
-                "bu_code"  => $r["is_khaas"] ? "KHAAS" : "NF",
-                "source"   => $r["kind"] === "advance_open" ? "Advance — salary not paid yet"
-                    : ($r["kind"] === "slip" ? "Slip" : "Payroll"),
+                "bu_code"  => $buCode,
+                "source"   => $source,
             ];
             $byDate[$date]["total"] += $r["amount"];
-            if ($r["is_khaas"]) { $khTotal += $r["amount"]; } else { $nfTotal += $r["amount"]; }
+
+            // ALSO group the very same row by employee. Keyed on user_id so a shared display
+            // name never merges two people; falls back to the name only if the id is missing.
+            $empKey = $r["user_id"] !== null ? ('u' . $r["user_id"]) : ('n' . $r["employee"]);
+            if (!isset($byEmp[$empKey])) {
+                $byEmp[$empKey] = [
+                    "user_id"     => $r["user_id"],
+                    "employee"    => $r["employee"],
+                    "total"       => 0.0,
+                    "total_nf"    => 0.0,
+                    "total_khaas" => 0.0,
+                    "count"       => 0,
+                    "bu_codes"    => [],
+                    "items"       => [],
+                ];
+            }
+            $byEmp[$empKey]["items"][] = [
+                "date"    => $date,
+                "amount"  => $r["amount"],
+                "bu_code" => $buCode,
+                "source"  => $source,
+            ];
+            $byEmp[$empKey]["total"] += $r["amount"];
+            $byEmp[$empKey]["count"]++;
+            if (!in_array($buCode, $byEmp[$empKey]["bu_codes"], true)) {
+                $byEmp[$empKey]["bu_codes"][] = $buCode;
+            }
+
+            if ($r["is_khaas"]) {
+                $khTotal += $r["amount"];
+                $byEmp[$empKey]["total_khaas"] += $r["amount"];
+            } else {
+                $nfTotal += $r["amount"];
+                $byEmp[$empKey]["total_nf"] += $r["amount"];
+            }
             $count++;
         }
         krsort($byDate);
+
+        // Biggest payer first, and each employee's own lines newest-first.
+        $byEmp = array_values($byEmp);
+        foreach ($byEmp as &$e) {
+            usort($e["items"], fn ($a, $b) => strcmp((string) $b["date"], (string) $a["date"]));
+            $e["total"]       = round($e["total"], 2);
+            $e["total_nf"]    = round($e["total_nf"], 2);
+            $e["total_khaas"] = round($e["total_khaas"], 2);
+        }
+        unset($e);
+        usort($byEmp, fn ($a, $b) => $b["total"] <=> $a["total"]);
+
         return [
-            'total'       => round($nfTotal + $khTotal, 2),
-            'total_nf'    => round($nfTotal, 2),
-            'total_khaas' => round($khTotal, 2),
-            'count'       => $count,
-            'by_date'     => array_values($byDate),
+            'total'          => round($nfTotal + $khTotal, 2),
+            'total_nf'       => round($nfTotal, 2),
+            'total_khaas'    => round($khTotal, 2),
+            'count'          => $count,
+            'by_date'        => array_values($byDate),
+            'by_employee'    => $byEmp,
+            'employee_count' => count($byEmp),
         ];
     }
 
@@ -203,12 +259,26 @@ class ReportsController extends Controller
                 // Invoices — non-Qurbani delivered orders this month.
                 // Qurbani delivered orders are aggregated separately
                 // into the "Qurbani YYYY" yearly section.
+                // Sep-2026 — `total` is PROFIT revenue, not the sum of invoice
+                // faces: account balance spent is added back and tips from the
+                // cutoff on are taken out. One definition, in ProfitRevenueSql.
+                // `tips_total` stays the FULL month's tips (the tips card lists
+                // every tip, before and after the cutoff); `tips_excluded` is
+                // only the part that left profit, for the sub-line.
+                $revenueExpr = \App\Services\FIN\ProfitRevenueSql::revenue('o', 'h.delivered_at');
+                $balanceExpr = \App\Services\FIN\ProfitRevenueSql::balance();
+                $tipOutExpr  = \App\Services\FIN\ProfitRevenueSql::tipExcluded('o', 'h.delivered_at');
+                $balanceJoin = \App\Services\FIN\ProfitRevenueSql::joinSql('o');
+
                 $invoiceData = DB::selectOne("
                     SELECT
-                        COALESCE(SUM(o.total_price), 0) as total,
+                        COALESCE(SUM($revenueExpr), 0) as total,
                         COUNT(DISTINCT o.id) as count,
                         COALESCE(SUM(CASE WHEN o.tip_amount > 0 THEN o.tip_amount ELSE 0 END), 0) as tips_total,
-                        COUNT(DISTINCT CASE WHEN o.tip_amount > 0 THEN o.id END) as tips_count
+                        COUNT(DISTINCT CASE WHEN o.tip_amount > 0 THEN o.id END) as tips_count,
+                        COALESCE(SUM($tipOutExpr), 0) as tips_excluded,
+                        COALESCE(SUM($balanceExpr), 0) as balance_used,
+                        COUNT(DISTINCT CASE WHEN $balanceExpr > 0 THEN o.id END) as balance_count
                     FROM t_crm_prod_order o
                     INNER JOIN (
                         SELECT order_id, MIN(changed_at) as delivered_at
@@ -216,6 +286,7 @@ class ReportsController extends Controller
                         WHERE status_code = 'delivered'
                         GROUP BY order_id
                     ) h ON o.id = h.order_id
+                    $balanceJoin
                     WHERE h.delivered_at >= ? AND h.delivered_at <= ?
                       AND (o.external_source IS NULL OR o.external_source != 'shopify')
                       AND o.order_status IN ('delivered', 'completed')
@@ -293,6 +364,11 @@ class ReportsController extends Controller
                     'invoice_count'          => (int) ($invoiceData->count ?? 0),
                     'tips'                   => round($invoiceData->tips_total ?? 0, 2),
                     'tips_count'             => (int) ($invoiceData->tips_count ?? 0),
+                    // Sep-2026 — the two adjustments already inside `invoices`,
+                    // reported separately so the card can show its working.
+                    'tips_excluded'          => round($invoiceData->tips_excluded ?? 0, 2),
+                    'balance_used'           => round($invoiceData->balance_used ?? 0, 2),
+                    'balance_count'          => (int) ($invoiceData->balance_count ?? 0),
                     // Phase 5 — split fields. `expenses` / `vendor_purchases` kept
                     // for backward compatibility with old mobile clients.
                     'expenses'               => round($expensesTotal, 2),
@@ -422,12 +498,25 @@ class ReportsController extends Controller
             [$nfBuId, $khaasBuId] = $this->buIds();
 
             // Get invoices grouped by delivery date (excluding Qurbani).
+            // Sep-2026 — `amount` is the order's PROFIT contribution (balance
+            // spent added back, post-cutoff tip removed), so this drill-down
+            // still adds up to the summary card exactly as it always has. The
+            // invoice's own face value rides along as `invoice_amount` so a row
+            // whose two numbers differ can explain itself.
+            $revenueExpr = \App\Services\FIN\ProfitRevenueSql::revenue('o', 'h.delivered_at');
+            $balanceExpr = \App\Services\FIN\ProfitRevenueSql::balance();
+            $tipOutExpr  = \App\Services\FIN\ProfitRevenueSql::tipExcluded('o', 'h.delivered_at');
+            $balanceJoin = \App\Services\FIN\ProfitRevenueSql::joinSql('o');
+
             $invoicesRaw = DB::select("
                 SELECT
                     DATE(h.delivered_at) as delivery_date,
                     o.order_number,
                     CONCAT(c.first_name, ' ', c.last_name) as customer_name,
-                    o.total_price as amount
+                    $revenueExpr as amount,
+                    o.total_price as invoice_amount,
+                    $balanceExpr as balance_used,
+                    $tipOutExpr as tip_excluded
                 FROM t_crm_prod_order o
                 INNER JOIN (
                     SELECT order_id, MIN(changed_at) as delivered_at
@@ -436,6 +525,7 @@ class ReportsController extends Controller
                     GROUP BY order_id
                 ) h ON o.id = h.order_id
                 LEFT JOIN t_crm_prod_customer c ON o.customer_id = c.id
+                $balanceJoin
                 WHERE h.delivered_at >= ? AND h.delivered_at <= ?
                   AND (o.external_source IS NULL OR o.external_source != 'shopify')
                   AND o.order_status IN ('delivered', 'completed')
@@ -447,6 +537,11 @@ class ReportsController extends Controller
             $invoicesByDate = [];
             $invoiceTotal = 0;
             $invoiceCount = 0;
+            // Sep-2026 — the two adjustments, collected as their own lists so
+            // each headline number can be opened and read invoice by invoice.
+            $balanceItems = [];
+            $balanceTotal = 0;
+            $tipsExcludedTotal = 0;
             foreach ($invoicesRaw as $inv) {
                 $date = $inv->delivery_date;
                 if (!isset($invoicesByDate[$date])) {
@@ -456,10 +551,25 @@ class ReportsController extends Controller
                     'order_number' => $inv->order_number,
                     'customer_name' => $inv->customer_name,
                     'amount' => round($inv->amount, 2),
+                    'invoice_amount' => round($inv->invoice_amount, 2),
+                    'balance_used' => round($inv->balance_used, 2),
+                    'tip_excluded' => round($inv->tip_excluded, 2),
                 ];
                 $invoicesByDate[$date]['total'] += $inv->amount;
                 $invoiceTotal += $inv->amount;
                 $invoiceCount++;
+
+                $tipsExcludedTotal += (float) $inv->tip_excluded;
+                if ((float) $inv->balance_used > 0) {
+                    $balanceItems[] = [
+                        'order_number'   => $inv->order_number,
+                        'customer_name'  => $inv->customer_name ?? 'Unknown',
+                        'balance_used'   => round($inv->balance_used, 2),
+                        'invoice_amount' => round($inv->invoice_amount, 2),
+                        'delivery_date'  => $date,
+                    ];
+                    $balanceTotal += (float) $inv->balance_used;
+                }
             }
             
             // Get tips from delivered invoices (excluding Qurbani).
@@ -507,6 +617,11 @@ class ReportsController extends Controller
             // Get expenses grouped by transaction date with user, category and BU.
             // Phase 5 — excludes Qurbani; tags each row with `bu_code`
             // (NF / KHAAS) so the drill-down can show the split too.
+            //
+            // Sep-2026 — also resolves the SPENDER for the per-employee grouping: the request's
+            // requester, falling back to the ledger's created_by for a hand-entered row with no
+            // request behind it. Both LEFT JOINs, and `request_id` points at ONE t_req_master row,
+            // so no expense row can be dropped or duplicated — the expense TOTAL cannot move.
             $expensesRaw = DB::select("
                 SELECT
                     l.transaction_date,
@@ -516,11 +631,18 @@ class ReportsController extends Controller
                     a.account_name as category,
                     DATE(l.created_at) as entry_date,
                     COALESCE(bu.code, 'NF') as bu_code,
-                    l.business_unit_id
+                    l.business_unit_id,
+                    COALESCE(r.requester_user_id, l.created_by) as employee_user_id,
+                    -- The NAME must follow the ID above, never blend the two: if a requester's
+                    -- user row is gone, this stays NULL and the caller labels it 'User <id>'
+                    -- rather than quietly showing the ledger creator's name on someone else's spend.
+                    CASE WHEN r.requester_user_id IS NOT NULL THEN ru.fullname ELSE u.fullname END as employee_name
                 FROM t_fin_ledger l
                 LEFT JOIN t_sys_user u ON l.created_by = u.id
                 LEFT JOIN t_fin_accounts a ON l.to_account_id = a.id
                 LEFT JOIN t_fin_business_units bu ON l.business_unit_id = bu.id
+                LEFT JOIN t_req_master r ON r.id = l.request_id
+                LEFT JOIN t_sys_user ru ON ru.id = r.requester_user_id
                 WHERE l.transaction_date >= ? AND l.transaction_date <= ?
                   AND l.transaction_type = ?
                   AND l.approval_status = ?
@@ -561,9 +683,9 @@ class ReportsController extends Controller
                 // ALSO accumulate by expense sub-category (Salaries / Food / Maintenance …).
                 $catKey = $category ?? 'Uncategorized';
                 if (!isset($expensesByCategory[$catKey])) {
-                    $expensesByCategory[$catKey] = ['category' => $catKey, 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0, 'count' => 0, 'items' => []];
+                    $expensesByCategory[$catKey] = ['category' => $catKey, 'total' => 0, 'total_nf' => 0, 'total_khaas' => 0, 'count' => 0, 'items' => [], 'by_employee' => []];
                 }
-                $expensesByCategory[$catKey]['items'][] = [
+                $catItem = [
                     'description' => $exp->description,
                     'amount' => round($exp->amount, 2),
                     'user' => $exp->created_by ?? 'Unknown',
@@ -571,8 +693,30 @@ class ReportsController extends Controller
                     'entry_date' => $exp->entry_date,
                     'bu_code' => $exp->bu_code,
                 ];
+                $expensesByCategory[$catKey]['items'][] = $catItem;
                 $expensesByCategory[$catKey]['total'] += $exp->amount;
                 $expensesByCategory[$catKey]['count']++;
+
+                // Sep-2026 — ALSO club the SAME item under the person who spent it, inside its
+                // category. Built from the same row in the same pass, so the employee lines always
+                // sum to the category total; `items` above is untouched so the flat list, the Daily
+                // Breakdown and any installed APK are unaffected.
+                $spenderId   = $exp->employee_user_id !== null ? (int) $exp->employee_user_id : null;
+                $spenderName = $exp->employee_name
+                    ?: ($spenderId !== null ? ('User ' . $spenderId) : 'Unknown');
+                $empKey      = $spenderId !== null ? ('u' . $spenderId) : ('n' . $spenderName);
+                if (!isset($expensesByCategory[$catKey]['by_employee'][$empKey])) {
+                    $expensesByCategory[$catKey]['by_employee'][$empKey] = [
+                        'user_id'  => $spenderId,
+                        'employee' => $spenderName,
+                        'total'    => 0,
+                        'count'    => 0,
+                        'items'    => [],
+                    ];
+                }
+                $expensesByCategory[$catKey]['by_employee'][$empKey]['items'][] = $catItem;
+                $expensesByCategory[$catKey]['by_employee'][$empKey]['total'] += $exp->amount;
+                $expensesByCategory[$catKey]['by_employee'][$empKey]['count']++;
 
                 if ($isKhaas) {
                     $expensesByDate[$date]['total_khaas'] += $exp->amount;
@@ -586,8 +730,22 @@ class ReportsController extends Controller
                 $expenseTotal += $exp->amount;
                 $expenseCount++;
             }
-            // Sort expense categories by total desc for the breakdown view.
+            // Sort expense categories by total desc for the breakdown view, and inside each one
+            // flatten the employee map (biggest spender first). `employee_count` is what the UI
+            // keys the extra layer off: a category spent by ONE person stays flat, so nothing that
+            // reads fine today gains a pointless tap. Data-driven on purpose — Petrol, Petrol
+            // Taimur, Fuel/Petrol and Ravi Fuel are separate accounts, so a name list would miss some.
             $expensesByCategory = array_values($expensesByCategory);
+            foreach ($expensesByCategory as &$cat) {
+                $cat['by_employee'] = array_values($cat['by_employee']);
+                foreach ($cat['by_employee'] as &$emp) {
+                    $emp['total'] = round($emp['total'], 2);
+                }
+                unset($emp);
+                usort($cat['by_employee'], fn($a, $b) => $b['total'] <=> $a['total']);
+                $cat['employee_count'] = count($cat['by_employee']);
+            }
+            unset($cat);
             usort($expensesByCategory, fn($a, $b) => $b['total'] <=> $a['total']);
             
             // Get vendor purchases grouped by date (excluding Qurbani),
@@ -750,6 +908,16 @@ class ReportsController extends Controller
                         'total' => round($tipsTotal, 2),
                         'count' => $tipsCount,
                         'items' => $tipsItems,
+                        // How much of the above was taken OUT of profit (tips on
+                        // deliveries from the cutoff on). Older months: 0.
+                        'excluded_from_profit' => round($tipsExcludedTotal, 2),
+                    ],
+                    // Money customers paid from their own account balance. It is
+                    // already inside `invoices.total` — this is the drill-down.
+                    'balance_used' => [
+                        'total' => round($balanceTotal, 2),
+                        'count' => count($balanceItems),
+                        'items' => $balanceItems,
                     ],
                     'expenses' => [
                         'total' => round($expenseTotal, 2),

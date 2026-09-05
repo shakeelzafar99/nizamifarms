@@ -765,12 +765,13 @@ class ShiftController extends Controller
                 $t = $row->shiftTemplate;
                 $what = $t
                     ? ($t->shift_name . ' (' . substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards') . ')' . $this->whenSuffix($row))
-                    : 'Your temporary shift change';
+                    : 'Aap ki temporary shift change';
+                // 🗣 Roman Urdu — the rider acts on this (he must turn up on the right shift).
                 app(\App\Services\FirebaseService::class)->notifyUser(
                     $userId,
                     [
-                        'title' => 'Shift change cancelled',
-                        'body'  => $what . ' is cancelled — your usual shift applies.',
+                        'title' => '🗓 Shift change cancel ho gaya',
+                        'body'  => $what . ' cancel ho gaya — aap ki normal shift lagegi.',
                     ],
                     ['type' => 'shift_assigned'], // same type → mobile banner/screens refresh
                     'shift_notifications'
@@ -908,12 +909,12 @@ class ShiftController extends Controller
             $time = substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards');
             $date = $pending->effective_from ? $pending->effective_from->format('Y-m-d') : now()->format('Y-m-d');
             $locName = $this->shiftService->getUserShift($userId, $date)['location_name'] ?? null;
-            $body = 'Your shift: ' . $t->shift_name . ' (' . $time . ')'
-                . ($locName ? ' at ' . $locName : '')
-                . $this->whenSuffix($pending) . '. Open the app to confirm.';
+            $body = 'Aap ki shift: ' . $t->shift_name . ' (' . $time . ')'
+                . ($locName ? ' — ' . $locName : '')
+                . $this->whenSuffix($pending) . '. Confirm karne ke liye app kholein.';
             app(\App\Services\FirebaseService::class)->notifyUser(
                 $userId,
-                ['title' => 'Shift updated', 'body' => $body],
+                ['title' => '🗓 Shift update ho gayi', 'body' => $body],
                 ['type' => 'shift_assigned'],
                 'shift_notifications'
             );
@@ -942,10 +943,11 @@ class ShiftController extends Controller
     {
         $from = $row->effective_from ? $row->effective_from->format('D j M') : null;
         $to = $row->effective_to ? $row->effective_to->format('D j M') : null;
+        // 🗣 Both callers are rider pushes written in Roman Urdu, so the date tail matches.
         if ($row->effective_to) {
-            return $from === $to ? ($to ? ' on ' . $to : '') : ' for ' . $from . ' – ' . $to;
+            return $from === $to ? ($to ? ' — ' . $to . ' ko' : '') : ' — ' . $from . ' se ' . $to . ' tak';
         }
-        return $from ? ' from ' . $from : '';
+        return $from ? ' — ' . $from . ' se' : '';
     }
 
     /**

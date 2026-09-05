@@ -799,6 +799,64 @@ class CustomerController extends Controller
                 }
             }
 
+            // ---- Shops: the ACTUAL payment rows behind each invoice, tagged
+            // with the entry BATCH they came from. This is what lets the
+            // statement answer "were these six payments one transfer or six?"
+            // — a bulk shop payment is split FIFO into one row per invoice, and
+            // per-invoice they otherwise look unrelated.
+            // Read-only and additive: nothing here changes total_paid, the
+            // balance, or any figure the tiles already show.
+            $paymentsByOrder = [];
+            if ($isShop) {
+                $prodIds = $prodOrders->pluck('id')->all();
+                if (!empty($prodIds)) {
+                    $payRows = DB::table('t_crm_order_payments as p')
+                        ->leftJoin('t_sys_user as u', 'u.id', '=', 'p.created_by')
+                        ->leftJoin('t_fin_online_receiving_accounts as b', 'b.id', '=', 'p.receiving_account_id')
+                        ->whereIn('p.order_id', $prodIds)
+                        ->where('p.status', 'active')
+                        ->orderBy('p.payment_date')
+                        ->orderBy('p.id')
+                        ->select(
+                            'p.id', 'p.order_id', 'p.amount', 'p.payment_date', 'p.reference',
+                            'p.created_by', 'p.created_at',
+                            'u.fullname as entered_by',
+                            'b.short_code as bank_code', 'b.name as bank_name'
+                        )
+                        ->get();
+
+                    // The batch is resolved against ALL of a batch's slices, not
+                    // just the ones listed here — an entry can legitimately cover
+                    // an invoice this list excludes (Shopify-sourced orders are
+                    // filtered out above), and the count must still say 7 of 7.
+                    $batches = app(\App\Services\Payments\PaymentBatchService::class)
+                        ->describe($payRows, (int) $id);
+
+                    foreach ($payRows as $p) {
+                        $batch = $batches[(int) $p->id] ?? null;
+                        $paymentsByOrder[$p->order_id][] = [
+                            'id'           => (int) $p->id,
+                            'amount'       => (float) $p->amount,
+                            'payment_date' => $p->payment_date
+                                ? date('Y-m-d', strtotime($p->payment_date))
+                                : null,
+                            'reference'    => $p->reference,
+                            'bank'         => $p->bank_code ?: $p->bank_name,
+                            'entered_by'   => $p->entered_by,
+                            'entered_at'   => $batch['entered_at'] ?? (
+                                $p->created_at ? date('Y-m-d H:i:s', strtotime($p->created_at)) : null
+                            ),
+                            // Batch facts — is_bulk false means this transfer
+                            // covered only this invoice.
+                            'is_bulk'      => $batch['is_bulk'] ?? false,
+                            'batch_size'   => $batch['batch_size'] ?? 1,
+                            'batch_total'  => $batch['batch_total'] ?? (float) $p->amount,
+                            'batch_orders' => $batch['orders'] ?? [],
+                        ];
+                    }
+                }
+            }
+
             // ---- Receivable summary — computed by the SAME batched helper the
             // customers LIST and the approvals page use, so the detail tile can
             // never drift from the list chip / approvals for either type. ----
@@ -813,7 +871,7 @@ class CustomerController extends Controller
                 // regulars settle via invoice approval (ledger state). The UI
                 // shows the right column set per type via this flag.
                 'is_shop' => $isShop,
-                'orders' => $allOrders->map(function($order) use ($isShop, $onlineMethods, $approvalStateByOrder, $pendingAmountByOrder) {
+                'orders' => $allOrders->map(function($order) use ($isShop, $onlineMethods, $approvalStateByOrder, $pendingAmountByOrder, $paymentsByOrder) {
                     $isProduction = $order->source_type === 'production';
                     $isDelivered  = ($order->order_status ?? '') === 'delivered';
                     $invoiceSettled = $isProduction && (int) ($order->invoice_settled ?? 0) === 1;
@@ -872,6 +930,12 @@ class CustomerController extends Controller
                         'approval_state' => $approvalState,
                         // L1-pending ledger amount for this order (regulars only).
                         'pending_amount' => $pendingAmount,
+                        // The payment rows behind 'total_paid', each tagged with
+                        // the entry batch it belongs to (shops only; [] for a
+                        // regular customer and for legacy history orders).
+                        'payments' => ($isProduction && $isShop)
+                            ? ($paymentsByOrder[$order->id] ?? [])
+                            : [],
                         'line_items_count' => $order->line_items_count,
                         'external_source' => $order->external_source ?? 'csv_import',
                         'payment_method' => $order->payment_method,

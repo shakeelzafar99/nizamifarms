@@ -70,6 +70,7 @@ class BalancePostingService
         $row->balance_updated = 1;
         $row->saveQuietly();
         $this->warnIfBankUntagged($row);
+        $this->syncTipsFund($row);
     }
 
     /**
@@ -113,6 +114,35 @@ class BalancePostingService
         $this->move($row, -1);
         $row->balance_updated = 0;
         $row->saveQuietly();
+        $this->syncTipsFund($row);
+    }
+
+    /**
+     * ⭐⭐ Tips Fund hook (Sep-2026) — the reason it lives HERE.
+     *
+     * A tip is inside the invoice total, so the invoice row books it as our
+     * revenue. It is not ours: it belongs to the tip pool until it is paid out.
+     * Seventeen files post invoice rows (cash delivery, web L1, mobile L1,
+     * reversals, corrections) and every one of them reaches this engine, so
+     * hooking the engine covers all of them — and any door added later by
+     * someone who never heard of the Tips Fund.
+     *
+     * Placed AFTER `balance_updated` is saved, because the service asks whether
+     * the invoice has actually reached the balances before collecting.
+     *
+     * ⚠ Only invoice rows. That is also what stops the recursion: the companion
+     * row this triggers is a `tip_collected`, which comes back through apply()
+     * and is ignored here.
+     */
+    private function syncTipsFund(LedgerModel $row): void
+    {
+        if ($row->transaction_type !== LedgerModel::TYPE_INVOICE) {
+            return;
+        }
+
+        // The service swallows and logs its own failures: a reporting companion
+        // must never be able to break a live delivery.
+        app(TipsFundService::class)->syncForInvoiceRow($row);
     }
 
     /**

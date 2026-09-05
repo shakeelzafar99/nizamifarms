@@ -200,6 +200,14 @@ class BikeServiceAlerts
             if (!$isManager) {
                 $alerts = array_map(function ($a) {
                     unset($a['keeper_user_id'], $a['keeper_name']);
+                    // 🗣 The rider must act on this — he is the one who takes the bike in —
+                    // so his copy is Roman Urdu (owner ruling). The manager list above keeps
+                    // the English `message` built by message(); this is the only fork.
+                    $km = number_format(abs((int) ($a['due_in_km'] ?? 0)));
+                    $job = $a['type_name'] ?? 'service';
+                    $a['message'] = ($a['state'] ?? '') === 'overdue'
+                        ? 'Aap ki bike ka ' . $job . ' ' . $km . ' km late ho chuka hai.'
+                        : 'Aap ki bike ka ' . $job . ' ' . $km . ' km baad hai.';
                     return $a;
                 }, $alerts);
             }

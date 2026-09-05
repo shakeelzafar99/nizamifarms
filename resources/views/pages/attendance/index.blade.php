@@ -1775,6 +1775,16 @@ function attStatusPill(r, lateBy, overtime) {
 //     unexplained no-show is instantly weighed against their yearly record.
 function attInlineContext(r) {
   const bits = [];
+  /* 🔧 WORKSHOP ERRAND (Sep-2026). Shown BESIDE the day's status, never instead of it —
+     a workshop day is a NORMAL PAID WORKING DAY (owner ruling), so this changes nothing
+     about pay, lateness or absence. It is here so a manager reading attendance knows why
+     a rider is not where he usually is. ⏳ = he has not confirmed it yet.
+     Same server map the shift planner paints from, so the two screens always agree. */
+  if (r.workshop) {
+    const w = r.workshop;
+    const ok = w.accepted;
+    bits.push(`<span title="${(w.vehicle_name || 'Bike')} to the workshop${w.workshop ? ' — ' + w.workshop : ''}${ok ? ' · confirmed by the rider' : ' · NOT confirmed yet'}. He still works and is paid as normal." style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:#92400E;background:#FEF3C7;border:1px solid #FCD34D;border-radius:5px;padding:1px 6px;">🔧 workshop${w.time ? ' ' + w.time : ''} ${ok ? '✓' : '⏳'}</span>`);
+  }
   // Leave detail (the old Leave column, folded in): type + approval state.
   if (r.leave_request_id) {
     const st = String(r.leave_status || '').toLowerCase();
@@ -2253,6 +2263,8 @@ function leaveBalCell(u, uid, nm) {
   if (ot !== 0) chips += `<span style="color:#6d28d9;">${ot > 0 ? '+' : ''}${ot} OT</span> `;
   if (late < 0) chips += `<span style="color:#c2410c;">${late} late</span> `;
   if (adj !== 0) chips += `<span style="color:#6b7280;">${adj > 0 ? '+' : ''}${adj} adj</span> `;
+  const cov = Number(u.leave_absence_cover) || 0;
+  if (cov !== 0) chips += `<span style="color:#b45309;">${cov} absence cover</span> `;
   return `<td class="px-4 py-3" style="text-align:center;">
     <button type="button" onclick="event.stopPropagation(); showLeaveSummary(${uid}, '${nm}')" title="Leave balance + history"
       style="background:none;border:none;cursor:pointer;padding:0;">
@@ -2291,6 +2303,8 @@ async function showLeaveSummary(uid, name) {
   if (ot !== 0) summary += fRow((ot > 0 ? '+ ' : '− ') + 'Bonus (overtime)', (ot > 0 ? '+' : '') + ot, '#6d28d9');
   if (late < 0) summary += fRow('− Late penalty', late, '#c2410c');
   if (adj !== 0) summary += fRow((adj > 0 ? '+ ' : '− ') + 'Yearly adjustment', (adj > 0 ? '+' : '') + adj, '#6b7280');
+  const cov = Number(u.leave_absence_cover) || 0;
+  if (cov !== 0) summary += fRow('− Used to cover parked absences', cov, '#b45309');
   summary += fRow('− Taken', '−' + taken, '#2563eb');
   summary += `<div style="border-top:1px dashed #E5E7EB;margin-top:4px;padding-top:4px;">` + fRow('= Remaining', rem, remColor) + `</div>`;
   summary += `</div>`;
@@ -2381,13 +2395,25 @@ async function saveLeaveAdjust() {
   const btn = document.getElementById('lvAdjSave');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   try {
-    const res = await fetch('/attendance/grant-leave', {
+    const post = (cover) => fetch('/attendance/grant-leave', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content },
-      body: JSON.stringify({ user_id: LVADJ.uid, days: days, reason: reason, kind: LVADJ.kind })
+      body: JSON.stringify(Object.assign(
+        { user_id: LVADJ.uid, days: days, reason: reason, kind: LVADJ.kind },
+        cover === undefined ? {} : { cover_absences: cover ? 1 : 0 }
+      ))
     });
-    const j = await res.json();
+    let res = await post();
+    let j = await res.json();
+    // 🗓 A bonus day is what settles a parked absence, so the server asks first rather than
+    // silently spending it. Answering re-submits the same grant with the choice attached.
+    if (!j.success && j.needs_absence_choice) {
+      const useIt = confirm(j.message + '\n\nOK = settle the absence · Cancel = give them all as leave');
+      res = await post(useIt);
+      j = await res.json();
+    }
     if (!j.success) { alert(j.message || 'Could not save the adjustment.'); return; }
+    if (j.message) { alert(j.message); }
     // Patch this row from the returned balance so the re-rendered modal is instantly
     // correct, then re-sync the whole grid in the background.
     const u = monthData.find(x => String(x.user_id) === String(LVADJ.uid));
@@ -2397,6 +2423,7 @@ async function saveLeaveAdjust() {
       u.leave_earned_overtime = j.balance.earned_overtime;
       u.leave_late_penalties = j.balance.late_penalties;
       u.leave_manual_adjust = j.balance.manual_adjust;
+      u.leave_absence_cover = j.balance.absence_cover || 0;
       u.leaves_taken_year = j.balance.taken_total;
     }
     showLeaveSummary(LVADJ.uid, LVADJ.name);
@@ -2757,6 +2784,7 @@ async function loadLeaveBalanceChip() {
     if (b.earned_overtime != 0) breakdown += `<span style="color:#6d28d9;">${b.earned_overtime > 0 ? '+' : ''}${b.earned_overtime} bonus</span>`;
     if (b.late_penalties < 0) breakdown += `<span style="color:#c2410c;">${b.late_penalties} late</span>`;
     if (b.manual_adjust && b.manual_adjust != 0) breakdown += `<span style="color:#6b7280;">${b.manual_adjust > 0 ? '+' : ''}${b.manual_adjust} adj</span>`;
+    if (b.absence_cover && b.absence_cover != 0) breakdown += `<span style="color:#b45309;">${b.absence_cover} absence cover</span>`;
     chip.innerHTML =
       `<span style="font-weight:600;color:${remColor};">${b.remaining} of ${b.effective_quota} leaves left</span>` +
       `<span style="color:#9ca3af;">· same-day used ${b.sameday_used}/${b.sameday_cap}</span>` +
@@ -2835,7 +2863,7 @@ function onLeaveTypeChange() {
     if (hint) hint.textContent = 'No time cutoff applies to you. Emergency counts toward the rider\'s same-day allowance.';
   }
 }
-async function submitApplyLeave(overrideQuota) {
+async function submitApplyLeave() {
   const btn = document.getElementById('leaveSubmitBtn');
   const type = (document.getElementById('leaveType') || {}).value || 'planned';
   const payload = {
@@ -2844,8 +2872,7 @@ async function submitApplyLeave(overrideQuota) {
     // Half day = single date; the To field is disabled then, so send From.
     leave_end_date: type === 'half_day' ? document.getElementById('leaveFrom').value : document.getElementById('leaveTo').value,
     note: document.getElementById('leaveNote').value,
-    leave_type: type,
-    override_quota: overrideQuota ? 1 : 0
+    leave_type: type
   };
   if (!payload.user_id || !payload.leave_start_date || !payload.leave_end_date) { alert('Pick a person and both dates.'); return; }
   btn.disabled = true; btn.textContent = 'Approving…';
@@ -2860,11 +2887,9 @@ async function submitApplyLeave(overrideQuota) {
       closeApplyLeave();
       alert(json.message || 'Leave approved.');
       if (typeof loadAttendanceForDate === 'function') loadAttendanceForDate();
-    } else if (json.needs_confirm) {
-      // Over quota — manager may still grant. Re-submit with override on confirm.
-      btn.disabled = false; btn.textContent = 'Approve leave';
-      if (confirm(json.message)) { submitApplyLeave(true); }
     } else {
+      // A balance may not go below zero (Sep-2026 ruling). There is no override any more —
+      // the message tells the manager to raise the quota first, which is a deliberate act.
       alert(json.message || 'Could not apply the leave.');
     }
   } catch (e) {
@@ -2882,6 +2907,35 @@ function rowGrace(r) {
   const cfg = window.attConfig || {};
   if (r && r.overnight_grace_km != null && r.overnight_grace_km !== '') return Number(r.overnight_grace_km);
   return Number(cfg.overnight_grace_km != null ? cfg.overnight_grace_km : 30);
+}
+// ⭐⭐ ONE BRAIN for "the machine moved overnight" (Sep-2026). Three places asked this — the
+//   summary strip, the meter-issues banner and the row chip — and each re-derived it, so they
+//   could disagree with one another and with the red meter-gap verdict beside them.
+//   `prev_meter_end` is now the MACHINE's own last reading (server-side `closingBaseline()`),
+//   which is why this can finally be a single test.
+// ⭐ A HANDOVER DAY IS NOT JUDGED. The baseline may be the outgoing rider's, so the difference
+//   is not the incoming rider's night — the same rule `continuity()` and the ⛽ no-meter chip
+//   already apply. Silence here, and the banner says why.
+// Returns {over, grace, label, vtype} or null.
+function rowOvernightFlag(r) {
+  if (!r || Number(r.company_bike) !== 1) return null;
+  if (r.transfer_day) return null;
+  if (r.prev_meter_end == null || r.prev_meter_end === '') return null;
+  if (r.meter_start == null || r.meter_start === '') return null;
+  const grace = rowGrace(r);
+  const over = Number(r.meter_start) - Number(r.prev_meter_end);
+  if (!(over > grace)) return null;
+  return { over: Math.round(over), grace: Math.round(grace),
+           label: r.prev_meter_label || null, vtype: r.prev_meter_vtype || null };
+}
+// The chip's glyph follows the MACHINE the baseline came from, not is_company.
+function overnightIcon(f) { return (f && f.vtype === 'van') ? '🚚' : '🏍'; }
+// "− EDN-198's last reading 20,186" when the registry named the machine, else the old wording.
+function overnightBasis(r, f, esc) {
+  const e = esc || (s => s);
+  const whose = (f && f.label) ? (e(f.label) + "'s last reading ") : 'prev end ';
+  return 'start ' + e(r.meter_start) + ' − ' + whose + e(r.prev_meter_end)
+       + (r.prev_meter_date ? ' (' + e(r.prev_meter_date) + ')' : '');
 }
 // ⭐ ONE BRAIN for "missed his meter" (Sep-2026). The server's day_checks verdict
 //   knows everything this old client-side pair-test did not: the owner's
@@ -2906,8 +2960,7 @@ function renderMeterAttention(data) {
   (data || []).forEach(r => {
     if (!r.login_time) return;
     if (rowMissedMeter(r)) missing++;
-    if (Number(r.company_bike) === 1 && r.prev_meter_end != null && r.meter_start != null
-        && (Number(r.meter_start) - Number(r.prev_meter_end)) > rowGrace(r)) overnight++;
+    if (rowOvernightFlag(r)) overnight++;
   });
   const chips = [];
   if (missing > 0) chips.push(`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600;background:#FEF3C7;color:#92400E;border:1px solid #FDE68A;">⛽ ${missing} rider${missing>1?'s':''} without a meter reading</span>`);
@@ -2933,11 +2986,11 @@ function renderGraceBreachBanner(data) {
     const checkedIn = has(r.login_time), checkedOut = has(r.logout_time);
     if (!checkedIn && !checkedOut) return; // didn't work today
     const chips = [];
-    // overnight grace exceeded
-    if (has(r.meter_start) && has(r.prev_meter_end) && (Number(r.meter_start) - Number(r.prev_meter_end)) > rowGrace(r)) {
-      const over = Math.round(Number(r.meter_start) - Number(r.prev_meter_end));
-      chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">🏍 ' + over + ' km overnight</span>' +
-        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">start ' + esc(r.meter_start) + ' − prev end ' + esc(r.prev_meter_end) + (r.prev_meter_date ? ' (' + esc(r.prev_meter_date) + ')' : '') + ' · grace ' + Math.round(rowGrace(r)) + ' km</span>');
+    // overnight grace exceeded — one shared test, and it names the machine it measured.
+    const onf = rowOvernightFlag(r);
+    if (onf) {
+      chips.push('<span style="font-size:12px;font-weight:700;color:#B91C1C;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:6px;padding:1px 7px;">' + overnightIcon(onf) + ' ' + onf.over + ' km overnight</span>' +
+        '<span style="font-size:11.5px;color:#6B7280;margin-left:6px;">' + overnightBasis(r, onf, esc) + ' · grace ' + onf.grace + ' km</span>');
     }
     // no meter reading recorded
     const missStart = checkedIn && !has(r.meter_start);
@@ -3256,11 +3309,12 @@ function getMeterFlags(record) {
     }
   }
 
-  if (Number(record.company_bike) === 1 && record.prev_meter_end != null && record.meter_start != null) {
-    const overnight = Number(record.meter_start) - Number(record.prev_meter_end);
-    const grace = rowGrace(record);
-    if (overnight > grace) {
-      chips.push(chip('#FEE2E2', '#B91C1C', '#FCA5A5', `🏍 +${Math.round(overnight)} km overnight`, `Start meter ${record.meter_start} − yesterday's end ${record.prev_meter_end} = ${Math.round(overnight)} km overnight (grace ${grace} km)`));
+  {
+    // Same shared test as the strip and the banner — see rowOvernightFlag().
+    const onf = rowOvernightFlag(record);
+    if (onf) {
+      const whose = onf.label ? `${onf.label}'s last reading` : "yesterday's end";
+      chips.push(chip('#FEE2E2', '#B91C1C', '#FCA5A5', `${overnightIcon(onf)} +${onf.over} km overnight`, `Start meter ${record.meter_start} − ${whose} ${record.prev_meter_end} = ${onf.over} km overnight (grace ${onf.grace} km)`));
     }
   }
 
@@ -3619,6 +3673,14 @@ function closeQuickTime() {
   currentTimeModalMode = null;
 }
 
+// ⭐ ONE ANSWER TO "WHAT DOES THIS MACHINE LOOK LIKE" (4 Sep 2026). The registry's `vtype`
+//   ('bike' | 'van') decides — never `is_company`, which is a different question (whose fuel
+//   we buy) and drew a company BIKE as a van. Falls back to the bike when a payload predates
+//   the field, which is the old behaviour for everything that is not a van.
+function machineIcon(v) {
+  return (v && String(v.vtype || '') === 'van') ? '🚚' : '🏍️';
+}
+
 // ---- Meter correction (R7c) ----
 let meterEditAttId = null;
 let meterEditSeq = 0;
@@ -3653,7 +3715,7 @@ function openMeterEdit(attendanceId, meterStart, meterEnd, name, userId) {
           .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         sel.innerHTML = '<option value="">— leave as recorded —</option>'
           + list.map(v => '<option value="' + v.vehicle_id + '">'
-              + (v.is_company ? '🚚 ' : '🏍️ ') + escV(v.label)
+              + machineIcon(v) + ' ' + escV(v.label)
               + (v.km != null ? ' · ' + v.km + ' km' : '') + '</option>').join('');
         wrap.style.display = 'block';
         hint.textContent = 'Naming the vehicle is what lets his own-bike petrol claim use these readings.';
@@ -5148,7 +5210,12 @@ async function showMeterDetail(userId, userName, date) {
     const num = (n) => n != null ? `<strong style="font-variant-numeric:tabular-nums;">${Number(n).toLocaleString()}</strong>` : '<span style="color:#9CA3AF;">—</span>';
     // overnight gap chip (start vs last night)
     let gapChip = '';
-    if (m.gap_km != null) {
+    // ⭐ Same verdict as the row chip: on a HANDOVER day the machine's last reading belongs to
+    //    another rider, so "start − last night" has no meaning and must not accuse. The row chip
+    //    already suppresses it — the popup two clicks away has to agree.
+    if (m.prev && m.prev.transfer_day) {
+      gapChip = `<span title="${m.prev.label ? m.prev.label + ' changed hands — ' : ''}the overnight check does not apply on a handover day" style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;color:#6B7280;background:#F3F4F6;border:1px solid #E5E7EB;">handover day · no overnight check</span>`;
+    } else if (m.gap_km != null) {
       const big = Math.abs(m.gap_km) > 1;
       gapChip = `<span style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;${big ? 'color:#B91C1C;background:#FDECEC;border:1px solid #F5C6C6;' : 'color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;'}">overnight ${m.gap_km > 0 ? '+' : ''}${m.gap_km} km ${big ? '⚠' : '✓'}</span>`;
     }
@@ -5560,5 +5627,7 @@ async function saveFuelRateGroups() {
 {{-- 🛢 A MACHINE needing service — separate audience and key from the meter
      banner above; see partials/service-alerts.blade.php. --}}
 @include('partials.service-alerts')
+@include('partials.vehicle-ticket-alerts')
+@include('partials.workshop-alerts')
 
 @endsection

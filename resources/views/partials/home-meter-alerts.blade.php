@@ -2,7 +2,11 @@
      and main invoices pages. The endpoint is audience-gated by the 'receive_bike_meter_alerts'
      permission, so this renders nothing for users who aren't recipients. Self-contained; include
      with @include('partials.home-meter-alerts'). --}}
-<div id="homeMeterAlerts" style="position:fixed;right:16px;bottom:16px;z-index:11000;display:flex;flex-direction:column;gap:8px;max-width:360px;"></div>
+{{-- Shares the #nfCornerStack host with the other corner banners (service / ticket /
+     workshop) so they stack instead of painting over one another. Included first, so it
+     stays on top of the column. --}}
+<div id="homeMeterAlerts" style="display:flex;flex-direction:column;gap:8px;"></div>
+<script>(function(){var h=document.getElementById('nfCornerStack');if(!h){h=document.createElement('div');h.id='nfCornerStack';h.style.cssText='position:fixed;right:16px;bottom:16px;z-index:10990;display:flex;flex-direction:column;gap:8px;max-width:360px;';document.body.appendChild(h);}var me=document.getElementById('homeMeterAlerts');if(me&&me.parentNode!==h)h.appendChild(me);})();</script>
 <script>
 (function(){
   var meta = document.querySelector('meta[name="csrf-token"]');

@@ -2557,7 +2557,7 @@ function rrRenderIssues(){
             bikeGraceHtml += `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px;padding:2px 0;">
                     <span style="min-width:130px;color:#6b7280;">company bike</span>
                     ${rrChip('🏍 '+g.overnight_km+' km overnight (grace '+g.grace_km+' km)','warn')}
-                    <span style="color:#6b7280;font-size:12px;">start ${g.meter_start} − prev end ${g.prev_meter_end}${g.prev_date?' ('+g.prev_date+')':''}</span>
+                    <span style="color:#6b7280;font-size:12px;">start ${g.meter_start} − ${g.prev_label ? g.prev_label + "'s last reading" : 'prev end'} ${g.prev_meter_end}${g.prev_date?' ('+g.prev_date+')':''}</span>
                 </div>`;
         }
         if (bm && bm.no_meter) {
@@ -2776,4 +2776,6 @@ function openDispatchDetail(userId){
 {{-- 🛢 Service-due banners. ⚠ INSIDE the section — anything after @endsection is
      never rendered. The Bikes page is exactly where a manager can act on them. --}}
 @include('partials.service-alerts')
+@include('partials.vehicle-ticket-alerts')
+@include('partials.workshop-alerts')
 @endsection

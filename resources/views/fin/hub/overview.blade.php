@@ -132,7 +132,23 @@
             </a>
             @endif
 
-            {{-- 5 · Sales & profit — SCOPED and reconciled with the HQ dashboard (Frozen = line-item
+            {{-- 5 · Tips held for staff. A liability like vendors owed — money we are holding, not
+                 money we can spend — so it sits here and never inside the cash or bank pools. --}}
+            @if($positions['tips'] ?? null)
+            <a class="tile" href="{{ route('fin.hub.tips', ['scope' => $scope]) }}" title="Open Tips">
+                <div class="t-label">💵 Tips held · now</div>
+                <div class="t-value num" style="color:{{ $positions['tips']['balance'] > 0 ? 'var(--owe)' : 'var(--ink)' }}">Rs. {{ number_format($positions['tips']['balance'], 0) }}</div>
+                <div class="t-sub">
+                    <div class="row"><span>Collected (period)</span><span class="g num">Rs. {{ number_format($positions['tips']['collected'], 0) }}</span></div>
+                    <div class="row"><span>Paid out (period)</span><span class="r num">Rs. {{ number_format($positions['tips']['paid_out'], 0) }}</span></div>
+                    @if($positions['tips']['pending'] > 0)
+                        <div class="row"><span>Awaiting invoice approval</span><span class="o num">Rs. {{ number_format($positions['tips']['pending'], 0) }}</span></div>
+                    @endif
+                </div>
+            </a>
+            @endif
+
+            {{-- 6 · Sales & profit — SCOPED and reconciled with the HQ dashboard (Frozen = line-item
                  split, NF = total − Frozen, vendor/expenses by unit). The real P&L view lives on HQ. --}}
             @if($pnl)
             <div class="tile">

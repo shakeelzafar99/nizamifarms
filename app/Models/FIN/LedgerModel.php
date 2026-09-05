@@ -102,6 +102,14 @@ class LedgerModel extends BaseModel
     const TYPE_SETTLEMENT = 'expense_settlement';
     const TYPE_ORDER_PAYMENT = 'order_payment';
 
+    // Tips Fund (Sep-2026). A tip rides inside the invoice, so the invoice row
+    // books it as revenue; TYPE_TIP_COLLECTED immediately moves it back out of
+    // revenue and into the TIPS_FUND liability, and TYPE_TIP_PAYOUT hands it
+    // over from a real cash/bank account. Neither is an expense — deliberately,
+    // so tip money can never land in the P&L. See TipsFundService.
+    const TYPE_TIP_COLLECTED = 'tip_collected';
+    const TYPE_TIP_PAYOUT = 'tip_payout';
+
     // Mode constants
     const MODE_CASH = 'cash';
     const MODE_ONLINE = 'online';
@@ -143,6 +151,8 @@ class LedgerModel extends BaseModel
         self::TYPE_OPENING_BALANCE  => 'Opening Balance',
         self::TYPE_REIMBURSEMENT_ACCRUAL => 'Reimbursement',
         self::TYPE_REIMBURSEMENT_PAYMENT => 'Reimbursement Paid',
+        self::TYPE_TIP_COLLECTED    => 'Tip Collected',
+        self::TYPE_TIP_PAYOUT       => 'Tip Paid Out',
     ];
 
     /** Label for a transaction_type, falling back to a readable form of the raw key. */

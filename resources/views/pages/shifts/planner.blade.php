@@ -22,6 +22,9 @@
   .chip-notneeded { background:#E0E7FF; color:#3730A3; border-color:#C7D2FE; }
   .chip-nm { font-weight:600; }
   .chip-loc { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:700; background:#E6F1FB; color:#185FA5; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
+  /* 🔧 Workshop errand — amber so it reads as "something extra happens this day",
+     distinct from the blue location pin and the indigo "not needed" cell. */
+  .chip-ws { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:800; background:#FEF3C7; color:#92400E; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
   .col-today { background:#FFFDF5; }
   .rider-cb { margin-right:8px; }
   .pchip { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; background:#EEF2F7; color:#334155; border:1px solid var(--line); border-radius:6px; padding:2px 7px; font-variant-numeric:tabular-nums; }
@@ -103,6 +106,10 @@
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#FBECEC;border:1px solid #F3D6D6"></span> temporary change</span>
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#EEF2F7;border:1px dashed #cbd5e1"></span> off day</span>
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#E0E7FF;border:1px solid #C7D2FE"></span> not needed</span>
+      {{-- 🔧 A workshop errand does NOT change the day — the rider still works and is
+           still paid. It is here so whoever plans the shift can set that day's times
+           or location around the appointment. --}}
+      <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#FEF3C7;border:1px solid #FCD34D"></span> 🔧 workshop (✓ confirmed / ⏳ awaiting)</span>
     </div>
   </div>
 
@@ -341,6 +348,20 @@ function renderGrid() {
           ? `<span class="chip-loc" title="At ${escapeHtml(c.location_name||'')} this day">📍 ${escapeHtml(c.location_name||'')}</span>` : '';
         body=`<span class="chip-nm">${c.start}${c.end?'–'+c.end:'+'}</span><span class="text-[10px] opacity-70">${c.shift_name}</span>${locPin}`;
       }
+
+      /* 🔧 WORKSHOP ERRAND (Sep-2026). Painted ON TOP of whatever the cell already
+         says, never instead of it: a workshop day is a NORMAL PAID WORKING DAY
+         (owner ruling), so the rider keeps his shift and the planner adjusts that
+         day's times/location so no lateness lands. That adjustment is exactly what
+         this marker exists to prompt.
+         ⚠ Also shown on an off/holiday cell — a visit booked on a rider's day off is
+         the single most important case for a planner to SEE. */
+      if (c.workshop) {
+        const w = c.workshop;
+        const ok = w.accepted;
+        body += `<span class="chip-ws" title="${escapeHtml((w.vehicle_name||'bike'))} to the workshop${w.workshop ? ' — ' + escapeHtml(w.workshop) : ''}${ok ? ' · confirmed by the rider' : ' · NOT yet confirmed'}">`
+              + `🔧 ${w.time ? escapeHtml(w.time) : 'workshop'} ${ok ? '✓' : '⏳'}</span>`;
+      }
       const click = clickable ? ` onclick="toggleCellTag(${r.user_id}, '${c.date}', ${c.not_needed?1:0}, '${escapeHtml(r.name).replace(/'/g,"\\'")}')" title="${c.not_needed?'Marked not needed — click to undo':'Click to mark not needed (paid, not counted absent)'}" style="cursor:pointer;"` : '';
       return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}"${click}>${body}</span></td>`;
     }).join('');
@@ -575,4 +596,9 @@ async function saveNewShift(){
 
 loadWeek(null);
 </script>
+
+{{-- 🔧 The workshop notice belongs on THIS page above all others: the person planning
+     shifts is exactly who must know a rider is out that day. ⚠ INSIDE the section —
+     anything after @endsection is discarded by Blade. --}}
+@include('partials.workshop-alerts')
 @endsection

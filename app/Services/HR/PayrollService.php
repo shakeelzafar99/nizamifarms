@@ -23,6 +23,8 @@ class PayrollService
     private OvertimeService $ot;
     private LeavePolicyService $leave;
     private \App\Services\ShiftResolutionService $shift;
+    private OvertimeCarryService $carry;
+    private AbsenceDecisionService $absence;
 
     public function __construct()
     {
@@ -30,12 +32,14 @@ class PayrollService
         $this->ot = new OvertimeService();
         $this->leave = new LeavePolicyService();
         $this->shift = new \App\Services\ShiftResolutionService();
+        $this->carry = new OvertimeCarryService();
+        $this->absence = new AbsenceDecisionService();
     }
 
     private function cfg(string $key, $default)
     {
         try {
-            $v = DB::table('t_fin_config')->where('config_key', $key)->value('config_value');
+            $v = \App\Services\HR\ConfigMemo::get($key);
             return ($v === null || $v === '') ? $default : $v;
         } catch (\Throwable $e) {
             return $default;
@@ -128,7 +132,10 @@ class PayrollService
     // double-apply, in either order, from either screen.
 
     /** The two leave consequences a month can carry. */
-    public const LEAVE_KINDS = ['overtime', 'late_penalty'];
+    // 'absence' is decided through the SAME engine as the other two, but its outcomes are
+    // cut | park | excuse rather than apply | waive — see decideLeaveAction().
+    public const LEAVE_KINDS = ['overtime', 'late_penalty', 'absence'];
+    public const ABSENCE_DECISIONS = ['cut', 'park', 'excuse'];
 
     /**
      * The deterministic reason payroll writes for a month. Part of the dedupe key, so it
@@ -136,6 +143,13 @@ class PayrollService
      * adjustment also lands in source='overtime' but carries free text, and that difference
      * is the only thing separating "this month's payroll decision" from "a manual tweak".
      */
+    /** "2 days" / "1 day" / "1.5 days" — one phrasing for absence counts. */
+    private function fmtDays(float $d): string
+    {
+        $n = (fmod($d, 1.0) == 0.0) ? (string) (int) $d : rtrim(rtrim(number_format($d, 1), "0"), ".");
+        return $n . " day" . ($d == 1.0 ? "" : "s");
+    }
+
     public function leaveActionReason(string $kind, string $month): string
     {
         $label = date('M Y', strtotime($month . '-01'));
@@ -240,13 +254,38 @@ class PayrollService
         $otMin = (int) $row['overtime_minutes'];
         if ($otRec > 0 || isset($dec['overtime'])) {
             $per = $this->ot->minutesPerBonusDay();
-            $left = $per > 0 ? $otMin % $per : 0;
+            // ⭐ The formula MUST read the same carry the grid and the employee tab read.
+            // It used to end "left over (not carried forward)" — true before Sep-2026 and a
+            // flat contradiction of the carry afterwards. This is exactly the "two numbers on
+            // two screens" the owner warned about, so it comes from the row, not from a
+            // second modulo.
+            $carryIn  = (int) ($row['ot_carry_in'] ?? 0);
+            $carryOut = (int) ($row['ot_carry_out'] ?? 0);
+            $bits = [];
+            if ($carryIn > 0) {
+                $bits[] = $this->fmtMins($carryIn) . ' carried in'
+                    . (!empty($row['ot_carry_in_label']) ? ' (' . $row['ot_carry_in_label'] . ')' : '');
+            }
+            $bits[] = $this->fmtMins((int) ($row['ot_available'] ?? $otMin)) . ' ÷ ' . $this->fmtMins($per)
+                . ' = ' . $otRec . ' whole day' . ($otRec === 1 ? '' : 's');
+            if ($carryOut > 0) {
+                $bits[] = $this->fmtMins($carryOut) . ' carried to next month';
+            }
+            // ⭐ Owner ruling: bonus days settle PARKED absences automatically, oldest first.
+            // That must be visible BEFORE the manager presses Give, or days quietly disappear
+            // into an absence instead of becoming the leave he thinks he is granting.
+            $owedNow  = (float) ($row['absence_outstanding'] ?? 0);
+            $willCover = (int) min($otRec, floor($owedNow));
+            if ($willCover > 0 && !isset($dec['overtime'])) {
+                $bits[] = '⚠ ' . $willCover . ' of these will settle ' . $this->fmtDays($willCover)
+                    . ' of parked absence (' . ($row['absence_owed_label'] ?: 'earlier months') . ')'
+                    . ($otRec > $willCover ? ' — ' . ($otRec - $willCover) . ' left as leave' : ' — none left as leave');
+            }
             $out[] = $this->leaveActionShape('overtime', $otRec, $dec['overtime'] ?? null, [
                 'headline' => '+' . $otRec . ' bonus leave' . ($otRec === 1 ? '' : 's'),
                 'basis'    => $this->fmtMins($otMin) . ' worked past the daily target',
-                'formula'  => $this->fmtMins($otMin) . ' ÷ ' . $this->fmtMins($per) . ' = ' . $otRec
-                    . ' whole day' . ($otRec === 1 ? '' : 's')
-                    . ($left > 0 ? ' · ' . $this->fmtMins($left) . ' left over (not carried forward)' : ''),
+                'will_cover' => $willCover,
+                'formula'  => implode(' · ', $bits),
                 'drill'    => 'month_overtime',
                 'minutes'  => $otMin,
             ]);
@@ -269,6 +308,39 @@ class PayrollService
             ]);
         }
 
+        // ── Absences → deduct / park / excuse. Listed even when a decision exists, so the
+        // panel and the grid can show what was chosen rather than falling silent.
+        $absDays = (float) ($row['absent_days'] ?? 0);
+        $absDec  = $row['absence_decision'] ?? null;
+        // Before the start month there is nothing to decide — those months were paid the old way.
+        if ($month >= \App\Services\HR\AbsenceDecisionService::START_MONTH && ($absDays > 0 || $absDec !== null)) {
+            $rate = (float) ($row['absence_day_rate'] ?? 0);
+            $wouldCut = (float) ($row['absence_raw_deduction'] ?? 0);
+            $out[] = [
+                'kind'             => 'absence',
+                'recommended_days' => -1 * $absDays,
+                'status'           => $absDec === null ? 'pending' : $absDec,   // cut | park | excuse
+                'applied_days'     => $absDec === null ? null : $absDays,
+                'decided_by'       => null,
+                'decided_at'       => null,
+                'changed'          => false,
+                'headline'         => $this->fmtDays($absDays) . ' absent',
+                'basis'            => 'Rs ' . number_format($rate) . ' per day',
+                'undecided_days'   => (float) ($row['absence_undecided_days'] ?? 0),
+                'formula'          => ($absDec === 'park'
+                    ? 'parked — no cut; overtime days will settle them'
+                    : ($absDec === 'excuse'
+                        ? 'excused — no cut, nothing owed'
+                        : 'deducting Rs ' . number_format($wouldCut)))
+                    . ((float) ($row['absence_undecided_days'] ?? 0) > 0
+                        ? ' · ' . $this->fmtDays((float) $row['absence_undecided_days']) . ' absent since that decision — deducting Rs '
+                          . number_format((float) ($row['absent_deduction'] ?? 0)) . ' unless you decide again'
+                        : ''),
+                'drill'            => 'month_absent',
+                'minutes'          => 0,
+            ];
+        }
+
         return $out;
     }
 
@@ -289,6 +361,7 @@ class PayrollService
             'give_pending' => 0, 'deduct_pending' => 0,
             'given' => 0, 'deducted' => 0, 'waived' => 0,
             'pending_count' => 0, 'settled_count' => 0,
+            'absence_pending' => 0, 'absence_days' => 0.0, 'absence_decided' => 0,
             'late_cut_total' => 0.0, 'late_cut_count' => 0,
         ];
 
@@ -315,6 +388,19 @@ class PayrollService
             if (!$actions) { continue; }
 
             foreach ($actions as $a) {
+                // ⚠ Absences are counted on their own line. `pending_count` drives the panel's
+                // "Apply all N recommended" button, and "apply" has no meaning for an absence —
+                // its choices are deduct / park / excuse, and doing nothing already deducts.
+                // Folding them in made the button offer to apply things it would then fail on.
+                if ($a['kind'] === 'absence') {
+                    if ($a['status'] === 'pending') {
+                        $sum['absence_pending']++;
+                        $sum['absence_days'] += abs((float) $a['recommended_days']);
+                    } else {
+                        $sum['absence_decided']++;
+                    }
+                    continue;
+                }
                 if ($a['status'] === 'pending') {
                     $sum['pending_count']++;
                     if ($a['kind'] === 'overtime') { $sum['give_pending'] += (int) $a['recommended_days']; }
@@ -352,10 +438,324 @@ class PayrollService
      * way changes nothing, and changing your mind rewrites the same row rather than stacking
      * a second one.
      */
+    /**
+     * Deduct, park or excuse one month's absences.
+     *
+     * PARK is the interesting one: the days stay owed, and the whole point of owing them is
+     * that the employee can work them off — so bonus days earned from overtime settle them
+     * automatically (owner ruling). The manager can still charge or excuse whatever is left.
+     *
+     * Unlike overtime and lateness this can be decided while the month is still RUNNING: the
+     * absences already happened, and a manager who has just seen someone miss two days should
+     * not have to wait until the 1st to say what happens about it. The count is re-frozen if
+     * he decides again before anything is settled against it.
+     */
+    private function decideAbsence(int $userId, string $month, string $decision, int $actorId): array
+    {
+        if (!in_array($decision, self::ABSENCE_DECISIONS, true)) {
+            return ['success' => false, 'message' => 'Choose deduct, park or excuse.'];
+        }
+        if (!$this->absence->enabled()) {
+            return ['success' => false, 'message' => 'Absence decisions are not switched on yet — the SQL has not been run.'];
+        }
+        // Custom-schedule staff have no absent-day deduction to begin with (owner policy: no
+        // automatic absent/late/overtime effects), so there is nothing here to decide.
+        // Order matters: a month before the start month must say so, not fall through to
+        // "no absences to decide" — the manager would go looking for attendance that is fine.
+        if ($month < \App\Services\HR\AbsenceDecisionService::START_MONTH) {
+            return ['success' => false, 'message' => 'Absence decisions start from '
+                . date('F Y', strtotime(\App\Services\HR\AbsenceDecisionService::START_MONTH . '-01'))
+                . '. Earlier months were already settled the old way.'];
+        }
+        if (isset($this->customScheduleUserIds()[$userId])) {
+            return ['success' => false, 'message' => 'This employee is on a custom schedule — absences are not deducted for them.'];
+        }
+        try {
+            $row = $this->computeRow($userId, $month);
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => 'Could not read this employee’s month.'];
+        }
+        $days = (float) $row['absent_days'];
+        $existing = $this->absence->decisionFor($userId, $month);
+        if ($days <= 0 && $existing === null) {
+            return ['success' => false, 'message' => 'There are no absences to decide for this month.'];
+        }
+        // Re-deciding RE-FREEZES at today's count, so an absence that happened after the first
+        // decision is brought inside it. A month whose parked days were already settled is
+        // refused by commit() itself — that count genuinely must not move.
+
+        if ($this->paidMap($month)[$userId] ?? null) {
+            return ['success' => false, 'message' => date('F Y', strtotime($month . '-01'))
+                . ' is already paid for this employee, so the deduction can no longer change. '
+                . 'Charge or excuse it from the absences owed instead.'];
+        }
+
+        $res = $this->absence->commit($userId, $month, $days, $decision,
+            (float) $row['absence_day_rate'], $actorId);
+        if (empty($res['success'])) { return $res; }
+
+        $this->forgetMonth($month);
+        \Log::info('Absence decided', [
+            'user_id' => $userId, 'month' => $month, 'decision' => $decision, 'days' => $days, 'by' => $actorId,
+        ]);
+        $name = $row['fullname'];
+        $label = date('F Y', strtotime($month . '-01'));
+        $msg = $decision === 'cut'
+            ? $this->fmtDays($days) . ' will be deducted from ' . $name . '’s ' . $label . ' pay.'
+            : ($decision === 'park'
+                ? $this->fmtDays($days) . ' parked for ' . $name . ' — no cut now; overtime days will settle them.'
+                : $this->fmtDays($days) . ' excused for ' . $name . ' — no cut, nothing owed.');
+        return ['success' => true, 'message' => $msg];
+    }
+
+    /**
+     * Hand back the days a month's overtime had covered, when that month is re-decided to
+     * skip. Mirrors coverAbsencesWithBonus: the `absence_cover` row for the month is the
+     * record of what it took, so it is the only thing that needs reading.
+     */
+    private function uncoverAbsencesFor(int $userId, string $month): void
+    {
+        if (!$this->absence->enabled()) { return; }
+        $reason = 'Covered absences from ' . date('M Y', strtotime($month . '-01')) . ' overtime';
+        try {
+            $days = (float) DB::table('t_hr_leave_grant')
+                ->where('user_id', $userId)->where('source', 'absence_cover')
+                ->whereDate('effective_date', $month . '-01')->where('reason', $reason)
+                ->value('days');
+        } catch (\Throwable $e) { $days = 0.0; }
+        if ($days >= 0) { return; }                       // stored negative; nothing covered
+        $this->absence->uncover($userId, abs($days), 'ot');
+        $this->recordLeaveDecision($userId, 0, 'absence_cover', $reason, $month . '-01', $userId, true);
+    }
+
+    /**
+     * Closed months whose absences nobody has decided about, plus every day still owed.
+     *
+     * This is the nag the owner asked for. An undecided month quietly defaults to a pay cut
+     * the moment someone presses Pay, so "nobody looked at it" and "we chose to cut" become
+     * indistinguishable after the fact. It keeps showing after the month ends and into the
+     * next one, and only a decision (or the pay going out) clears it.
+     *
+     * There is no push-notification system in this app, so it surfaces the same way a waiting
+     * advance request already does: a banner and a card on the Payroll screen, which is where
+     * the person who can act on it is already standing.
+     *
+     * @return array{undecided_count:int,employees:int,days:float,owed_days:float,owed_people:int,rows:array}
+     */
+    public function pendingAbsenceSummary(string $month): array
+    {
+        $out = ['undecided_count' => 0, 'employees' => 0, 'days' => 0.0,
+                'owed_days' => 0.0, 'owed_people' => 0, 'rows' => []];
+        if (!$this->absence->enabled()) {
+            return $out;
+        }
+        try {
+            $payVis = $this->payrollVisibilityMap();
+            $customIds = $this->customScheduleUserIds();
+            $users = DB::table('t_sys_user')->where('is_active', 1)->orderBy('fullname')->get(['id', 'fullname']);
+            foreach ($users as $u) {
+                $uid = (int) $u->id;
+                if (isset($customIds[$uid])) { continue; }          // no absence rules for custom staff
+                if (!($payVis[$uid]['on'] ?? true)) { continue; }
+
+                // Absent days for a closed month, read through the same summary payroll uses.
+                $absentFor = function (string $m) use ($uid): float {
+                    try {
+                        return (float) ($this->salary->attendanceSummary($uid, $m)['absent_days'] ?? 0);
+                    } catch (\Throwable $e) { return 0.0; }
+                };
+                $pending = $this->absence->undecidedMonths($uid, $absentFor, $month);
+                $owed = $this->absence->outstandingDays($uid);
+                if (!$pending && $owed <= 0) { continue; }
+
+                $out['rows'][] = [
+                    'user_id'   => $uid,
+                    'fullname'  => (string) $u->fullname,
+                    'undecided' => $pending,
+                    'owed_days' => $owed,
+                    'owed_label' => $this->absence->enabled()
+                        ? implode(' + ', array_map(
+                            fn ($r) => $this->fmtDays($r['outstanding']) . ' from ' . date('M', strtotime($r['month'] . '-01')),
+                            $this->absence->openParked($uid)))
+                        : '',
+                ];
+                if ($pending) {
+                    $out['employees']++;
+                    $out['undecided_count'] += count($pending);
+                    $out['days'] += array_sum(array_column($pending, 'days'));
+                }
+                if ($owed > 0) { $out['owed_people']++; $out['owed_days'] += $owed; }
+            }
+            $out['days'] = round($out['days'], 1);
+            $out['owed_days'] = round($out['owed_days'], 1);
+
+            // ⭐ The banner is about CLOSED months, but the manager is usually looking at the
+            // current one. Send the button to the oldest month that actually needs a decision,
+            // or it opens a panel where none of these absences exist.
+            $months = [];
+            foreach ($out['rows'] as $r) {
+                foreach ($r['undecided'] as $p) { $months[] = $p['month']; }
+            }
+            sort($months);
+            $out['decide_month'] = $months[0] ?? null;
+
+            // The month that just ended is the one worth announcing.
+            $lastClosed = date('Y-m', strtotime($month . '-01 -1 month'));
+            $out['alert_key'] = 'absence_decisions:' . $lastClosed;
+            $out['month_label'] = date('F Y', strtotime($lastClosed . '-01'));
+
+            // Has THIS viewer already waved the banner away? Per user, so one manager
+            // dismissing it does not hide it from the other.
+            $out['dismissed'] = false;
+            try {
+                if (auth()->id() && Schema::hasTable('t_ops_alert_dismissal')) {
+                    $out['dismissed'] = DB::table('t_ops_alert_dismissal')
+                        ->where('user_id', auth()->id())->where('alert_key', $out['alert_key'])->exists();
+                }
+            } catch (\Throwable $e) { /* banner just shows */ }
+
+            // Push once per month to everyone who can act. No scheduler exists on prod, so the
+            // Payroll screen loading is the trigger; `t_ops_service_alert_push` keeps it to one.
+            if ($out['undecided_count'] > 0) {
+                $this->pushAbsenceNagOnce($out['alert_key'], $lastClosed, $out['employees'], $out['days']);
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('pendingAbsenceSummary failed', ['month' => $month, 'error' => $e->getMessage()]);
+        }
+        return $out;
+    }
+
+    /**
+     * Announce the month once — never once per page load. Same dedupe table the bike-service
+     * alerts use, and every failure is swallowed: a push that cannot be sent must never stop
+     * the payroll screen from rendering.
+     */
+    private function pushAbsenceNagOnce(string $alertKey, string $month, int $employees, float $days): void
+    {
+        try {
+            if (!Schema::hasTable('t_ops_service_alert_push')) { return; }
+            if (DB::table('t_ops_service_alert_push')->where('alert_key', $alertKey)->exists()) { return; }
+            DB::table('t_ops_service_alert_push')->updateOrInsert(
+                ['alert_key' => $alertKey], ['pushed_at' => now()]
+            );
+            (new \App\Services\FirebaseService())->notifyAbsenceDecisionsDue($month, $employees, $days);
+        } catch (\Throwable $e) {
+            \Log::warning('Absence nag push failed', ['key' => $alertKey, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Settle days PARKED in an earlier month: charge them, forgive them, or take them out of
+     * the employee's own leave balance.
+     *
+     * The charge uses the CURRENT day rate rather than the one frozen when the days were
+     * parked (owner ruling), and the manager may override the amount outright — deciding what
+     * a late charge is worth is his call, not a formula's.
+     */
+    public function settleParkedAbsence(int $userId, string $month, string $action, ?string $inMonth, ?float $amount, ?float $days, ?string $note, int $actorId): array
+    {
+        if (!$this->absence->enabled()) {
+            return ['success' => false, 'message' => 'Absence decisions are not switched on yet.'];
+        }
+        $open = $this->absence->decisionFor($userId, $month);
+        if (!$open || $open['outstanding'] <= 0) {
+            return ['success' => false, 'message' => 'Nothing is owed for '
+                . date('F Y', strtotime($month . '-01')) . '.'];
+        }
+        $name  = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'This employee';
+        $label = date('F Y', strtotime($month . '-01'));
+
+        if ($action === 'excuse') {
+            $r = $this->absence->excuseLater($userId, $month, $actorId, $note);
+            if (empty($r['success'])) { return $r; }
+            $this->forgetMonth($month);
+            return ['success' => true, 'message' => $this->fmtDays($r['days']) . ' of ' . $label
+                . ' absence excused for ' . $name . ' — nothing owed now.'];
+        }
+
+        if ($action === 'use_leave') {
+            // Only out of leave he actually holds. Spending a balance he does not have would
+            // just move the debt into the leave ledger, where it is harder to see.
+            $take = $days !== null ? round($days, 1) : $open['outstanding'];
+            $take = min($take, $open['outstanding']);
+            $remaining = (float) ((new LeavePolicyService())->balance($userId)['remaining'] ?? 0);
+            if ($take > $remaining) {
+                return ['success' => false, 'message' => $name . ' has only '
+                    . $this->fmtDays(max(0, $remaining)) . ' of leave left, so '
+                    . $this->fmtDays($take) . ' cannot be taken from it.'];
+            }
+            $used = 0.0;
+            DB::transaction(function () use ($userId, $take, $actorId, $month, &$used) {
+                $used = $this->absence->cover($userId, $take, 'leave', $actorId);
+                if ($used > 0) {
+                    // Recorded under its own source so the employee can see exactly why his
+                    // balance dropped, instead of finding a number that will not add up.
+                    $this->recordLeaveDecision($userId, -1 * $used, 'absence_cover',
+                        'Own leave used for ' . date('M Y', strtotime($month . '-01')) . ' absence',
+                        $month . '-01', $actorId, true);
+                }
+            });
+            if ($used <= 0) { return ['success' => false, 'message' => 'Nothing could be covered.']; }
+            $this->forgetMonth($month);
+            return ['success' => true, 'message' => $this->fmtDays($used) . ' of ' . $name
+                . "'s leave used to cover the " . $label . ' absence.'];
+        }
+
+        // charge — rides on a month whose pay has not gone out yet
+        $in = $inMonth ?: now()->format('Y-m');
+        if ($this->paidMap($in)[$userId] ?? null) {
+            return ['success' => false, 'message' => date('F Y', strtotime($in . '-01'))
+                . ' is already paid, so the charge cannot ride on it. Pick a month that is still unpaid.'];
+        }
+        $rate = 0.0;
+        try { $rate = (float) $this->computeRow($userId, $in)['absence_day_rate']; } catch (\Throwable $e) { /* rate 0 → manager types the amount */ }
+        $r = $this->absence->cutLater($userId, $month, $in, $rate, $amount, $actorId);
+        if (empty($r['success'])) { return $r; }
+        $this->forgetMonth($in);
+        return ['success' => true, 'message' => 'Rs ' . number_format($r['amount']) . ' for '
+            . $this->fmtDays($r['days']) . ' of ' . $label . ' absence will be deducted from '
+            . $name . "'s " . date('F Y', strtotime($in . '-01')) . ' pay.'];
+    }
+
+    /**
+     * Bonus days just granted from overtime settle parked absences FIRST (owner ruling: that
+     * is why the days were parked). Only what is left becomes leave.
+     *
+     * The leave ledger has to stay truthful, so the full `+D overtime` grant is written as
+     * always and a `−k absence_cover` row is written beside it. The rider's phone then reads
+     * "earned +3 from overtime · −2 covered August absences" and `remaining` still nets out.
+     *
+     * @return float days consumed by coverage
+     */
+    /**
+     * ⭐ PUBLIC since Sep-3: the Attendance page can now grant a bonus day and ask that it
+     * settle a parked absence, and that must go through THIS method — one engine writes both
+     * the absence row and the matching ledger line, so the two can never drift apart.
+     */
+    public function coverAbsencesWithBonus(int $userId, int $bonusDays, string $month, int $actorId, ?string $reason = null): float
+    {
+        if ($bonusDays <= 0 || !$this->absence->enabled()) { return 0.0; }
+        $used = $this->absence->cover($userId, $bonusDays, 'ot', $actorId);
+        if ($used > 0) {
+            $this->recordLeaveDecision($userId, -1 * $used, 'absence_cover',
+                $reason ?: ('Covered absences from ' . date('M Y', strtotime($month . '-01')) . ' overtime'),
+                $month . '-01', $actorId, true);
+        }
+        return $used;
+    }
+
     public function decideLeaveAction(int $userId, string $month, string $kind, string $decision, int $actorId): array
     {
         if (!in_array($kind, self::LEAVE_KINDS, true)) {
             return ['success' => false, 'message' => 'Unknown leave action.'];
+        }
+        // ⭐ Absence is decided through this SAME method (one engine — the panel, the grid,
+        // the pay modal and the Employee tab all call it), but its outcomes are three:
+        //   cut    deduct now — what an undecided month already does
+        //   park   no cut; the days stay owed and can be worked off later
+        //   excuse no cut, nothing owed
+        if ($kind === 'absence') {
+            return $this->decideAbsence($userId, $month, $decision, $actorId);
         }
         if (!in_array($decision, ['apply', 'waive'], true)) {
             return ['success' => false, 'message' => 'Choose to apply or waive.'];
@@ -391,8 +791,38 @@ class PayrollService
         $days = $decision === 'waive' ? 0 : ($kind === 'overtime' ? $rec : -$rec);
         $reason = $this->leaveActionReason($kind, $month);
 
+        // ⭐ Overtime is decided in month order. A later month was judged against the carry
+        // this change would move, so re-deciding an earlier one now would silently rewrite
+        // what that later month was granted on.
+        if ($kind === 'overtime') {
+            $blocker = $this->carry->blockingLaterMonth($userId, $month);
+            if ($blocker !== null) {
+                return ['success' => false, 'message' => date('F Y', strtotime($blocker . '-01'))
+                    . ' overtime has already been decided for this employee, and it counted the minutes carried out of '
+                    . date('F', strtotime($month . '-01'))
+                    . '. Change the later month first, then come back to this one.'];
+            }
+        }
+
         try {
-            $this->recordLeaveDecision($userId, $days, $kind, $reason, $month . '-01', $actorId, true);
+            // ⚠ $rec must be captured too — a variable read inside the closure but missing
+            // from `use` is simply undefined, and the coverage below would silently never run.
+            DB::transaction(function () use ($userId, $days, $kind, $reason, $month, $actorId, $decision, $row, $rec) {
+                $this->recordLeaveDecision($userId, $days, $kind, $reason, $month . '-01', $actorId, true);
+                // The grant and the minutes it consumed are written together, so they can
+                // never disagree about what this month spent.
+                if ($kind === 'overtime') {
+                    $this->carry->commit($userId, $month, (int) $row['overtime_minutes'], $decision, $actorId);
+                    // Bonus days settle parked absences first — that is why they were parked.
+                    // Waived overtime grants nothing, so it covers nothing.
+                    if ($decision === 'apply' && $rec > 0) {
+                        $this->coverAbsencesWithBonus($userId, (int) $rec, $month, $actorId);
+                    } else {
+                        // Flipping give → skip hands back whatever this month had covered.
+                        $this->uncoverAbsencesFor($userId, $month);
+                    }
+                }
+            });
         } catch (\Throwable $e) {
             \Log::error('decideLeaveAction failed', ['user_id' => $userId, 'month' => $month, 'kind' => $kind, 'error' => $e->getMessage()]);
             return ['success' => false, 'message' => 'Could not save that: ' . $e->getMessage()];
@@ -432,6 +862,9 @@ class PayrollService
         $given = 0; $deducted = 0; $failed = 0;
         foreach ($data['rows'] as $r) {
             foreach ($r['actions'] as $a) {
+                // Absences are never part of "apply all": there is nothing to apply, and
+                // leaving them undecided already means the cut. They are decided one by one.
+                if ($a['kind'] === 'absence') { continue; }
                 if ($a['status'] !== 'pending' || (int) $a['recommended_days'] === 0) { continue; }
                 $res = $this->decideLeaveAction((int) $r['user_id'], $month, $a['kind'], 'apply', $actorId);
                 if (!empty($res['success'])) {
@@ -539,7 +972,28 @@ class PayrollService
         $perHour = $rateDivisor > 0 ? $base / ($rateDivisor * max(0.1, $this->targetHours())) : 0.0;
 
         // ── Absent deduction (unapproved absences only; leave + not-needed already excluded).
-        $absentDeduction = round($absentDays * $perDay, 2);
+        // ── Absences: deduct, park, or excuse (Sep-2026 owner ruling).
+        // UNDECIDED is a CUT — exactly what payroll has always done — so nothing changes
+        // unless a manager deliberately parks or excuses the month.
+        $absentRawDeduction = round($absentDays * $perDay, 2);
+        $absDecision  = $this->absence->decisionFor($userId, $month);
+        $absDecided   = $absDecision['decision'] ?? null;
+        // ⚠ A decision covers only the days it FROZE. Parking 2 days on the 20th must not
+        // quietly forgive a 3rd absence on the 28th — days beyond the frozen count are
+        // UNDECIDED, and undecided has always meant cut. The panel says so and lets the
+        // manager decide again, which re-freezes at today's count.
+        $absFrozen = $absDecided !== null ? (float) ($absDecision['days_absent'] ?? 0) : 0.0;
+        $absHeld   = ($absDecided === 'park' || $absDecided === 'excuse');
+        $absUndecidedDays = $absHeld ? max(0.0, round($absentDays - $absFrozen, 1)) : 0.0;
+        $absentDeduction = $absHeld ? round($absUndecidedDays * $perDay, 2) : $absentRawDeduction;
+        // Days still owed across EVERY parked month — this employee's absence debt.
+        $absOutstanding = $this->absence->outstandingDays($userId);
+        $absOwedLabel = implode(' + ', array_map(
+            fn ($r) => $this->fmtDays($r['outstanding']) . ' from ' . date('M', strtotime($r['month'] . '-01')),
+            $this->absence->openParked($userId)
+        ));
+        // A charge for an EARLIER month's parked days, stamped onto THIS month's pay.
+        $heldCut = $this->absence->heldCutFor($userId, $month);
 
         // ── Lateness → leaves, with salary-cut fallbacks (owner policy).
         $buffer = $this->lateBufferMin();
@@ -597,7 +1051,11 @@ class PayrollService
         // SAME number this grants — the formula used to be duplicated here, which is exactly
         // how a display and a payment silently drift apart.
         $otMinutes = $this->ot->overtimeMinutes($userId, $startDate, $effectiveEnd);
-        $bonusLeaves = $this->ot->bonusLeaves($otMinutes);
+        // Carried overtime (Sep-2026): minutes left over from earlier months join this month's
+        // before the ÷9h, so the 22% the floor used to discard is no longer lost. Before the
+        // carry table exists this returns days = floor(own ÷ 540) — today's exact behaviour.
+        $carry = $this->carry->preview($userId, $month, $otMinutes);
+        $bonusLeaves = $carry['days'];
 
         // ── Open salary advances (unsettled) — auto-deducted at pay, settled on pay.
         // Scoped to THIS month: an advance given for August is recovered from August, never
@@ -623,7 +1081,9 @@ class PayrollService
         $allowances = round((float) ($overrides['allowances'] ?? 0), 2);
         $other = round((float) ($overrides['other'] ?? 0), 2);
 
-        $totalDeductions = round($absentDeduction + $lateDeduction + $advanceTotal, 2);
+        // The held charge is a deduction like any other — it must reach net pay, not just
+        // the display, or the payslip would show it and the money would never move.
+        $totalDeductions = round($absentDeduction + $lateDeduction + $advanceTotal + $heldCut['amount'], 2);
         $net = round($base + $bonuses + $allowances + $other - $totalDeductions, 2);
 
         $result = [
@@ -645,6 +1105,18 @@ class PayrollService
             'absent_days'      => $absentDays,
             'leave_days'       => $leaveDays,
             'absent_deduction' => $absentDeduction,
+            // Absence decision for this month: null = undecided = will be CUT.
+            'absence_decision'      => $absDecided,
+            'absence_raw_deduction' => $absentRawDeduction,   // what a cut would take
+            'absence_frozen_days'   => $absFrozen,           // what the decision covers
+            'absence_undecided_days' => $absUndecidedDays,   // absent since the decision → cut
+            'absence_day_rate'      => round($perDay, 2),
+            'absence_outstanding'   => $absOutstanding,       // days owed across all parked months
+            'absence_owed_label'    => $absOwedLabel,
+            // A charge for an earlier month's parked days, landing on this month's pay.
+            'held_absence_deduction' => $heldCut['amount'],
+            'held_absence_days'      => $heldCut['days'],
+            'held_absence_months'    => $heldCut['months'],
             'late_minutes'     => $lateMinutes,
             'late_leave_deduct' => $lateLeaveDeduct,       // leaves removed (ledger) on approve
             'late_leave_recommended' => $lateLeaveRecommended, // raw rule output, ignores any decision
@@ -656,6 +1128,18 @@ class PayrollService
             'late_step_min'     => $step,
             'overtime_minutes'  => $otMinutes,
             'bonus_leaves'      => $bonusLeaves,            // leaves granted (ledger) on approve
+            // Carried overtime — display + the leave-actions panel. `ot_carry_in` is what came
+            // from earlier months, `ot_carry_out` what this month would leave behind, and
+            // `ot_carry_*_label` name the months those minutes were actually worked in.
+            'ot_carry_in'        => $carry['carried_in'],
+            'ot_carry_out'       => $carry['carry_out'],
+            'ot_available'       => $carry['available'],
+            'ot_carry_in_label'  => $this->carry->describeLots($carry['carried_from']),
+            // An ENDED month whose overtime is still undecided: its leftover is not carried
+            // yet (a waive could still take it away), but hiding it would make the figure
+            // invisible. Shown as PENDING, naming the month that has to be settled.
+            'ot_carry_pending'   => $this->carry->pendingCarryInto($userId, $month),
+            'ot_carry_out_label' => $this->carry->describeLots($carry['carry_out_lots']),
             'advances'          => $advances,
             'advance_total'     => $advanceTotal,
             // Open advances tagged to other months — display only, never part of net pay.
@@ -982,6 +1466,135 @@ class PayrollService
         return $out;
     }
 
+    /**
+     * EVERYTHING about ONE employee for the Employee tab — the privacy view.
+     *
+     * ⭐⭐ It is deliberately built from `computeRow()`, the same method the grid and the
+     * rider's own phone screen (`API/PayrollController::mySalary`) use. So what a manager
+     * shows an employee on the laptop is, to the rupee and to the day, what that employee
+     * sees on his own phone. A second calculation here is exactly how the two would drift.
+     *
+     * Nothing about any other employee is returned — that is the whole point of the view.
+     */
+    public function employeeDetail(int $userId, string $month): array
+    {
+        $user = DB::table('t_sys_user')->where('id', $userId)->first(['id', 'fullname', 'is_active']);
+        $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)
+            ->first(['base_salary', 'previous_salary', 'last_salary_change_date', 'pay_schedule']);
+        $isCustom = isset($this->customScheduleUserIds()[$userId]);
+
+        // What was ACTUALLY paid, month by month — read from the frozen receipts, never
+        // recomputed. Re-running today's rules over an old month would print figures that
+        // were never paid (salaries and rules change), which is how you end up arguing with
+        // an employee about a number your own screen invented.
+        $history = [];
+        try {
+            $history = DB::table('t_hr_payroll_payment')
+                ->where('user_id', $userId)->where('status', 'paid')
+                ->orderByDesc('pay_month')->orderByDesc('paid_at')->limit(24)
+                ->get(['pay_month', 'base_salary', 'present_days', 'absent_days', 'leave_days',
+                       'absent_deduction', 'late_minutes', 'late_deduction', 'bonus_leaves',
+                       'advance_total', 'net_salary', 'funding', 'bank_id', 'paid_at', 'notes',
+                       'period_start', 'period_end'])
+                ->map(fn ($p) => [
+                    'pay_month'     => (string) $p->pay_month,
+                    'gross'         => round((float) $p->net_salary + (float) $p->advance_total, 2),
+                    'net_salary'    => (float) $p->net_salary,
+                    'advance_total' => (float) $p->advance_total,
+                    'base_salary'   => (float) $p->base_salary,
+                    'present_days'  => (int) $p->present_days,
+                    'absent_days'   => (int) $p->absent_days,
+                    'leave_days'    => (int) $p->leave_days,
+                    'absent_deduction' => (float) $p->absent_deduction,
+                    'late_minutes'  => (int) $p->late_minutes,
+                    'late_deduction' => (float) $p->late_deduction,
+                    'bonus_leaves'  => (int) $p->bonus_leaves,
+                    'funding'       => $p->funding,
+                    'paid_at'       => (string) $p->paid_at,
+                    'notes'         => $p->notes,
+                    // Custom-schedule staff are paid by RANGE, not by month — say so rather
+                    // than filing "12 Aug → 25 Aug" under a month label that hides it.
+                    'period'        => $p->period_start
+                        ? (substr((string) $p->period_start, 0, 10) . ' → ' . substr((string) $p->period_end, 0, 10))
+                        : null,
+                ])->all();
+        } catch (\Throwable $e) { /* no history → empty */ }
+
+        $shared = [
+            'user' => [
+                'id'        => $userId,
+                'fullname'  => $user->fullname ?? ('User ' . $userId),
+                'is_active' => (int) ($user->is_active ?? 0) === 1,
+                'schedule'  => $isCustom ? 'custom' : 'monthly',
+                'previous_salary'         => $profile->previous_salary ?? null,
+                'last_salary_change_date' => $profile->last_salary_change_date ?? null,
+            ],
+            'month'       => $month,
+            'month_label' => date('F Y', strtotime($month . '-01')),
+            'history'     => $history,
+            // Asked for but not yet given — money that has NOT moved, kept away from the totals.
+            'pending_requests' => $this->pendingAdvanceRequests($userId),
+        ];
+
+        // ⭐⭐ CUSTOM-SCHEDULE staff: the monthly rules must NEVER run on them. computeRow()
+        // would charge an absent day and a late cut and offer a monthly "Pay" — none of which
+        // exist for a date-range or running-balance (khata) employee (owner policy: no automatic
+        // absent/late/overtime effects; paid by period, or by payments against a balance). So
+        // the tab shows exactly the card the Custom tab shows, built by the SAME method, and the
+        // tab's actions ARE the Custom tab's actions. Leave and overtime cards are omitted: they
+        // are monthly concepts and would only invite the wrong click.
+        if ($isCustom) {
+            $customRow = null;
+            foreach ($this->computeMonthCustom($month) as $cr) {
+                if ((int) $cr['user_id'] === $userId) { $customRow = $cr; break; }
+            }
+            return $shared + [
+                'mode'       => 'custom',
+                'row'        => null,
+                'custom_row' => $customRow,
+            ];
+        }
+
+        $row = $this->computeRow($userId, $month);
+        $row['leave_actions'] = $this->leaveActionsForRow($row, $month);
+
+        $balance = [];
+        try { $balance = $this->leave->balance($userId); } catch (\Throwable $e) { $balance = []; }
+
+        return $shared + [
+            'mode'          => 'monthly',
+            'row'           => $row,
+            'leave_balance' => $balance,
+            'ot_carry'      => $this->carry->historyFor($userId),
+            // Parked absences still owed, oldest first — the tab settles the oldest.
+            'absence_open'   => $this->absence->openParked($userId),
+            'absence_history' => $this->absence->historyFor($userId),
+            'ot_per_day'    => $this->ot->minutesPerBonusDay(),
+            'ot_carry_on'   => $this->carry->enabled(),
+            // Leave actions can only be decided once the month can no longer change, so the
+            // tab shows why the buttons are absent rather than letting the server refuse.
+            'month_closed'  => $this->monthIsClosed($month),
+        ];
+    }
+    /** Names only, for the Employee tab's picker. No figures — the roster is not the payroll. */
+    public function employeePickList(string $month): array
+    {
+        $payVis = $this->payrollVisibilityMap();
+        $customIds = $this->customScheduleUserIds();
+        $out = [];
+        foreach (DB::table('t_sys_user')->where('is_active', 1)->orderBy('fullname')->get(['id', 'fullname']) as $u) {
+            $uid = (int) $u->id;
+            $vis = $payVis[$uid] ?? ['on' => true, 'explicit' => false];
+            if (!$vis['on']) { continue; }
+            $isCustom = isset($customIds[$uid]);
+            $configured = (float) (DB::table('t_hr_employee_profile')->where('user_id', $uid)->value('base_salary') ?? 0) > 0;
+            if (!$isCustom && !$vis['explicit'] && !$configured) { continue; }
+            $out[] = ['user_id' => $uid, 'name' => (string) $u->fullname,
+                      'schedule' => $isCustom ? 'custom' : 'monthly'];
+        }
+        return $out;
+    }
+
     /** Pay a batch of rows; aggregates the per-row results. */
     public function payMany(array $items, string $month, string $funding, ?int $bankId, int $actorId): array
     {
@@ -1000,6 +1613,8 @@ class PayrollService
                 // Batch-level choice from the pay modal: settle the leave actions with this
                 // payment, or pay the money now and leave them pending for the panel.
                 'defer_leave_actions' => !empty($item['defer_leave_actions']),
+                // Deductions-exceed-salary choice, answered on the pay dialog.
+                'shortfall' => $item['shortfall'] ?? null,
                 'actor_id' => $actorId,
             ]);
             if (!empty($res['success'])) {
@@ -1090,6 +1705,47 @@ class PayrollService
             $manualNet = max(0, round((float) $opts['net_override'], 2));
         }
         $net = $manualNet !== null ? $manualNet : max(0, (float) $row['net_salary']);
+
+        // ⭐ SHORTFALL (Sep-2026) — deductions exceed the salary. Net clamps to 0 and every
+        // advance is still marked FULLY settled, so whatever the salary could not cover is
+        // written off. Measured on Aug-2026: Rs 156,199 across four people, decided by nobody.
+        // The pay dialog now asks, and this must run BEFORE the ledger entry is written.
+        //
+        // ⚠ What is deliberately NOT offered: recovering an advance PARTIALLY. Settling only
+        // the advances that fully fit sounds right and is badly wrong — Farooq's Rs 60,000
+        // advance against a Rs 57,329 budget would settle nothing and leave a Rs 57,000 debt
+        // when he truly owes Rs 2,671. Honest partial recovery needs a `settled_amount` on the
+        // request, which does not exist yet.
+        $shortNotes = [];
+        $shortfallMode = ($opts['shortfall'] ?? 'writeoff') === 'waive_deductions'
+            ? 'waive_deductions' : 'writeoff';
+        $netRaw = (float) ($row['net_raw'] ?? 0);
+        if ($manualNet === null && $netRaw < 0) {
+            $otherDed = round((float) ($row['absent_deduction'] ?? 0)
+                            + (float) ($row['late_deduction'] ?? 0), 2);
+            $lost = round(-1 * $netRaw, 2);
+            if ($shortfallMode === 'waive_deductions' && $otherDed > 0) {
+                // The owner's "change the deductions to 0": remove the CAUSE rather than
+                // forgive the advance. Anything still short is written off and said so.
+                $net = max(0, round($netRaw + $otherDed, 2));
+                $lost = max(0, round($lost - $otherDed, 2));
+                // The frozen receipt must say what was DONE, not what was computed: a waived
+                // cut is a zero on the receipt, or the history page would show Rs 2,671
+                // deducted beside a note saying it was waived. ($row is captured by value
+                // into the pay transaction below, so this must happen here.)
+                $row['absent_deduction'] = 0;
+                $row['late_deduction']   = 0;
+                $shortNotes[] = 'absent/late deductions of ' . number_format($otherDed)
+                    . ' waived to avoid writing off the advance';
+            }
+            if ($lost > 0) {
+                $shortNotes[] = 'advance shortfall of ' . number_format($lost) . ' written off';
+            }
+            \Log::info('Payroll shortfall handled', [
+                'user_id' => $userId, 'month' => $month, 'mode' => $shortfallMode,
+                'net_raw' => $netRaw, 'net_paid' => $net, 'written_off' => $lost,
+            ]);
+        }
         $funding = ($opts['funding'] ?? 'cash') === 'online' ? 'online' : 'cash';
         $bankId = $funding === 'online' ? ($opts['bank_id'] ?? null) : null;
         if ($funding === 'online' && !$bankId) {
@@ -1107,7 +1763,7 @@ class PayrollService
         $deferLeave = !empty($opts['defer_leave_actions']);
 
         try {
-            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet, $deferLeave) {
+            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet, $deferLeave, $shortNotes) {
                 // Funding (source) account — NF Cash, or the single ONLINE ledger account tagged per bank.
                 if ($funding === 'online') {
                     $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -1167,6 +1823,21 @@ class PayrollService
                 // double-deduct one.
                 $settledIds = [];
                 if ($manualNet === null) {
+                    // ⭐ SHORTFALL (Sep-2026). When deductions exceed the salary, net clamps to
+                    // 0 and every advance is still marked FULLY settled — so whatever the salary
+                    // could not cover is written off. Measured on Aug-2026: Rs 156,199 across
+                    // four people, with nobody ever deciding it. The pay dialog now asks.
+                    //
+                    // ⚠ Note what is NOT offered: recovering an advance PARTIALLY. Settling only
+                    // the advances that fully fit sounds right and is badly wrong — Farooq's
+                    // Rs 60,000 advance against a Rs 57,329 budget would settle nothing and
+                    // leave a Rs 57,000 debt when he truly owes Rs 2,671. Real partial recovery
+                    // needs a `settled_amount` on the request, which does not exist yet.
+                    //
+                    // So the two honest choices are: write it off, or remove the CAUSE by not
+                    // applying this month's absent/late deductions (which is the owner's own
+                    // "change the deductions to 0"). Anything still short after that is written
+                    // off, and the receipt says so.
                     foreach ($row['advances'] as $a) {
                         if (empty($a['request_id'])) {
                             continue;
@@ -1207,12 +1878,52 @@ class PayrollService
                     if ((int) $row['bonus_leaves'] > 0) {
                         $this->grantOnce($userId, $appliedBonusLeaves, 'overtime',
                             $this->leaveActionReason('overtime', $month), $effDate, $actorId);
+                        // Paying settles the month's overtime, so the carry moves here too —
+                        // otherwise the minutes behind those days would still look unspent and
+                        // would be granted a second time next month. A manager bypass
+                        // ($appliedBonusLeaves === 0) is a waive, and forfeits the carry.
+                        // ⚠ Never over a decision the panel already made: grantOnce() is
+                        // idempotent for the leave, and this must be too — a panel WAIVE followed
+                        // by Pay must not quietly turn back into an apply and un-forfeit minutes.
+                        if (!$this->carry->decided($userId, $month)) {
+                            $this->carry->commit($userId, $month, (int) $row['overtime_minutes'],
+                                $appliedBonusLeaves > 0 ? 'apply' : 'waive', $actorId);
+                            // Same rule as the panel: bonus days settle parked absences first.
+                            if ($appliedBonusLeaves > 0) {
+                                $this->coverAbsencesWithBonus($userId, $appliedBonusLeaves, $month, $actorId);
+                            }
+                        }
                     }
+                }
+                // A month with overtime (or a carry-in) but NO whole day has nothing for a
+                // manager to decide — there is no leave to give or skip — yet its minutes must
+                // still be BANKED or they can never carry. That is pure accounting, so it runs
+                // even when leave actions are deferred to the panel (the panel cannot bank a
+                // day-less month: it only handles leaves). Idempotent by the same rule.
+                if ((int) $row['bonus_leaves'] === 0
+                    && ((int) $row['overtime_minutes'] > 0 || (int) ($row['ot_carry_in'] ?? 0) > 0)
+                    && !$this->carry->decided($userId, $month)) {
+                    $this->carry->commit($userId, $month, (int) $row['overtime_minutes'], 'apply', $actorId);
+                }
+
+                // ── Absences (Sep-2026) ────────────────────────────────────────────
+                // Paying with no decision IS the decision: it takes the cut, exactly as
+                // payroll always has. Recording it stops the month nagging afterwards and
+                // leaves an auditable row saying who let the default stand.
+                if ($manualNet === null && (float) ($row['absent_days'] ?? 0) > 0
+                    && $this->absence->enabled()
+                    && $this->absence->decisionFor($userId, $month) === null) {
+                    $this->absence->commit($userId, $month, (float) $row['absent_days'], 'cut',
+                        (float) ($row['absence_day_rate'] ?? 0), $actorId, 'Cut by default at payment');
+                }
+                // A held charge that rode on this pay is now actually paid.
+                if ($manualNet === null && (float) ($row['held_absence_deduction'] ?? 0) > 0) {
+                    $this->absence->markCutPaid($userId, $month);
                 }
 
                 // Stamp any manager bypass onto the receipt so a paid month explains itself later
                 // (0 bonus_leaves could mean "no overtime" OR "overtime bypassed" — this disambiguates).
-                $noteBits = [];
+                $noteBits = $shortNotes;   // shortfall decision, recorded on the receipt
                 if ($deferLeave && ((int) $row['bonus_leaves'] > 0 || (int) $row['late_leave_deduct'] > 0)) {
                     $noteBits[] = 'Leave actions left pending (decided separately)';
                 }
@@ -1239,6 +1950,11 @@ class PayrollService
                     'absent_days'      => $row['absent_days'],
                     'leave_days'       => $row['leave_days'],
                     'absent_deduction' => $manualNet !== null ? 0 : $row['absent_deduction'],
+                    // A charge for an EARLIER month's parked days. Its own column so the
+                    // receipt never claims it was this month's absence, and so HQ's
+                    // gross = net + advances stays correct.
+                    'held_absence_deduction' => ($manualNet !== null || !$this->absence->receiptColumnExists())
+                        ? 0 : (float) ($row['held_absence_deduction'] ?? 0),
                     'late_minutes'     => $row['late_minutes'],
                     'late_deduction'   => $manualNet !== null ? 0 : $row['late_deduction'],
                     'late_leave_deduct' => $appliedLateLeave,
@@ -1919,6 +2635,7 @@ class PayrollService
                         'late_leave_deduct' => (int) $p->late_leave_deduct,
                         'bonus_leaves'      => (int) $p->bonus_leaves,
                         'advance_total'     => (float) $p->advance_total,
+                        'held_absence_deduction' => (float) ($p->held_absence_deduction ?? 0),
                         'notes'             => $p->notes ?? null,
                         'funding'           => $p->funding,
                         'bank_label'        => $p->bank_id ? ($bankLabels[$p->bank_id] ?? ('Bank #' . $p->bank_id)) : null,

@@ -274,6 +274,15 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet', [\App\Http\Controllers\CRM\FleetFuelController::class, 'month'])->name('orders.riders-map.fleet');
     Route::get('/orders/riders-map/fleet/rider', [\App\Http\Controllers\CRM\FleetFuelController::class, 'rider'])->name('orders.riders-map.fleet.rider');
     Route::post('/orders/riders-map/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'markServiced'])->name('orders.riders-map.fleet.mark-serviced');
+    // ✏️ Correct or remove a service record — same right as recording one. Being able to
+    //    write a record and not fix it is what left log #8 needing hand-written SQL.
+    Route::post('/orders/riders-map/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'amendServiceRecord'])->where('id', '[0-9]+')->name('fleet.service-record.amend');
+    Route::delete('/orders/riders-map/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'deleteServiceRecord'])->where('id', '[0-9]+')->name('fleet.service-record.delete');
+    // ✏️ Correct the odometer / job on a maintenance CLAIM (approved ones included). The money
+    //    fields stay locked behind editClaim — see FleetFuelController::correctClaimReading.
+    Route::post('/orders/riders-map/fleet/claim-readings/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'correctClaimReading'])->where('id', '[0-9]+')->name('fleet.claim-reading.correct');
+    // 🧾 "Which recorded service is this bill for?" — the picker's list.
+    Route::get('/orders/riders-map/fleet/unbilled-services', [\App\Http\Controllers\CRM\FleetFuelController::class, 'unbilledServices'])->name('fleet.unbilled-services');
     Route::post('/orders/riders-map/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'setDefaultInterval'])->name('orders.riders-map.fleet.default-interval');
     // Which bikes hold their own schedule — shown before a company-wide change so the
     // manager decides whether to override them or leave them alone.
@@ -344,6 +353,29 @@ Route::middleware(['auth'])->group(function () {
     // not by a route permission — see BikeServiceAlerts::forUser().
     Route::get('/orders/riders-map/fleet/service-alerts', [\App\Http\Controllers\CRM\VehicleController::class, 'serviceAlerts'])->name('orders.riders-map.fleet.service-alerts');
     Route::post('/orders/riders-map/fleet/service-alerts/dismiss', [\App\Http\Controllers\CRM\VehicleController::class, 'dismissServiceAlert'])->name('orders.riders-map.fleet.service-alerts.dismiss');
+
+    // 🛠 BIKE TICKETS (Sep-2026) — the same controller the phone calls. No permission
+    // middleware: the audience rule lives in VehicleTicketService so the desk and the
+    // phone cannot enforce it differently.
+    Route::get('/orders/riders-map/fleet/tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'index'])->name('fleet.tickets.index');
+    Route::post('/orders/riders-map/fleet/tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'store'])->name('fleet.tickets.store');
+    Route::get('/orders/riders-map/fleet/tickets/alerts', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'alerts'])->name('fleet.tickets.alerts');
+    Route::get('/orders/riders-map/fleet/tickets/{id}', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'show'])->name('fleet.tickets.show')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/tickets/{id}/reply', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'reply'])->name('fleet.tickets.reply')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/tickets/{id}/close', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'close'])->name('fleet.tickets.close')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/tickets/{id}/reopen', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'reopen'])->name('fleet.tickets.reopen')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/tickets/{id}/read', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'markRead'])->name('fleet.tickets.read')->where('id', '[0-9]+');
+
+    // 🔧 WORKSHOP VISITS (Sep-2026) — same controller the phone calls, so the desk and
+    // the phone cannot enforce "who may schedule" differently.
+    Route::get('/orders/riders-map/fleet/workshop', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'index'])->name('fleet.workshop.index');
+    Route::post('/orders/riders-map/fleet/workshop', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'store'])->name('fleet.workshop.store');
+    Route::get('/orders/riders-map/fleet/workshop/alerts', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'alerts'])->name('fleet.workshop.alerts');
+    Route::get('/orders/riders-map/fleet/workshop/warnings', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'warnings'])->name('fleet.workshop.warnings');
+    Route::get('/orders/riders-map/fleet/workshop/outcome', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'outcome'])->name('fleet.workshop.outcome');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'accept'])->name('fleet.workshop.accept')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'cancel'])->name('fleet.workshop.cancel')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'done'])->name('fleet.workshop.done')->where('id', '[0-9]+');
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
     // Who loses this machine if it is taken back — feeds the "and what about him?" prompt.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'releasePreview'])->name('orders.riders-map.fleet.vehicles.preview-release');
@@ -1230,6 +1262,11 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/sales-report', [\App\Http\Controllers\KhaasController::class, 'salesReport'])->name('sales-report');
         Route::get('/sales-report/daily-ajax', [\App\Http\Controllers\KhaasController::class, 'salesReportDailyWeb'])->name('sales-report.daily-ajax');
         Route::get('/sales-report/product/{productId}/daily', [\App\Http\Controllers\KhaasController::class, 'productDailyBreakdown'])->name('sales-report.product-daily');
+        // 📊 Sep-2026 Month Review — packs made (same engine as the mobile
+        // Inventory Report) alongside the month's spend split into
+        // product / fixed / one-time. Cost half gated by view_khaas_month_review.
+        Route::get('/month-review', [\App\Http\Controllers\KhaasController::class, 'monthReview'])->name('month-review');
+        Route::post('/month-review/cost-type', [\App\Http\Controllers\KhaasController::class, 'setCostType'])->name('month-review.cost-type');
         // ⭐ Aug-2026 transfer REQUESTS — asking the warehouse for stock. Distinct from
         // /transfers/* above: a request moves nothing until it is accepted.
         Route::post('/transfer-requests', [\App\Http\Controllers\KhaasController::class, 'createTransferRequest'])->name('transfer-requests.create');
@@ -1440,6 +1477,17 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/bank-transfer', [\App\Http\Controllers\FIN\Hub\HubController::class, 'bankTransfer'])->name('bank-transfer');
             Route::get('/bank/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'bankDetail'])->name('bank');
             Route::get('/health', [\App\Http\Controllers\FIN\Hub\HubController::class, 'health'])->name('health');
+            // 💵 Tips held for staff. Reading is open to anyone who can open the Hub;
+            // the two money actions are gated inside the controller (Shabib/Taimur for
+            // a payout, Taimur for the opening balance and for undoing one) so they
+            // return JSON the page can show instead of an HTML redirect.
+            Route::get('/tips', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tips'])->name('tips');
+            Route::post('/tips/payout', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tipsPayout'])->name('tips.payout');
+            Route::post('/tips/opening', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tipsOpening'])->name('tips.opening');
+            Route::post('/tips/payout/{id}/undo', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tipsUndoPayout'])
+                ->whereNumber('id')->name('tips.payout.undo');
+            // Prod has no shell for `php artisan tips:backfill` — same idempotent sync, Taimur only.
+            Route::post('/tips/backfill', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tipsBackfill'])->name('tips.backfill');
             // Taimur-only money corrections (guarded inside the controller, not by middleware, so
             // they return JSON the Hub modals can show instead of an HTML redirect).
             Route::post('/external', [\App\Http\Controllers\FIN\Hub\HubController::class, 'externalMove'])->name('external');
@@ -1568,6 +1616,12 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/balance-rate', [\App\Http\Controllers\HR\PayrollController::class, 'balanceRate'])->name('balance-rate');
             Route::post('/balance-void-payment', [\App\Http\Controllers\HR\PayrollController::class, 'balanceVoidPayment'])->name('balance-void-payment');
             Route::get('/staff-expense-detail', [\App\Http\Controllers\HR\PayrollController::class, 'staffExpenseDetail'])->name('staff-expense-detail');
+            // Employee tab — one person, nothing about anyone else (the privacy view).
+            Route::get('/employee', [\App\Http\Controllers\HR\PayrollController::class, 'employeeDetail'])->name('employee');
+            Route::post('/forfeit-carry', [\App\Http\Controllers\HR\PayrollController::class, 'forfeitCarry'])->name('forfeit-carry');
+            // Settle absences parked in an earlier month: charge, excuse, or use own leave.
+            Route::post('/settle-absence', [\App\Http\Controllers\HR\PayrollController::class, 'settleAbsence'])->name('settle-absence');
+            Route::post('/dismiss-absence-alert', [\App\Http\Controllers\HR\PayrollController::class, 'dismissAbsenceAlert'])->name('dismiss-absence-alert');
         });
 
         // Salary Slips

@@ -1051,6 +1051,98 @@ class PaymentSignalsController extends Controller
             }
         }
 
+        // ⚠⚠ COUNT-ONCE, stage 3 — the reference the BANK NEVER SENDS.
+        //
+        // Stage 2 can only merge rows that carry a transaction reference, and
+        // a bank credit EMAIL never carries one: every one of the 695 email
+        // signals on the replica has a NULL reference. MeezanCreditEmailParser
+        // refuses the RAAST beneficiary fragment on purpose (it is OUR account
+        // and identical on every credit, so keying on it would merge unrelated
+        // payments) and the alert has nothing else to offer.
+        //
+        // So whether one transfer got counted twice was a coin flip on which
+        // bank row won the pairing:
+        //   screenshot ↔ EMAIL paired  -> the SMS still merges by reference. Clean.
+        //   screenshot ↔ SMS   paired  -> the email is orphaned, has no reference,
+        //                                 and is counted as a SECOND payment.
+        // Live case NF-19446 (Sep-3): one Rs 15,156 transfer, three signals, the
+        // orphaned email doubled it to Rs 30,312 against a Rs 15,155.50 invoice
+        // and the screen offered Rs 15,156.50 of credit nobody had paid. Fifty
+        // orders on the replica had that shape, about Rs 534,600 on offer.
+        //
+        // Rule (owner ruling Sep-4): a claim with NO usable reference is the
+        // same money as another claim of EXACTLY the same amount on the same
+        // order, when the bank is on one side of the duplication.
+        //
+        // ⭐ Two rows that BOTH carry a reference are never merged here — two
+        // different references at one amount are two real payments, and stage 2
+        // already handled the case where they agree.
+        //
+        // ⭐ It errs toward UNDERSTATING an extra, which is the safe direction:
+        // it can never mint credit that was not paid, and a genuine second
+        // payment of an identical amount can still be recorded by hand.
+        $byAmount = [];
+        foreach ($kept as $key => $sig) {
+            $byAmount[number_format((float) $sig->extracted_amount, 2, '.', '')][$key] = $sig;
+        }
+
+        foreach ($byAmount as $group) {
+            if (count($group) < 2) {
+                continue;
+            }
+
+            // Only when the bank itself is on one side of the duplication. Two
+            // customer screenshots with no bank alert behind them stay two
+            // claims — old behaviour, byte for byte.
+            $anyBank = false;
+            foreach ($group as $sig) {
+                if ($isBank($sig)) {
+                    $anyBank = true;
+                    break;
+                }
+            }
+            if (!$anyBank) {
+                continue;
+            }
+
+            $withRef = [];
+            $withoutRef = [];
+            foreach ($group as $key => $sig) {
+                if (str_starts_with($key, 'ref:')) {
+                    $withRef[$key] = $sig;
+                } else {
+                    $withoutRef[$key] = $sig;
+                }
+            }
+
+            if (empty($withoutRef)) {
+                continue;   // every row here is referenced — leave them alone
+            }
+
+            if (!empty($withRef)) {
+                // A referenced row anchors this amount; the unreferenced rows
+                // are the same transfer arriving through another channel.
+                foreach (array_keys($withoutRef) as $key) {
+                    unset($kept[$key]);
+                }
+                continue;
+            }
+
+            // Nothing here carries a reference: keep exactly ONE, preferring
+            // the bank's own word over the customer's screenshot.
+            $survivor = null;
+            foreach ($withoutRef as $key => $sig) {
+                if ($survivor === null || ($isBank($sig) && !$isBank($withoutRef[$survivor]))) {
+                    $survivor = $key;
+                }
+            }
+            foreach (array_keys($withoutRef) as $key) {
+                if ($key !== $survivor) {
+                    unset($kept[$key]);
+                }
+            }
+        }
+
         $claimed = 0.0;
         $latest  = null;
         foreach ($kept as $s) {

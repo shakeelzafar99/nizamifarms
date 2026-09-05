@@ -1873,10 +1873,11 @@ class VanController extends Controller
             app(\App\Services\FirebaseService::class)->notifyUser(
                 $riderId,
                 [
-                    'title' => '📍 Meet the van at ' . ($stop['label'] ?? 'the meet-up point'),
+                    // 🗣 Roman Urdu — the rider has to go and stand there (owner ruling).
+                    'title' => '📍 Van se ' . ($stop['label'] ?? 'meet-up point') . ' par milna hai',
                     'body'  => !empty($trip->departed_at)
-                        ? $driverName . ' is heading there with your orders.'
-                        : $driverName . ' will meet you there once the van leaves.',
+                        ? $driverName . ' aap ke orders le kar wahan aa raha hai.'
+                        : 'Van nikalte hi ' . $driverName . ' wahan aap se milega.',
                 ],
                 [
                     'type'      => 'van_stop_set',
@@ -1964,8 +1965,8 @@ class VanController extends Controller
                 app(\App\Services\FirebaseService::class)->notifyUser(
                     $rid,
                     [
-                        'title' => '🚚 The van has left',
-                        'body'  => $driverName . ' is on the way with your orders. You will be told where to meet.',
+                        'title' => '🚚 Van nikal gayi',
+                        'body'  => $driverName . ' aap ke orders le kar nikal chuka hai. Milne ki jagah aap ko bata di jayegi.',
                     ],
                     ['type' => 'van_departed', 'van_user_id' => (string) $driverId],
                     'shift_notifications'
@@ -1994,15 +1995,15 @@ class VanController extends Controller
         //   names the point while loading is still going on; "will meet you
         //   there" is true then, "is heading there" is not.
         $body = $departed
-            ? $driverName . ' is heading there with your orders.'
-            : $driverName . ' will meet you there once the van leaves.';
+            ? $driverName . ' aap ke orders le kar wahan aa raha hai.'
+            : 'Van nikalte hi ' . $driverName . ' wahan aap se milega.';
         $sent = 0;
         foreach ($riders as $rid) {
             try {
                 app(\App\Services\FirebaseService::class)->notifyUser(
                     $rid,
                     [
-                        'title' => '📍 Meet the van at ' . ($stop['label'] ?? 'the meet-up point'),
+                        'title' => '📍 Van se ' . ($stop['label'] ?? 'meet-up point') . ' par milna hai',
                         'body'  => $body,
                     ],
                     [

@@ -59,10 +59,17 @@ class VehicleController extends Controller
                 ]);
             }
 
+            $vehicles = $svc->all($request->boolean('include_retired'));
+            $pending  = $this->pendingByVehicle();
+
             return response()->json([
                 'success'    => true,
                 'available'  => true,
-                'vehicles'   => $svc->all($request->boolean('include_retired')),
+                'vehicles'   => $vehicles,
+                // ⚠ "Which bikes are asking for something?" — the SAME map the phone gets, so
+                //   both grids sort by one rule. See FleetAttentionService.
+                'attention'  => app(\App\Services\Riders\FleetAttentionService::class)
+                                    ->forVehicles($vehicles, $pending),
                 'riders'     => $this->roster(),
                 'can_manage' => $this->canManage(),
                 // Photos are a separate, wider right — see canAddPhotos().
@@ -75,7 +82,7 @@ class VehicleController extends Controller
                 //    card itself says so. Without this the grid looked completely
                 //    normal while a request sat unanswered — the manager had to
                 //    already know to look at the banner.
-                'pending_requests'  => $this->pendingByVehicle(),
+                'pending_requests'  => $pending,
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController index failed', ['error' => $e->getMessage()]);
@@ -138,7 +145,21 @@ class VehicleController extends Controller
                 // ⭐ The machine's own service RECORD (owner ask, Aug-13). The list
                 //   existed only on the rider's drill-down, so a handover split a
                 //   bike's history between two people and neither list was the bike's.
-                'service_history' => $svc->serviceHistoryFor((int) $id),
+                // ⚠ `all_time=1` lifts the 24-month window (owner: "I can't see lifetime").
+                //   Still newest-first and still capped, so the payload cannot run away.
+                'service_history' => $svc->serviceHistoryFor((int) $id,
+                    $request->boolean('all_time') ? 200 : 24, $request->boolean('all_time')),
+                // 💰 What this machine has cost — four windows × regular/repairs/fuel, with
+                //   pending money reported separately and "unclassified" never hidden.
+                'cost_summary' => $svc->costSummaryFor((int) $id, $m->format('Y-m')),
+                /**
+                 * ⚠ The DETAIL payload must answer this itself. It did not — only the list
+                 *   and the mobile `apiShow` carried it — so anything on the detail that gates
+                 *   on it silently rendered nothing. The vehicle-page action buttons hit
+                 *   exactly that. Same computation as everywhere else, per request, so a
+                 *   newly-granted manager needs no reinstall.
+                 */
+                'can_log_meters' => $this->canLogMeters(),
             ]);
         } catch (\Throwable $e) {
             Log::error('VehicleController show failed', ['id' => $id, 'error' => $e->getMessage()]);
@@ -247,6 +268,26 @@ class VehicleController extends Controller
                  * a rider newly given a machine sees what his predecessor had done.
                  */
                 'last_maintenance' => $svc->lastMaintenanceFor((int) $vid),
+
+                /**
+                 * ⭐⭐ THIS BIKE'S EFFECTIVE SCHEDULE, so a filing picker can say
+                 *    "Oil + Tuning — every 2,000 km" using the interval THIS machine
+                 *    actually runs (ServiceIntervalResolver) instead of the type's
+                 *    standard one.
+                 *
+                 * ⚠ Every picker (rider form, store form, Bikes modal, web request
+                 *   form) labels types from the raw `maint_types` list, which has no
+                 *   vehicle in scope — the same mismatch that once printed "every
+                 *   1,200 km" in the schedule panel and "every 2,000 km" in the
+                 *   Record-service prompt beside it. Served from the endpoint all
+                 *   four already call, so they cannot drift apart again.
+                 *
+                 * ⚠ Memoised per (machine, meter) inside VehicleService, so this is
+                 *   free when `find()` above has already resolved the same machine.
+                 * Display only — the forms still POST `maintenance_type_id`, and the
+                 * server keeps deriving every rule from the type itself.
+                 */
+                'service_schedule' => $svc->serviceScheduleFor((int) $vid, $svc->currentMeterFor((int) $vid)),
             ]);
         } catch (\Throwable $e) {
             Log::warning('VehicleController forUser failed', ['user' => $uid, 'error' => $e->getMessage()]);
@@ -337,6 +378,9 @@ class VehicleController extends Controller
                     'vehicle_id'   => $l['vehicle_id'],
                     'label'        => $l['label'],
                     'is_company'   => (bool) $l['is_company'],
+                    // 'bike' | 'van' — so the picker can draw the machine it actually is
+                    // instead of inferring it from is_company (see RiderDayLegs).
+                    'vtype'        => $l['vtype'] ?? 'bike',
                     'km'           => $l['km'],
                     'meter_start'  => $l['meter_start'],
                     'meter_end'    => $l['meter_end'],
@@ -439,10 +483,18 @@ class VehicleController extends Controller
             if (!$svc->available()) {
                 return response()->json(['success' => true, 'available' => false, 'vehicles' => []]);
             }
+            $vehicles = $svc->all(false);
+            $pending  = $this->pendingByVehicle();
+
             return response()->json([
                 'success'   => true,
                 'available' => true,
-                'vehicles'  => $svc->all(false),
+                'vehicles'  => $vehicles,
+                // ⚠ "Which bikes are asking for something?" — see FleetAttentionService. The web
+                //   grid reads the SAME map and sorts by the same `rank`, so the desk and the
+                //   phone cannot disagree about which machine is worst off.
+                'attention' => app(\App\Services\Riders\FleetAttentionService::class)
+                                  ->forVehicles($vehicles, $pending),
                 // ⭐ SEP-2026: the phone CAN now hand a machine over (apiAssign /
                 //   apiRelease), so this stops being hard-coded false and becomes the
                 //   real answer — `assign_vehicles`, the same key the web asks.
@@ -455,7 +507,7 @@ class VehicleController extends Controller
                 'rules_enabled' => $svc->rulesEnabled(),
                 // Same pending map the web grid gets — the phone's machine list
                 // must not look calm while a rider is waiting on one of them.
-                'pending_requests' => $this->pendingByVehicle(),
+                'pending_requests' => $pending,
                 // ⭐ …but condition photos CAN now be added from the phone
                 //   (apiAddPhotos). Separate flag on purpose: it is the only
                 //   write the app has, and conflating it with can_manage would
@@ -502,11 +554,33 @@ class VehicleController extends Controller
                 // same per-type schedule the web profile shows.
                 'service_schedule' => $svc->serviceScheduleFor((int) $id,
                     isset($v['current_meter']) && $v['current_meter'] !== null ? (int) $v['current_meter'] : null),
+                /**
+                 * 🛠 PAST SERVICES — the same list the web profile shows, claims and
+                 * hand-recorded rows together.
+                 *
+                 * ⚠⚠ The phone had NO service history at all, so a manual record was
+                 *    invisible on mobile exactly as it was on the web before Sep-3 — and
+                 *    Qasim works in FROZEN MODE ON HIS PHONE. Without this he could record
+                 *    a service he could never afterwards see or correct.
+                 * Rows carrying `log_id` are the correctable ones (a CLAIM carries money and
+                 * is amended through the claims flow instead).
+                 */
+                // ⚠ `all_time=1` lifts the 24-month window (owner: "I can't see lifetime").
+                //   Still newest-first and still capped, so the payload cannot run away.
+                'service_history' => $svc->serviceHistoryFor((int) $id,
+                    $request->boolean('all_time') ? 200 : 24, $request->boolean('all_time')),
+                // 💰 What this machine has cost — four windows × regular/repairs/fuel, with
+                //   pending money reported separately and "unclassified" never hidden.
+                'cost_summary' => $svc->costSummaryFor((int) $id, $m->format('Y-m')),
                 // May this manager record a condition photo from the phone?
                 'can_add_photos' => $this->canAddPhotos(),
                 // ⭐ …and may he hand the machine over from it? (Sep-2026, see
                 //   apiAssign.) Same per-request computation as apiIndex.
                 'can_manage'   => $this->canManage(),
+                // ✏️ …and may he correct a hand-recorded service? Same right as recording
+                //    one (`manage_bike_service`), computed per request like the others so a
+                //    newly-granted manager does not have to reinstall.
+                'can_log_meters' => $this->canLogMeters(),
                 'months'       => $this->recentMonths(),
             ]);
         } catch (\Throwable $e) {
@@ -1502,7 +1576,18 @@ class VehicleController extends Controller
         $u = auth()->user();
         if (!$u) return false;
         if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
-        return (bool) $u->hasPermission('manage_bike_service');
+        /**
+         * ⚠ WEB **OR** MOBILE (Sep-3). This flag decides whether the meter and
+         *   correct-a-service controls are OFFERED; the action itself is gated by
+         *   `FleetFuelController::canManageService()`, which IS mobile-aware. A flag
+         *   stricter than the server hides a button somebody is entitled to press — so it
+         *   must mirror what the server will accept, never be a second, different gate.
+         * ⚠ This can only ever REVEAL a control the server would already allow; it cannot
+         *   let anything through, because the endpoint checks again.
+         */
+        return (bool) ($u->hasPermission('manage_bike_service')
+            || (method_exists($u, 'hasMobilePermission')
+                && $u->hasMobilePermission('manage_bike_service')));
     }
 
     /**

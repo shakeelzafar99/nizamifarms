@@ -88,7 +88,14 @@ class CompanyLocationsController extends Controller
                         $w->where('loc.is_handover_point', 0)->orWhereNull('loc.is_handover_point');
                     });
                 })
-                ->select(
+                /**
+                 * ⚠ WORKSHOPS ARE **NOT** FILTERED OUT HERE, deliberately. This feeds the
+                 *   locations ADMIN page itself — the one screen where a workshop is ticked
+                 *   as such — so hiding them here would hide the rows being managed.
+                 *   The exclusion that matters is on the shift-ASSIGN picker
+                 *   (Ops\ShiftPlannerController) and in LocationService::isAssignable.
+                 */
+                ->select(array_merge([
                     'loc.id',
                     'loc.location_name',
                     'loc.latitude',
@@ -97,10 +104,18 @@ class CompanyLocationsController extends Controller
                     'loc.is_primary',
                     'loc.is_active',
                     'loc.created_at',
-                    DB::raw('COUNT(DISTINCT ula.user_id) as assigned_users_count')
-                )
-                ->groupBy('loc.id', 'loc.location_name', 'loc.latitude', 'loc.longitude', 
-                         'loc.radius_meters', 'loc.is_primary', 'loc.is_active', 'loc.created_at')
+                ],
+                    // ⚠ The admin page draws the 🔧 WORKSHOP badge and pre-ticks the edit box from
+                    //   this flag. Without it here the box was ALWAYS unticked, so editing a
+                    //   workshop's name would have silently un-flagged it (Sep-4 review).
+                    \App\Services\LocationService::hasWorkshopColumn() ? ['loc.is_workshop'] : [],
+                    [DB::raw('COUNT(DISTINCT ula.user_id) as assigned_users_count')]
+                ))
+                ->groupBy(array_merge(
+                    ['loc.id', 'loc.location_name', 'loc.latitude', 'loc.longitude',
+                     'loc.radius_meters', 'loc.is_primary', 'loc.is_active', 'loc.created_at'],
+                    \App\Services\LocationService::hasWorkshopColumn() ? ['loc.is_workshop'] : []
+                ))
                 ->orderBy('loc.is_primary', 'desc')
                 ->orderBy('loc.location_name')
                 ->get();
@@ -130,6 +145,10 @@ class CompanyLocationsController extends Controller
                 'longitude' => 'required|numeric|between:-180,180',
                 'radius_meters' => 'required|integer|min:100|max:10000',
                 'is_primary' => 'boolean',
+                // ⚠ Phase 4: marks a WORKSHOP. Excluded from the office picker above, and
+                //   only ever reaches a rider's day through the one-day override that
+                //   scheduling a workshop visit writes.
+                'is_workshop' => 'boolean',
                 'is_active' => 'boolean'
             ]);
 
@@ -146,6 +165,9 @@ class CompanyLocationsController extends Controller
                 'longitude' => $validated['longitude'],
                 'radius_meters' => $validated['radius_meters'],
                 'is_primary' => $validated['is_primary'] ?? 0,
+                // Schema-guarded like every read of this column: saving a location must not
+                // 500 if the Sep-2026 SQL has not been run yet.
+                ...(\App\Services\LocationService::hasWorkshopColumn() ? ['is_workshop' => $validated['is_workshop'] ?? 0] : []),
                 'is_active' => $validated['is_active'] ?? 1,
                 'created_at' => now(),
                 'updated_at' => now()
@@ -186,6 +208,10 @@ class CompanyLocationsController extends Controller
                 'longitude' => 'required|numeric|between:-180,180',
                 'radius_meters' => 'required|integer|min:100|max:10000',
                 'is_primary' => 'boolean',
+                // ⚠ Phase 4: marks a WORKSHOP. Excluded from the office picker above, and
+                //   only ever reaches a rider's day through the one-day override that
+                //   scheduling a workshop visit writes.
+                'is_workshop' => 'boolean',
                 'is_active' => 'boolean'
             ]);
 
@@ -215,6 +241,7 @@ class CompanyLocationsController extends Controller
                     'longitude' => $validated['longitude'],
                     'radius_meters' => $validated['radius_meters'],
                     'is_primary' => $validated['is_primary'] ?? 0,
+                    ...(\App\Services\LocationService::hasWorkshopColumn() ? ['is_workshop' => $validated['is_workshop'] ?? 0] : []),
                     'is_active' => $validated['is_active'] ?? 1,
                     'updated_at' => now()
                 ]);

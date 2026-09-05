@@ -204,6 +204,25 @@
               <span class="text-xs text-gray-500">(Default location for users without specific assignment)</span>
             </label>
           </div>
+          {{-- 🔧 WORKSHOP (Phase 4, Sep-2026). Until a location is ticked here, the
+               "which workshop?" picker on a visit has nothing to offer, the visit stores
+               only free text, and no one-day shift override is written — so a rider's
+               check-in on his workshop morning is still measured against his normal base.
+               Ticking one is what turns that on. A workshop is deliberately NOT offerable
+               as anybody's standing work location (see ShiftPlannerController and
+               LocationService::isAssignableOffice). --}}
+          <div class="flex items-center">
+            <input
+              type="checkbox"
+              id="isWorkshop"
+              name="is_workshop"
+              class="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+            >
+            <label for="isWorkshop" class="ml-2 block text-sm text-gray-700">
+              🔧 This is a workshop
+              <span class="text-xs text-gray-500">(Somewhere a rider is sent for a morning — never a place of work. Riders sent here on a workshop visit check in against it for that day only.)</span>
+            </label>
+          </div>
           <div class="flex items-center">
             <input 
               type="checkbox" 
@@ -448,7 +467,7 @@ function renderLocations() {
       <td class="px-6 py-4 whitespace-nowrap">
         <div class="flex items-center">
           <div class="text-sm font-medium text-gray-900">${escapeHtml(location.location_name)}</div>
-          ${location.is_primary ? '<span class="ml-2 px-2 py-1 text-xs font-semibold text-blue-800 bg-blue-100 rounded">PRIMARY</span>' : ''}
+          ${location.is_primary ? '<span class="ml-2 px-2 py-1 text-xs font-semibold text-blue-800 bg-blue-100 rounded">PRIMARY</span>' : ''}${location.is_workshop ? '<span class="ml-2 px-2 py-1 text-xs font-semibold text-amber-800 bg-amber-100 rounded">🔧 WORKSHOP</span>' : ''}
         </div>
       </td>
       <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -511,6 +530,7 @@ function editLocation(locationId) {
   document.getElementById('longitude').value = location.longitude;
   document.getElementById('radiusMeters').value = location.radius_meters;
   document.getElementById('isPrimary').checked = location.is_primary == 1;
+  document.getElementById('isWorkshop').checked = location.is_workshop == 1;
   document.getElementById('isActive').checked = location.is_active == 1;
   document.getElementById('locationModal').style.display = 'block';
   document.body.style.overflow = 'hidden'; // Prevent body scroll
@@ -536,6 +556,7 @@ async function saveLocation(event) {
     longitude: parseFloat(document.getElementById('longitude').value),
     radius_meters: parseInt(document.getElementById('radiusMeters').value),
     is_primary: document.getElementById('isPrimary').checked ? 1 : 0,
+    is_workshop: document.getElementById('isWorkshop').checked ? 1 : 0,
     is_active: document.getElementById('isActive').checked ? 1 : 0
   };
   

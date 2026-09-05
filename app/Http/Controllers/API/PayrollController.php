@@ -40,10 +40,110 @@ class PayrollController extends Controller
                 'month_label' => date('F Y', strtotime($month . '-01')),
                 'rows' => $svc->computeMonth($month),
                 'funding' => $svc->fundingOptions(),
+                // Same two feeds the web screen renders its panel and red banner from, so a
+                // manager on the phone sees the same work waiting for him as on the desk.
+                'leave_actions' => $svc->leaveActionsMonth($month),
+                'absence_summary' => $svc->pendingAbsenceSummary($month),
             ]);
         } catch (\Throwable $e) {
             \Log::error('Mobile payroll month failed', ['month' => $month, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not build payroll.'], 500);
+        }
+    }
+
+    /**
+     * Manager: decide one leave action — overtime bonus, late penalty, or an absence.
+     *
+     * ⭐ Straight through to the SAME PayrollService::decideLeaveAction the web panel posts to,
+     * so a decision made on a phone and one made at a desk are the same write, with the same
+     * refusals (a paid month, a custom-schedule employee, a month before the start month).
+     */
+    public function decideLeaveAction(Request $request)
+    {
+        if ($deny = $this->denyIfNotManager($request)) return $deny;
+        $v = Validator::make($request->all(), [
+            'user_id'  => 'required|integer',
+            'month'    => 'required|string',
+            'kind'     => 'required|in:overtime,late_penalty,absence',
+            'decision' => 'required|in:apply,waive,cut,park,excuse',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            $res = (new PayrollService())->decideLeaveAction(
+                (int) $request->user_id,
+                $this->normMonth($request->month),
+                (string) $request->kind,
+                (string) $request->decision,
+                (int) $request->user()->id
+            );
+            return response()->json($res, ($res['success'] ?? false) ? 200 : 422);
+        } catch (\Throwable $e) {
+            \Log::error('Mobile decide leave action failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save that decision.'], 500);
+        }
+    }
+
+    /**
+     * Manager: settle days PARKED in an earlier month — charge them now, cover them from the
+     * employee's own leave, or excuse them.
+     */
+    public function settleAbsence(Request $request)
+    {
+        if ($deny = $this->denyIfNotManager($request)) return $deny;
+        $v = Validator::make($request->all(), [
+            'user_id'   => 'required|integer',
+            'month'     => 'required|string',              // the month the absences happened in
+            'action'    => 'required|in:charge,excuse,use_leave',
+            'in_month'  => 'nullable|string',              // whose pay carries a later charge
+            'amount'    => 'nullable|numeric|min:0',
+            'days'      => 'nullable|numeric|min:0',
+            'note'      => 'nullable|string|max:255',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            $res = (new PayrollService())->settleParkedAbsence(
+                (int) $request->user_id,
+                (string) $request->month,
+                (string) $request->action,
+                $request->in_month ? (string) $request->in_month : null,
+                $request->filled('amount') ? (float) $request->amount : null,
+                $request->filled('days') ? (float) $request->days : null,
+                $request->note ? (string) $request->note : null,
+                (int) $request->user()->id
+            );
+            return response()->json($res, ($res['success'] ?? false) ? 200 : 422);
+        } catch (\Throwable $e) {
+            \Log::error('Mobile settle absence failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not settle those days.'], 500);
+        }
+    }
+
+    /**
+     * Manager: hide the absence banner until next month. Writes the SAME per-user row the web
+     * banner uses (`t_ops_alert_dismissal`), so hiding it on the phone hides it on the laptop
+     * too, and it comes back next month under a new key.
+     */
+    public function dismissAbsenceAlert(Request $request)
+    {
+        if ($deny = $this->denyIfNotManager($request)) return $deny;
+        $v = Validator::make($request->all(), ['alert_key' => 'required|string|max:64']);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                \Illuminate\Support\Facades\DB::table('t_ops_alert_dismissal')->updateOrInsert(
+                    ['user_id' => $request->user()->id, 'alert_key' => (string) $request->alert_key],
+                    ['dismissed_at' => now()]
+                );
+            }
+            return response()->json(['success' => true]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Could not hide that.'], 500);
         }
     }
 

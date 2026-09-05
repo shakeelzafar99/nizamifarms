@@ -76,6 +76,15 @@ class RolePermissionController extends Controller
             // access coming along with it.
             'view_bike_costs' => 'View Bikes (fuel & running cost per rider)',
             'manage_bike_service' => 'Set bike service schedules (record a service, per-bike & company-wide interval)',
+            // ⚠ This registry is the ONLY source the Roles screen enumerates from — a key
+            //   seeded in t_sys_role_permissions but missing here cannot be toggled by anyone.
+            'manage_vehicle_tickets' => 'Respond to and close bike tickets (faults riders report)',
+            // ⚠ Pre-existing gap found in the same Sep-2 review: the Sep-01 handover work checks
+            //   `assign_vehicles` but never listed it here, so the right could not be granted or
+            //   revoked from this screen by anyone.
+            'assign_vehicles' => 'Assign and take back vehicles (approve rider handover requests)',
+            'schedule_workshop' => 'Schedule workshop visits for bikes (set / move / cancel / mark done)',
+            'receive_workshop_alerts' => 'See workshop visit alerts (banner on attendance, riders map and the shift planner)',
             'view_khaas_sales_report' => 'View Khaas Sales Report',
 
             // Restricted Web Menu keys (Jul-2026). Rendered in the amber warning card

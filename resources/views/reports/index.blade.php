@@ -434,7 +434,18 @@
     .tips-card-title { font-size: 15px; font-weight: 700; color: #1F2937; }
     .tips-card-count { font-size: 11px; color: #6B7280; margin-top: 2px; }
     .tips-card-amount { font-size: 16px; font-weight: 700; color: #F59E0B; }
-    
+
+    /* Sep-2026 — Balance card reuses .tips-card; only the accent differs. */
+    .balance-card:hover {
+        border-color: #0EA5E9;
+        box-shadow: 0 4px 12px rgba(14,165,233,0.1);
+    }
+    .balance-card-amount { font-size: 16px; font-weight: 700; color: #0EA5E9; }
+    /* The working under the Invoices figure: "+ balance, − tips". */
+    .month-summary-note { font-size: 10px; color: #6B7280; margin-top: 3px; line-height: 1.35; }
+    .adj-note-plus { color: #0EA5E9; font-weight: 600; }
+    .adj-note-minus { color: #B45309; font-weight: 600; }
+
     /* Tips Modal */
     .modal-overlay {
         position: fixed;
@@ -567,6 +578,40 @@
         border-top: 1px solid #E5E7EB;
         padding: 12px 16px;
     }
+    /* By Category → employee clubbing (Sep-2026): Salaries per person, and a
+       multi-spender expense category (Petrol, Maintenance …) per person. */
+    .employee-group {
+        border-bottom: 1px solid #F3F4F6;
+    }
+    .employee-group:last-child { border-bottom: none; }
+    .employee-group-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 14px 9px 22px;
+        cursor: pointer;
+    }
+    .employee-group-header:hover { background: rgba(0, 0, 0, 0.03); }
+    .employee-group-name { font-size: 13px; font-weight: 700; color: #374151; }
+    .employee-group-count { font-size: 11px; color: #6B7280; }
+    .employee-group-items { padding-left: 10px; }
+    .group-hint {
+        margin-left: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #6B7280;
+    }
+    .bu-chip {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        vertical-align: middle;
+    }
+    .bu-chip-nf { background: #DBEAFE; color: #1D4ED8; }
+    .bu-chip-khaas { background: #EDE9FE; color: #6D28D9; }
 </style>
 @endpush
 
@@ -599,6 +644,8 @@
     let expandedSections = {};
     let expandedDates = {};
     let expandedCategories = {};   // By Category → expense sub-category drill
+    let expandedCatEmployees = {}; // By Category → category → employee drill (Sep-2026)
+    let expandedSalaryEmps = {};   // By Category → Salaries → employee drill (Sep-2026)
     let expandedVendors = {};      // By Category → vendor drill
     let expandedVendorDates = {};  // By Category → vendor → day drill
     let dailySummary = [];
@@ -610,6 +657,7 @@
     let monthDetailView = 'daily'; // 'daily' (default) or 'category'
     let expandedDailyDays = {};
     let showTipsModal = false;
+    let showBalanceModal = false;
     // Phase 5 — Qurbani-segregation + NF/Khaas split state
     let monthsLoaded = 12;          // window the API returned
     let canViewKhaas = false;       // surfaced from API; gates Khaas rows
@@ -753,6 +801,25 @@
     // and vendor purchases, only when the user has Khaas access AND
     // there's actually a Khaas number to show. Falls back to a
     // single-line display otherwise.
+    /**
+     * Sep-2026 — the working under the Invoices figure.
+     *
+     * "Invoices" is what the month EARNED, which is not the sum of the invoice
+     * faces: money a customer paid from their own account balance is added back
+     * (the invoice shrank, the sale did not), and tips from the cutoff on are
+     * taken out (they belong to the Tips Fund). Both are shown so a number that
+     * differs from the invoices someone can count by hand explains itself.
+     */
+    function renderInvoiceAdjNote(item) {
+        const bal  = Number(item.balance_used || 0);
+        const tips = Number(item.tips_excluded || 0);
+        if (bal <= 0 && tips <= 0) return '';
+        const parts = [];
+        if (bal > 0)  parts.push(`<span class="adj-note-plus">+${formatCurrency(bal)}</span> from balance`);
+        if (tips > 0) parts.push(`<span class="adj-note-minus">−${formatCurrency(tips)}</span> tips`);
+        return `<div class="month-summary-note">${parts.join(' · ')}</div>`;
+    }
+
     function renderBuSplitRows(item) {
         if (!canViewKhaas || ((item.expenses_khaas || 0) === 0 && (item.vendor_purchases_khaas || 0) === 0 && (item.salaries_khaas || 0) === 0)) {
             return '';
@@ -800,6 +867,7 @@
                             <div class="month-summary-item">
                                 <div class="month-summary-label">Invoices</div>
                                 <div class="month-summary-value val-green">${formatCurrency(item.invoices)}</div>
+                                ${renderInvoiceAdjNote(item)}
                             </div>
                             <div class="month-summary-item">
                                 <div class="month-summary-label">Expenses</div>
@@ -876,20 +944,43 @@
         
         // Tips Card (clickable to open modal)
         if (d.tips && d.tips.total > 0) {
+            // Sep-2026 — say plainly whether this month's tips are inside profit.
+            // Months before the cutoff still count them; from the cutoff on they
+            // are held in the Tips Fund and were taken out of the figure above.
+            const tipsOut = Number(d.tips.excluded_from_profit || 0);
+            const tipsNote = tipsOut > 0
+                ? `${formatCurrency(tipsOut)} held in the Tips Fund — not counted as profit`
+                : `${d.tips.count} order${d.tips.count !== 1 ? 's' : ''} with tips`;
             html += `
                 <div class="tips-card" onclick="openTipsModal()">
                     <div class="tips-card-left">
                         <span class="tips-card-icon">💵</span>
                         <div>
                             <div class="tips-card-title">Tips Collected</div>
-                            <div class="tips-card-count">${d.tips.count} order${d.tips.count !== 1 ? 's' : ''} with tips</div>
+                            <div class="tips-card-count">${tipsNote}</div>
                         </div>
                     </div>
                     <div class="tips-card-amount">${formatCurrency(d.tips.total)}</div>
                 </div>
             `;
         }
-        
+
+        // Paid-from-balance card — the other half of the Invoices working.
+        if (d.balance_used && d.balance_used.total > 0) {
+            html += `
+                <div class="tips-card balance-card" onclick="openBalanceModal()">
+                    <div class="tips-card-left">
+                        <span class="tips-card-icon">💳</span>
+                        <div>
+                            <div class="tips-card-title">Paid from Customer Balance</div>
+                            <div class="tips-card-count">${d.balance_used.count} invoice${d.balance_used.count !== 1 ? 's' : ''} · counted as income above</div>
+                        </div>
+                    </div>
+                    <div class="balance-card-amount">${formatCurrency(d.balance_used.total)}</div>
+                </div>
+            `;
+        }
+
         // View Toggle
         html += `
             <div class="view-toggle-bar">
@@ -909,6 +1000,9 @@
         // Render tips modal if open
         if (showTipsModal) {
             renderTipsModal(d.tips);
+        }
+        if (showBalanceModal) {
+            renderBalanceModal(d.balance_used);
         }
     }
     
@@ -1105,10 +1199,7 @@
         // Salaries Section — payroll payments (+ legacy slips), per employee. Separate from
         // Expenses (matches the summary card + HQ); reduces profit.
         if (d.salaries && (d.salaries.count > 0 || d.salaries.total > 0)) {
-            html += renderSection('salaries', '👤 Salaries', d.salaries, '#EDE9FE', '#F5F3FF', (item) => `
-                <div class="detail-item-title">${escapeHtml(item.employee)}</div>
-                <div class="detail-item-sub">${escapeHtml(item.bu_code)} • ${escapeHtml(item.source)}</div>
-            `);
+            html += renderSalariesByEmployee('salaries', '👤 Salaries', d.salaries, '#EDE9FE', '#F5F3FF');
         }
 
         // Vendor Purchases Section — group by vendor name, then daily within each vendor.
@@ -1180,6 +1271,57 @@
         document.body.insertAdjacentHTML('beforeend', modalHtml);
     }
     
+    // Balance Modal — which invoices were part-paid from a customer's balance.
+    // Same shape as the tips modal on purpose: these two cards are the two
+    // adjustments behind the Invoices figure, so they read the same way.
+    function openBalanceModal() {
+        showBalanceModal = true;
+        renderBalanceModal(monthDetails?.balance_used);
+    }
+
+    function closeBalanceModal() {
+        showBalanceModal = false;
+        const el = document.getElementById('balanceModalOverlay');
+        if (el) el.remove();
+    }
+
+    function renderBalanceModal(balance) {
+        const existing = document.getElementById('balanceModalOverlay');
+        if (existing) existing.remove();
+
+        if (!balance || !balance.items?.length) return;
+
+        let rows = '';
+        balance.items.forEach(item => {
+            rows += `
+                <div class="tip-row">
+                    <div class="tip-row-left">
+                        <div class="tip-order">${escapeHtml(item.order_number)}</div>
+                        <div class="tip-customer">${escapeHtml(item.customer_name)}</div>
+                        <div class="tip-date-info">${formatShortDate(item.delivery_date)}</div>
+                    </div>
+                    <div class="tip-row-right">
+                        <div class="tip-amount" style="color:#0EA5E9">${formatCurrency(item.balance_used)}</div>
+                        <div class="tip-order-total">Invoice: ${formatCurrency(item.invoice_amount)}</div>
+                    </div>
+                </div>`;
+        });
+
+        const modalHtml = `
+            <div class="modal-overlay" id="balanceModalOverlay" onclick="if(event.target===this)closeBalanceModal()">
+                <div class="modal-box">
+                    <div class="modal-header">
+                        <span class="modal-title">💳 Paid from Customer Balance</span>
+                        <button class="modal-close" onclick="closeBalanceModal()">✕</button>
+                    </div>
+                    <div class="modal-body">${rows}</div>
+                    <div class="modal-footer">${formatCurrency(balance.total)} across ${balance.count} invoice${balance.count !== 1 ? 's' : ''} · already counted as income</div>
+                </div>
+            </div>`;
+
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+
     function renderSection(key, title, sectionData, headerBg, dateBg, renderItemContent) {
         const isExpanded = expandedSections[key];
         let html = `<div class="section-card">
@@ -1233,6 +1375,71 @@
         return html;
     }
     
+    // By Category → Salaries listed per EMPLOYEE (Sep-2026). Salary is a monthly thing, so a
+    // list of people reads better than a list of dates; each person opens into the dated lines
+    // behind their total. Falls back to the old date list if the server hasn't sent by_employee
+    // yet (backend deployed after the view, or an older cached response).
+    function renderSalariesByEmployee(key, title, sectionData, headerBg, empBg) {
+        const emps = sectionData?.by_employee || [];
+        if (!emps.length) {
+            return renderSection(key, title, sectionData, headerBg, empBg, (item) => `
+                <div class="detail-item-title">${escapeHtml(item.employee)}</div>
+                <div class="detail-item-sub">${escapeHtml(item.bu_code)} • ${escapeHtml(item.source)}</div>
+            `);
+        }
+        const isExpanded = expandedSections[key];
+        const n = sectionData?.count || 0;
+        let html = `<div class="section-card">
+            <div class="section-header" style="background:${headerBg}" onclick="toggleSection('${key}')">
+                <div class="section-header-left">
+                    <div class="section-title">${title}</div>
+                    <div class="section-count">${n} payment${n === 1 ? '' : 's'} • ${emps.length} employee${emps.length === 1 ? '' : 's'}</div>
+                </div>
+                <div class="section-header-right">
+                    <span class="section-total">${formatCurrency(sectionData?.total)}</span>
+                    <span class="expand-icon">${isExpanded ? '▼' : '▶'}</span>
+                </div>
+            </div>`;
+        if (isExpanded) {
+            html += `<div class="section-content">`;
+            emps.forEach((emp, ei) => {
+                const empOpen = expandedSalaryEmps[`${key}_${ei}`];
+                // One person paid in BOTH business units stays ONE row carrying both chips.
+                const chips = (emp.bu_codes || []).map(b =>
+                    `<span class="bu-chip ${b === 'KHAAS' ? 'bu-chip-khaas' : 'bu-chip-nf'}">${escapeHtml(b)}</span>`
+                ).join('');
+                html += `
+                    <div class="date-section" style="background:${empBg}">
+                        <div class="date-section-header" onclick="toggleSalaryEmployee('${key}',${ei})">
+                            <span class="date-section-date">${escapeHtml(emp.employee)} ${chips}</span>
+                            <div class="date-section-right">
+                                <span class="employee-group-count">${emp.count} payment${emp.count === 1 ? '' : 's'}</span>
+                                <span class="date-section-total">${formatCurrency(emp.total)}</span>
+                                <span class="expand-icon">${empOpen ? '▼' : '▶'}</span>
+                            </div>
+                        </div>`;
+                if (empOpen) {
+                    html += `<div class="date-items">`;
+                    (emp.items || []).forEach(item => {
+                        html += `
+                            <div class="detail-item">
+                                <div class="detail-item-left">
+                                    <div class="detail-item-title">${formatShortDate(item.date)}</div>
+                                    <div class="detail-item-sub">${escapeHtml(item.bu_code)} • ${escapeHtml(item.source)}</div>
+                                </div>
+                                <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
+                            </div>`;
+                    });
+                    html += `</div>`;
+                }
+                html += `</div>`;
+            });
+            html += `</div>`;
+        }
+        html += `</div>`;
+        return html;
+    }
+
     // By Category → Expenses grouped by sub-category (Salaries / Food / Maintenance …).
     function renderExpensesByCategory(key, title, sectionData, headerBg, catBg) {
         const isExpanded = expandedSections[key];
@@ -1256,25 +1463,62 @@
                     html += `
                         <div class="date-section" style="background:${catBg}">
                             <div class="date-section-header" onclick="toggleCategory('${key}',${ci})">
-                                <span class="date-section-date">${escapeHtml(cat.category)}</span>
+                                <span class="date-section-date">${escapeHtml(cat.category)}${(cat.employee_count || 0) > 1 ? `<span class="group-hint">${cat.employee_count} people</span>` : ''}</span>
                                 <div class="date-section-right">
                                     <span class="date-section-total">${formatCurrency(cat.total)}</span>
                                     <span class="expand-icon">${catOpen ? '▼' : '▶'}</span>
                                 </div>
                             </div>`;
                     if (catOpen) {
-                        html += `<div class="date-items">`;
-                        (cat.items || []).forEach(item => {
-                            html += `
-                                <div class="detail-item">
-                                    <div class="detail-item-left">
-                                        <div class="detail-item-title">${escapeHtml(item.description || cat.category)}</div>
-                                        <div class="detail-item-sub">${formatShortDate(item.date)} • By: ${escapeHtml(item.user)}</div>
-                                    </div>
-                                    <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
-                                </div>`;
-                        });
-                        html += `</div>`;
+                        // Sep-2026 — a category several people spent from (Petrol, Maintenance,
+                        // Food …) clubs per employee first; one spent by a single person stays
+                        // FLAT exactly as before, so nothing gains a pointless extra tap.
+                        const emps = cat.by_employee || [];
+                        if ((cat.employee_count || emps.length) > 1) {
+                            html += `<div class="date-items">`;
+                            emps.forEach((emp, ei) => {
+                                const empOpen = expandedCatEmployees[`${key}_${ci}_${ei}`];
+                                html += `
+                                    <div class="employee-group">
+                                        <div class="employee-group-header" onclick="toggleCatEmployee('${key}',${ci},${ei})">
+                                            <span class="employee-group-name">${escapeHtml(emp.employee)}</span>
+                                            <div class="date-section-right">
+                                                <span class="employee-group-count">${emp.count} ${emp.count === 1 ? 'request' : 'requests'}</span>
+                                                <span class="date-section-total">${formatCurrency(emp.total)}</span>
+                                                <span class="expand-icon">${empOpen ? '▼' : '▶'}</span>
+                                            </div>
+                                        </div>`;
+                                if (empOpen) {
+                                    html += `<div class="employee-group-items">`;
+                                    (emp.items || []).forEach(item => {
+                                        html += `
+                                            <div class="detail-item">
+                                                <div class="detail-item-left">
+                                                    <div class="detail-item-title">${escapeHtml(item.description || cat.category)}</div>
+                                                    <div class="detail-item-sub">${formatShortDate(item.date)}</div>
+                                                </div>
+                                                <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
+                                            </div>`;
+                                    });
+                                    html += `</div>`;
+                                }
+                                html += `</div>`;
+                            });
+                            html += `</div>`;
+                        } else {
+                            html += `<div class="date-items">`;
+                            (cat.items || []).forEach(item => {
+                                html += `
+                                    <div class="detail-item">
+                                        <div class="detail-item-left">
+                                            <div class="detail-item-title">${escapeHtml(item.description || cat.category)}</div>
+                                            <div class="detail-item-sub">${formatShortDate(item.date)} • By: ${escapeHtml(item.user)}</div>
+                                        </div>
+                                        <div class="detail-item-amount">${formatCurrency(item.amount)}</div>
+                                    </div>`;
+                            });
+                            html += `</div>`;
+                        }
                     }
                     html += `</div>`;
                 });
@@ -1363,6 +1607,16 @@
     function toggleCategory(key, ci) {
         const k = `${key}_${ci}`;
         expandedCategories[k] = !expandedCategories[k];
+        renderMonthDetails();
+    }
+    function toggleCatEmployee(key, ci, ei) {
+        const k = `${key}_${ci}_${ei}`;
+        expandedCatEmployees[k] = !expandedCatEmployees[k];
+        renderMonthDetails();
+    }
+    function toggleSalaryEmployee(key, ei) {
+        const k = `${key}_${ei}`;
+        expandedSalaryEmps[k] = !expandedSalaryEmps[k];
         renderMonthDetails();
     }
     function toggleVendor(key, vi) {

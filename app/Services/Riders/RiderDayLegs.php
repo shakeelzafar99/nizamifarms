@@ -352,6 +352,13 @@ class RiderDayLegs
                     'vehicle_id'  => $vid,
                     'label'       => $this->labelOf($v),
                     'is_company'  => ((int) $v->is_company === 1),
+                    // ⭐ WHAT KIND OF MACHINE IT IS — 'bike' | 'van' (4 Sep 2026).
+                    //   `vehicleMap()` has always SELECTed vtype and then dropped it here, so
+                    //   every screen drawing a leg had only `is_company` to go on and used it as
+                    //   a stand-in for "van". That is a different axis: it drew a company BIKE
+                    //   as a van, and a van as a bike wherever the own/company sense was flipped.
+                    //   The registry knows the answer; this just stops it being thrown away.
+                    'vtype'       => (((string) ($v->vtype ?? '')) === 'van') ? 'van' : 'bike',
                     'meter_start' => $l['meter_start'],
                     'meter_end'   => $l['meter_end'],
                     'km'          => $km,

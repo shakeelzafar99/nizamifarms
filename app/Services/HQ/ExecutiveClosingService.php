@@ -399,6 +399,15 @@ class ExecutiveClosingService
             ->where('is_active', 1)
             ->sum('current_balance');
 
+        // 💵 Tips held for staff are owed money too (Sep-2026, owner ruling A3).
+        // The cash is sitting in our tills and banks and is counted in `cash` /
+        // `online` above, so without subtracting it here the working capital
+        // would claim money we are only holding.
+        $tipsHeld = (float) AccountModel::where('account_code', AccountModel::CODE_TIPS_FUND)
+            ->where('is_active', 1)
+            ->sum('current_balance');
+        $payables += $tipsHeld;
+
         // --- Receivables: mirrors ONLINE APPROVALS (owner rule — legacy
         //     orders are considered closed). regular = pending invoice
         //     ledger rows (All Pending); shop = the Shop tab's outstanding;
@@ -457,6 +466,10 @@ class ExecutiveClosingService
                 'overdue'  => round($regular['overdue'], 0),
             ],
             'payables'    => round($payables, 0),
+            // Split out so the card can say WHY payables moved: vendors owed
+            // versus tips we are holding for staff.
+            'payables_vendors' => round($payables - $tipsHeld, 0),
+            'payables_tips'    => round($tipsHeld, 0),
             'assets'      => $assets,
             'net'         => round($net, 0),
             'health'      => $this->healthChecks($trackedSum + $unassigned, $allOnlinePool),
@@ -1018,8 +1031,21 @@ class ExecutiveClosingService
         // Overall per-day (order-level) + Khaas per-day (line-level); derive NF.
         $kh = (int) ($khaasId ?: -1);
         $pieceCase = self::pieceCaseSql($kh);
-        $overall = $this->deliveredBase($start, $end, $qmode)
-            ->select($dayExpr, DB::raw('COUNT(DISTINCT o.id) as orders'), DB::raw('SUM(o.total_price) as revenue'))
+        // Sep-2026 — same profit-revenue lens as the P&L cards, so the daily
+        // chart and the month total tell the same story.
+        // ⚠ Qurbani keeps its tips: they never enter the Tips Fund, so removing
+        // them here would lose the money instead of relocating it.
+        $dayRevExpr = \App\Services\FIN\ProfitRevenueSql::revenue(
+            'o',
+            \App\Services\FIN\ProfitRevenueSql::DEL_ALIAS . '.first_delivered_at',
+            \App\Services\FIN\ProfitRevenueSql::BAL_ALIAS,
+            $unit !== self::UNIT_QB
+        );
+        $overallQ = $this->deliveredBase($start, $end, $qmode);
+        \App\Services\FIN\ProfitRevenueSql::join($overallQ, 'o');
+        \App\Services\FIN\ProfitRevenueSql::joinDelivered($overallQ, 'o');
+        $overall = $overallQ
+            ->select($dayExpr, DB::raw('COUNT(DISTINCT o.id) as orders'), DB::raw("SUM($dayRevExpr) as revenue"))
             ->groupBy(DB::raw('DATE(d.delivered_at)'))->get()->keyBy('day');
         $overallQty = $this->deliveredLines($start, $end, $qmode)
             ->select(DB::raw('DATE(d.delivered_at) as day'),
@@ -1080,10 +1106,23 @@ class ExecutiveClosingService
             });
         }
 
+        // Sep-2026 — each order's PROFIT contribution rides along as `earned`, so
+        // this list adds up to the day's bar on the chart (which uses the same
+        // rule). The invoice face stays in `total_price` for the paid label.
+        \App\Services\FIN\ProfitRevenueSql::join($q, 'o');
+        \App\Services\FIN\ProfitRevenueSql::joinDelivered($q, 'o');
+        $earnedExpr = \App\Services\FIN\ProfitRevenueSql::revenue(
+            'o',
+            \App\Services\FIN\ProfitRevenueSql::DEL_ALIAS . '.first_delivered_at',
+            \App\Services\FIN\ProfitRevenueSql::BAL_ALIAS,
+            $unit !== self::UNIT_QB   // Qurbani keeps its tips (they never enter the fund)
+        );
+
         $rows = $q->select(
             'o.id', 'o.order_number', 'o.total_price', 'o.total_paid', 'o.payment_method',
             'o.customer_id', 'c.first_name', 'c.last_name', 'c.customer_type'
-        )->orderBy('o.order_number')->limit(500)->get();
+        )->selectRaw("$earnedExpr as earned")
+         ->orderBy('o.order_number')->limit(500)->get();
 
         // kg per order (unit-aware).
         $orderIds = $rows->pluck('id')->all();
@@ -1110,7 +1149,12 @@ class ExecutiveClosingService
                 'customer'     => $name !== '' ? $name : 'Walk-in',
                 'type'         => $r->customer_type ?? 'regular',
                 'kg'           => round((float) ($kgByOrder[$r->id] ?? 0), 1),
-                'amount'       => round((float) $r->total_price),
+                'amount'       => round((float) $r->earned),
+                // The invoice face, only when it differs from what was earned
+                // (a tip taken out, or balance added back) — so the row can
+                // explain itself instead of looking wrong next to the invoice.
+                'invoice'      => round((float) $r->total_price) !== round((float) $r->earned)
+                                    ? round((float) $r->total_price) : null,
                 'paid'         => $this->paymentLabel($r->payment_method, (float) $r->total_paid, (float) $r->total_price),
             ];
         })->all();
@@ -1592,6 +1636,11 @@ class ExecutiveClosingService
 
         return [
             'revenue'          => round($revenue, 0),
+            // Sep-2026 — what the revenue figure already absorbed, for the tile's
+            // sub-line. Both are whole-business numbers (neither is a line item,
+            // so neither splits by unit); shown only on the All / NF views.
+            'balance_used'     => round($r['bal_used'] ?? 0, 0),
+            'tips_excluded'    => round($r['tips_out'] ?? 0, 0),
             'orders'           => (int) $orders,
             'kg'               => round($kg, 0),
             'pieces'           => round($pcs, 0),
@@ -2051,7 +2100,10 @@ class ExecutiveClosingService
         // Revenue/order metrics use $end (to-date); the cost side uses $lEnd —
         // the full calendar month when the caller widens it, else the same $end.
         $lEnd = $ledgerEnd ?? $end;
-        $key = 'hq_raw_' . $start->getTimestamp() . '_' . $end->getTimestamp() . '_' . $lEnd->getTimestamp();
+        // ⚠ v2 (Sep-2026): the payload gained bal_used / tips_out and `rev` changed
+        // meaning. Without the bump, a cached v1 array would be read by new code
+        // expecting the new keys — and a closed month caches for 24h.
+        $key = 'hq_raw_v2_' . $start->getTimestamp() . '_' . $end->getTimestamp() . '_' . $lEnd->getTimestamp();
         // Closed windows (fully in the past) cache for 24h; the open one 5 min.
         $ttl = $end->lt(Carbon::now()->startOfDay()) ? 86400 : 300;
         return Cache::remember($key, $ttl, function () use ($start, $end, $lEnd) {
@@ -2065,8 +2117,33 @@ class ExecutiveClosingService
             $newIn = empty($newIds) ? '0' : implode(',', $newIds);
 
             // Q1 — order-level totals.
-            $o = $this->deliveredBase($start, $end, $qmode)
-                ->selectRaw('COALESCE(SUM(o.total_price),0) rev, COUNT(DISTINCT o.id) ord, COUNT(DISTINCT o.customer_id) cust')
+            // Sep-2026 — `rev` is PROFIT revenue: account balance the customer
+            // spent is added back, tips from the cutoff on are taken out (they
+            // belong to the Tips Fund, not to us). ONE definition, shared with
+            // the Reports tab — see ProfitRevenueSql.
+            // ⚠ `rev_kh` below stays line-level and is deliberately untouched:
+            // tips and order-level discounts are not line items, so both
+            // adjustments land in NF (= rev_all − rev_kh), which is the owner's
+            // existing rule for delivery charges and order discounts.
+            // ⚠⚠ `d.delivered_at` here is a MAX (see deliveredDatesSub) — right for
+            // deciding which month an order lands in, WRONG for the tip cutoff.
+            // The Tips Fund collects on an order's FIRST delivery, so the tip test
+            // joins that separately; otherwise an order delivered twice across the
+            // cutoff would lose its tip from revenue without the fund holding it.
+            $firstDel = \App\Services\FIN\ProfitRevenueSql::DEL_ALIAS . '.first_delivered_at';
+            $revExpr  = \App\Services\FIN\ProfitRevenueSql::revenue('o', $firstDel);
+            $balExpr  = \App\Services\FIN\ProfitRevenueSql::balance();
+            $tipsExpr = \App\Services\FIN\ProfitRevenueSql::tipExcluded('o', $firstDel);
+            $oq = $this->deliveredBase($start, $end, $qmode);
+            \App\Services\FIN\ProfitRevenueSql::join($oq, 'o');
+            \App\Services\FIN\ProfitRevenueSql::joinDelivered($oq, 'o');
+            $o = $oq
+                ->selectRaw(
+                    "COALESCE(SUM($revExpr),0) rev,"
+                    . " COALESCE(SUM($balExpr),0) bal_used,"
+                    . " COALESCE(SUM($tipsExpr),0) tips_out,"
+                    . ' COUNT(DISTINCT o.id) ord, COUNT(DISTINCT o.customer_id) cust'
+                )
                 ->first();
 
             // Q2 — line-level split (Khaas vs NF) + new-customer flags. $kh and the
@@ -2103,6 +2180,10 @@ class ExecutiveClosingService
 
             return [
                 'rev_all'   => (float) $o->rev,
+                // The two adjustments already inside rev_all, so the revenue
+                // tile can show its working instead of just a changed number.
+                'bal_used'  => (float) $o->bal_used,
+                'tips_out'  => (float) $o->tips_out,
                 'ord_all'   => (int) $o->ord,
                 'cust_all'  => (int) $o->cust,
                 'kg_all'    => (float) $l->kg_all,
@@ -2164,7 +2245,14 @@ class ExecutiveClosingService
             return ['revenue' => $c['revenue'], 'net_profit' => $c['net_profit']];
         }
         $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
-        $revAll = (float) $this->deliveredBase($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE)->sum('o.total_price');
+        // Sep-2026 — profit revenue, same rule as the cards this trend sits under.
+        $trendQ = $this->deliveredBase($start, $end, QurbaniFinanceFilter::MODE_EXCLUDE);
+        \App\Services\FIN\ProfitRevenueSql::join($trendQ, 'o');
+        \App\Services\FIN\ProfitRevenueSql::joinDelivered($trendQ, 'o');
+        $trendExpr = \App\Services\FIN\ProfitRevenueSql::revenue(
+            'o', \App\Services\FIN\ProfitRevenueSql::DEL_ALIAS . '.first_delivered_at'
+        );
+        $revAll = (float) ($trendQ->selectRaw("COALESCE(SUM($trendExpr),0) rev")->first()->rev ?? 0);
         [$vendAll, $vendKh] = $this->ledgerByUnit(LedgerModel::TYPE_VENDOR_PURCHASE, $start, $end, $kh);
         [$expAll, $expKh]   = $this->ledgerByUnit(LedgerModel::TYPE_EXPENSE, $start, $end, $kh);
         [$salAll, $salKh]   = $this->salariesByUnit($start, $end, $kh);

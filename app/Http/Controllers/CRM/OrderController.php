@@ -651,6 +651,24 @@ class OrderController extends Controller
                 ])
                 ->get();
 
+            // Tag each row with the entry BATCH it came from, so the payments
+            // dialog can say "this Rs 10,751 was one slice of a single
+            // Rs 40,000 transfer that also paid 6 other invoices" instead of
+            // showing it as an unexplained standalone payment.
+            // Additive only — every existing field is untouched, so the mobile
+            // app and the qurbani screens are unaffected (a qurbani payment is
+            // entered on its own, so it simply reports is_bulk = false).
+            $batches = app(\App\Services\Payments\PaymentBatchService::class)
+                ->describe($payments, isset($order->customer_id) ? (int) $order->customer_id : null);
+            $payments = $payments->map(function ($p) use ($batches) {
+                $b = $batches[(int) $p->id] ?? null;
+                $p->is_bulk      = $b['is_bulk'] ?? false;
+                $p->batch_size   = $b['batch_size'] ?? 1;
+                $p->batch_total  = $b['batch_total'] ?? (float) $p->amount;
+                $p->batch_orders = $b['orders'] ?? [];
+                return $p;
+            });
+
             return response()->json([
                 'success' => true,
                 'order_number' => $order->order_number,
@@ -2575,6 +2593,25 @@ class OrderController extends Controller
                 }
             }
 
+            // 💵 Tips Fund (Sep-2026) — the edit may have changed the tip.
+            //
+            // The balance engine collects a tip when the invoice row posts, but
+            // an ALREADY-approved invoice is corrected through an adjustment row
+            // instead of being re-applied, so the engine never hears about it.
+            // This sync is idempotent: it compares what the pool holds for this
+            // order against what it should hold and moves only the difference,
+            // so it is a no-op on the ordinary save where the tip did not move.
+            //
+            // ⚠ Never allowed to fail the edit — `tips:backfill` repairs it.
+            try {
+                app(\App\Services\FIN\TipsFundService::class)
+                    ->syncForOrder((int) $order->id, auth()->id());
+            } catch (\Throwable $e) {
+                \Log::error('Tips Fund: sync after order edit failed', [
+                    'order_id' => $order->id, 'error' => $e->getMessage(),
+                ]);
+            }
+
             // Prepare response based on whether a ledger adjustment was created or payment method changed
             if ($ledgerAdjustmentCreated) {
                 $message = 'Order updated successfully. Ledger adjustment created and pending L1→L2 approval.';
@@ -3892,30 +3929,64 @@ class OrderController extends Controller
         ];
     }
 
-    public function ignoreOrder($id)
+    /**
+     * Ignore a Shopify approval — optionally telling the customer why.
+     *
+     * ⭐⭐ ONE DOOR, FOUR SURFACES (Sep-3 2026). The web approvals drawer, the web
+     *    Shopify table and both mobile store screens already POST here, so the three
+     *    choices (quietly / outside our delivery area / customer asked to cancel) are
+     *    implemented once, right here, and every surface gets them.
+     *
+     * ⚠⚠ THE MESSAGE NEVER GATES THE IGNORE. The order is stamped `converted = 2`
+     *    FIRST and the response is a success whatever WhatsApp does — a missing
+     *    template or a dead number must not leave an order sitting in the approvals
+     *    queue. The messaging outcome rides back in `messaging` so the caller can say
+     *    "ignored, but not messaged" instead of pretending.
+     *
+     * @param  Request $request  optional `reason`: none | out_of_area | customer_request
+     */
+    public function ignoreOrder(Request $request, $id)
     {
         try {
             // Find the original Shopify order in the new Shopify table
             $originalOrder = \App\Models\CRM\ShopifyOrderModel::findOrFail($id);
-            
-            // Check if already converted or ignored
+
+            // Check if already converted or ignored.
+            // ⚠ Read the RAW column, not the attribute: the model casts `converted` to
+            //   boolean, so `converted == 1` is true for the ignored value 2 as well and
+            //   an already-ignored order used to be reported as "already converted".
             if ($originalOrder->converted) {
-                $status = $originalOrder->converted == 1 ? 'converted' : 'ignored';
+                $raw = (int) $originalOrder->getRawOriginal('converted');
+                $status = $raw === 2 ? 'ignored' : 'converted';
                 return response()->json([
                     'success' => false,
                     'message' => "Order has already been {$status}"
                 ], 400);
             }
-            
+
+            $reason = \App\Services\WhatsApp\OrderCancellationNotifier::normalize($request->input('reason'));
+
             // Mark order as ignored
             $originalOrder->update(['converted' => 2]);
-            
+
+            // …then the courtesy message, which is allowed to fail without taking the
+            // ignore with it. `notify()` never throws and never sends for reason=none.
+            $messaging = app(\App\Services\WhatsApp\OrderCancellationNotifier::class)
+                ->notify($originalOrder, $reason, optional($request->user())->id ?? auth()->id());
+
+            $message = 'Order marked as ignored - no invoice will be created';
+            if ($reason !== \App\Services\WhatsApp\OrderCancellationNotifier::REASON_NONE) {
+                $message .= '. ' . $messaging['detail'];
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Order marked as ignored - no invoice will be created',
-                'order_id' => $originalOrder->id
+                'message' => $message,
+                'order_id' => $originalOrder->id,
+                'reason' => $reason,
+                'messaging' => $messaging,
             ]);
-            
+
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,

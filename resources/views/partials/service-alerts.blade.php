@@ -13,7 +13,11 @@
         the service makes it disappear everywhere. There is no row to close.
 
      Self-contained; include with @include('partials.service-alerts'). --}}
-<div id="svcAlerts" style="position:fixed;right:16px;bottom:16px;z-index:10990;display:flex;flex-direction:column;gap:8px;max-width:360px;"></div>
+{{-- ⚠ Not fixed-positioned itself: every corner banner (home-meter, service, ticket,
+     workshop) used to sit at right:16 bottom:16 and paint over one another. They now share
+     one fixed host (#nfCornerStack) and stack in include order. --}}
+<div id="svcAlerts" style="display:flex;flex-direction:column;gap:8px;"></div>
+<script>(function(){var h=document.getElementById('nfCornerStack');if(!h){h=document.createElement('div');h.id='nfCornerStack';h.style.cssText='position:fixed;right:16px;bottom:16px;z-index:10990;display:flex;flex-direction:column;gap:8px;max-width:360px;';document.body.appendChild(h);}var me=document.getElementById('svcAlerts');if(me&&me.parentNode!==h)h.appendChild(me);})();</script>
 <script>
 (function(){
   var meta = document.querySelector('meta[name="csrf-token"]');

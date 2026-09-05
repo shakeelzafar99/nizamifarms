@@ -652,7 +652,19 @@ class KhaasController extends Controller
             ->get()
             ->sum(fn($v) => $v->account ? $v->account->current_balance : 0);
 
-        return view('khaas.vendors', compact('khaasBU', 'vendors', 'totalBalance', 'status'));
+        // 📊 Sep-2026: the Month Review's cost type is editable here too, so a
+        // vendor can be filed the moment it is created rather than only when
+        // someone notices it in the "not classified" bucket.
+        $vendorCostTypes = \App\Models\FIN\CostTypeMapModel::mapFor((int) $khaasBU->id)[
+            \App\Models\FIN\CostTypeMapModel::KIND_VENDOR
+        ] ?? [];
+        $canSeeCosts = $this->canSeeMonthCosts();
+        $costTypes = \App\Models\FIN\CostTypeMapModel::types();
+
+        return view('khaas.vendors', compact(
+            'khaasBU', 'vendors', 'totalBalance', 'status',
+            'vendorCostTypes', 'canSeeCosts', 'costTypes'
+        ));
     }
 
     /**
@@ -2845,5 +2857,181 @@ class KhaasController extends Controller
                 ->with('success', $data['message'] ?? 'Configuration updated.');
         }
         return back()->with('error', $data['message'] ?? 'Failed to update configuration.');
+    }
+
+    // ======================================================
+    // 📊 MONTH REVIEW — what the warehouse made, and what it cost
+    // ======================================================
+
+    /**
+     * Who may see the COST half.
+     *
+     * The production half needs only Khaas access — those packs already show
+     * on the Inventory Report that every Frozen user reads. The cost sections
+     * carry staff salaries, so they sit behind their own key (granted
+     * Sep-2026 to Management, Taimur, khaas/Qasim and Shabib).
+     *
+     * ⚠ Falls back to view_khaas_sales_report so the screen still works on an
+     * install where the permission row has not been inserted yet, rather than
+     * showing the whole team an empty page.
+     */
+    private function canSeeMonthCosts(): bool
+    {
+        $user = auth()->user();
+        if (!$user) {
+            return false;
+        }
+        if (!$user->relationLoaded('roles')) {
+            $user->load(['roles.mobilePermissions']);
+        }
+        return $user->hasMobilePermission('view_khaas_month_review')
+            || $user->hasMobilePermission('view_khaas_sales_report');
+    }
+
+    /** Shared assembly for the web page and the mobile endpoint. */
+    private function buildMonthReview(Request $request, int $buId): array
+    {
+        $svc = app(\App\Services\Khaas\FrozenMonthService::class);
+
+        $month = $request->input('month');
+        if (!\App\Services\Khaas\FrozenMonthService::isValidMonth($month)) {
+            $month = now()->format('Y-m');
+        }
+        $basis = $request->input('basis') === 'used' ? 'used' : 'bought';
+
+        $data = $svc->monthReview($buId, $month, $basis);
+        $data['can_see_costs'] = $this->canSeeMonthCosts();
+
+        // Never ship money to a client that may not display it.
+        if (!$data['can_see_costs']) {
+            $data['costs'] = ['buckets' => [], 'grand_total' => 0, 'map_available' => false];
+            $data['meat'] = [
+                'rows'       => [],
+                'bought_kg'  => $data['meat']['bought_kg'],
+                'used_kg'    => $data['meat']['used_kg'],
+                'used_value' => 0,
+                'on_hand_kg' => $data['meat']['on_hand_kg'],
+            ];
+            foreach ([
+                'product', 'fixed', 'one_time', 'unclassified', 'total_spend',
+                'product_per_pack', 'fixed_per_pack', 'all_in_per_pack',
+                'margin_per_pack', 'breakeven_packs', 'meat_adjustment',
+            ] as $k) {
+                $data['headline'][$k] = null;
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Web page: Frozen → Month Review.
+     */
+    public function monthReview(Request $request)
+    {
+        if (!$this->hasKhaasAccess()) {
+            abort(403, 'You do not have access to Khaas mode.');
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return redirect('/dashboard')->with('error', 'Khaas business unit not found.');
+        }
+
+        $data = $this->buildMonthReview($request, (int) $khaasBU->id);
+
+        // Month list: this month and the 11 before it, same shape the Sales
+        // Report uses so the two screens offer the same choices.
+        $availableMonths = [];
+        for ($i = 0; $i < 12; $i++) {
+            $m = date('Y-m', strtotime("-{$i} months"));
+            $availableMonths[$m] = date('F Y', strtotime($m . '-01'));
+        }
+
+        return view('khaas.month-review', [
+            'khaasBU'         => $khaasBU,
+            'review'          => $data,
+            'selectedMonth'   => $data['month'],
+            'monthLabel'      => date('F Y', strtotime($data['month'] . '-01')),
+            'availableMonths' => $availableMonths,
+            'basis'           => $data['basis'],
+            'canSeeCosts'     => $data['can_see_costs'],
+            'costTypes'       => \App\Models\FIN\CostTypeMapModel::types(),
+        ]);
+    }
+
+    /** The same numbers for the mobile Frozen menu. */
+    public function monthReviewApi(Request $request)
+    {
+        $user = auth()->user();
+        if (!$user || !$user->hasMobilePermission('access_khaas_mode')) {
+            return response()->json(['success' => false, 'message' => 'No access'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+
+        try {
+            return response()->json(['success' => true] + $this->buildMonthReview($request, (int) $khaasBU->id));
+        } catch (\Exception $e) {
+            \Log::error('Month review API failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Failed to build the month review.'], 500);
+        }
+    }
+
+    /**
+     * Re-classify one money source (vendor / expense category / salary /
+     * asset purchase) as product, fixed or one-time.
+     *
+     * ⭐ Writes ONLY to the map. Nothing is stamped on a ledger row, so the
+     * change re-files that source's whole history the moment the page
+     * reloads — and is just as easily undone.
+     */
+    public function setCostType(Request $request)
+    {
+        if (!$this->hasKhaasAccess() || !$this->canSeeMonthCosts()) {
+            return response()->json(['success' => false, 'message' => 'Not allowed'], 403);
+        }
+
+        $khaasBU = $this->getKhaasBU();
+        if (!$khaasBU) {
+            return response()->json(['success' => false, 'message' => 'Khaas BU not found'], 404);
+        }
+        if (!\App\Models\FIN\CostTypeMapModel::available()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The cost-type table is not installed yet. Run frozen_month_review_sep2026.sql first.',
+            ], 409);
+        }
+
+        $kind = (string) $request->input('source_kind');
+        $key  = trim((string) $request->input('source_key'));
+        $type = (string) $request->input('cost_type');
+
+        if (!in_array($kind, \App\Models\FIN\CostTypeMapModel::kinds(), true)
+            || !in_array($type, \App\Models\FIN\CostTypeMapModel::types(), true)
+            || $key === '' || mb_strlen($key) > 150) {
+            return response()->json(['success' => false, 'message' => 'Invalid classification.'], 422);
+        }
+
+        try {
+            \App\Models\FIN\CostTypeMapModel::updateOrCreate(
+                [
+                    'business_unit_id' => (int) $khaasBU->id,
+                    'source_kind'      => $kind,
+                    'source_key'       => $key,
+                ],
+                [
+                    'cost_type'  => $type,
+                    'updated_by' => auth()->id(),
+                ]
+            );
+            return response()->json(['success' => true, 'message' => 'Saved. Refresh to update the numbers.']);
+        } catch (\Exception $e) {
+            \Log::error('Failed to save cost type', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save that change.'], 500);
+        }
     }
 }

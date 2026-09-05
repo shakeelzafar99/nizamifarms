@@ -1622,7 +1622,10 @@ class FleetFuelService
             $types = DB::table('t_fleet_maintenance_types')
                 ->where('is_active', 1)->where('interval_km', '>', 0)
                 ->orderBy('sort_order')->orderBy('type_name')
-                ->get(['id', 'type_name', 'interval_km', 'bucket']);
+                // ⚠ `resets_service_clock` is selected because the rows below must have
+                //   the SAME shape as VehicleService::serviceScheduleFor's — see the
+                //   note on `resets_clock` there.
+                ->get(['id', 'type_name', 'interval_km', 'bucket', 'resets_service_clock']);
             if ($types->isEmpty()) {
                 return [];
             }
@@ -1680,6 +1683,19 @@ class FleetFuelService
                     'id'          => (int) $t->id,
                     'name'        => $t->type_name,
                     'bucket'      => $t->bucket,
+                    /**
+                     * ⚠⚠ ONE SHAPE, BOTH BRANCHES (Sep-2026). This key was MISSING here
+                     *    while the machine-keyed twin (VehicleService::serviceScheduleFor)
+                     *    has always emitted it — so for a rider the registry cannot place,
+                     *    every consumer read `undefined` and concluded the job does NOT
+                     *    refresh the bike's overall service. The Record-service prompt
+                     *    states that fact out loud ("also refreshes the bike's overall
+                     *    service" / "unchanged"), so an oil job on an unregistered bike
+                     *    would have been described as the exact opposite of what it does.
+                     * ⭐ Additive: nothing read this key from this branch before, so no
+                     *   existing surface changes except the one that was wrong.
+                     */
+                    'resets_clock' => !empty($t->resets_service_clock),
                     'interval_km' => $interval,
                     'type_interval_km'      => (int) $t->interval_km,
                     'interval_overridden'   => !$explained['from_type'],

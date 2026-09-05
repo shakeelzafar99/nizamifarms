@@ -307,7 +307,22 @@ class AttendanceController extends Controller
         
         // Collect user IDs for batch GPS query
         $userIdsWithAttendance = [];
-        
+
+        /**
+         * 🔧 Workshop errands for THIS date, batched for the whole grid in one query —
+         * the same map the shift planner paints its cell chip from, so the two screens
+         * can never disagree about who is out at a workshop.
+         * ⚠ Guarded: before the workshop SQL runs this is simply empty.
+         */
+        $workshopByUser = [];
+        try {
+            $wsUids = $rows->pluck('user_id')->filter()->unique()->values()->all();
+            if ($wsUids) {
+                $workshopByUser = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->mapForRange($wsUids, $selectedDate, $selectedDate);
+            }
+        } catch (\Throwable $e) { /* not deployed → no chips */ }
+
         foreach ($rows as $row) {
             // Resolve the shift FOR THE SELECTED DATE (not today) so past dates show the
             // shift that was actually in effect then.
@@ -321,6 +336,14 @@ class AttendanceController extends Controller
             // no-login day on a holiday / weekly off / before the hire date is NOT
             // painted red "Absent". Leave is layered on the frontend from leave_status.
             $row->day_kind = $shiftService->dayKind($row->user_id, $selectedDate);
+
+            /**
+             * 🔧 A WORKSHOP ERRAND ON THIS DAY (Sep-2026). Painted BESIDE the day, never
+             * instead of it: a workshop day is a NORMAL PAID WORKING DAY (owner ruling), so
+             * `day_kind` is deliberately untouched and nothing here affects pay or absence.
+             * ⚠ Filled from one batched map below, never a query per row.
+             */
+            $row->workshop = $workshopByUser[$row->user_id . '|' . $selectedDate] ?? null;
 
             // Per-row late/overtime minutes — prefer the frozen snapshot, else compute
             // for the selected date. The frontend should DISPLAY these, not recompute.
@@ -661,11 +684,45 @@ class AttendanceController extends Controller
                 foreach ($delRows as $uid => $c) { $deliveredByUser[$uid] = (int) $c; }
             }
         } catch (\Throwable $e) { /* no delivery data → no office-checkout exception flag */ }
+        $wjBase = new \App\Services\Riders\WorkJourneyService();
         foreach ($rows as $row) {
-            $pm = $prevMeter[$row->user_id] ?? null;
-            $row->prev_meter_end = $pm['end'] ?? null;
-            $row->prev_meter_date = $pm['date'] ?? null;
             $row->company_bike = isset($bikeSet[$row->user_id]) ? 1 : 0;
+
+            // ⭐⭐ "LAST NIGHT'S METER" IS A FACT ABOUT THE MACHINE (Sep-2026).
+            //
+            //   This row's chip used to subtract the RIDER's own previous close, with no
+            //   vehicle predicate at all — so the morning after he changed machines it
+            //   compared the van's odometer with the bike's and printed the difference as
+            //   "+N km overnight". `closingBaseline()` is the same brain the red meter-gap
+            //   verdict two inches away already uses, so the number and the verdict can no
+            //   longer disagree. It also skips a junk close (a 0 or an impossible run) that
+            //   the old batch query took at face value.
+            //
+            //   ⚠ Company cohort only — the flagged surfaces all gate on `company_bike`, and
+            //     this costs a resolver walk per rider. Everyone else keeps the batch answer.
+            $base = null;
+            if ($row->company_bike === 1) {
+                try {
+                    $base = $wjBase->closingBaseline((int) $row->user_id, $selectedDate);
+                } catch (\Throwable $e) { $base = null; } // never a 500 over a chip
+            }
+            if ($base !== null) {
+                // `holds_nothing` = he is a rider on NO machine today: there is no odometer
+                // to measure against, so we print nothing rather than reaching for his last.
+                $known = !$base['holds_nothing'];
+                $row->prev_meter_end    = $known ? $base['value'] : null;
+                $row->prev_meter_date   = $known ? $base['date'] : null;
+                $row->prev_meter_label  = $known ? $base['label'] : null;   // the plate, when known
+                $row->prev_meter_source = $known ? $base['source'] : 'none'; // vehicle | rider | none
+                $row->prev_meter_vtype  = $known ? ($base['vtype'] ?? null) : null;  // bike | van | null
+            } else {
+                $pm = $prevMeter[$row->user_id] ?? null;
+                $row->prev_meter_end    = $pm['end'] ?? null;
+                $row->prev_meter_date   = $pm['date'] ?? null;
+                $row->prev_meter_label  = null;
+                $row->prev_meter_source = 'rider';
+                $row->prev_meter_vtype  = null;
+            }
             // 0 = exempted from the meter in Rider Management (⛽ tick skips him).
             $row->meter_required = isset($meterExempt[$row->user_id]) ? 0 : 1;
             // Effective overnight grace: per-rider override → global default.
@@ -677,15 +734,29 @@ class AttendanceController extends Controller
             //    the machine he is on, the overnight allowance gains
             //    VEHICLE_TRANSFER_GRACE_KM. Flag-gated with everything else — off,
             //    this line does nothing.
+            //    ⚠ Sep-2026: the overnight CHIP is now suppressed outright on a handover day
+            //      (the baseline may belong to the other rider, so a km allowance is the wrong
+            //      shape — see WorkJourneyService::continuity). This allowance therefore no
+            //      longer decides that chip; it is kept because it is an owner ruling and it
+            //      still widens the grace for anything else that reads the field.
             $row->transfer_day = false;
             try {
-                $vres = new \App\Services\Riders\VehicleResolver();
-                if ($vres->rulesEnabled()) {
-                    $vid = $vres->vehicleForDay((int) $row->user_id, $selectedDate);
-                    if ($vid && $vres->isTransferDay($vid, $selectedDate)) {
+                // ⭐ Reuse the answer the baseline already resolved — one walk, not two.
+                if ($base !== null) {
+                    if (!empty($base['transfer_day'])) {
                         $row->transfer_day = true;
                         $row->overnight_grace_km = (float) $row->overnight_grace_km
                             + (new \App\Services\Riders\VehicleService())->transferGraceKm();
+                    }
+                } else {
+                    $vres = new \App\Services\Riders\VehicleResolver();
+                    if ($vres->rulesEnabled()) {
+                        $vid = $vres->vehicleForDay((int) $row->user_id, $selectedDate);
+                        if ($vid && $vres->isTransferDay($vid, $selectedDate)) {
+                            $row->transfer_day = true;
+                            $row->overnight_grace_km = (float) $row->overnight_grace_km
+                                + (new \App\Services\Riders\VehicleService())->transferGraceKm();
+                        }
                     }
                 }
             } catch (\Throwable $e) { /* grace is a kindness, never a 500 */ }
@@ -849,7 +920,7 @@ class AttendanceController extends Controller
             // Dated, attributed leave adjustments (overtime bonus / late penalty / manual) for
             // the current cycle — the "who/when/why" history. Cycle-scoped inside the service.
             $adj = (new \App\Services\HR\LeavePolicyService())->adjustments($userId);
-            $srcLabels = ['overtime' => 'bonus (overtime)', 'late_penalty' => 'late penalty', 'manual' => 'yearly adjustment', 'half_day' => 'half day'];
+            $srcLabels = ['overtime' => 'bonus (overtime)', 'late_penalty' => 'late penalty', 'manual' => 'yearly adjustment', 'half_day' => 'half day', 'absence_cover' => 'covered a parked absence'];
             $items = [];
             foreach ($adj as $a) {
                 if (empty($a['date'])) { continue; }
@@ -1107,23 +1178,19 @@ class AttendanceController extends Controller
                 return response()->json(['success' => false, 'message' => 'Leave category is not configured.'], 500);
             }
 
-            // Manager is UNBOUND by the quota, but we warn once if this pushes the rider
-            // over his yearly balance — the frontend re-submits with override_quota=1.
             // A half day charges 0.5 against the yearly counter.
             $days = $isHalfDay ? 0.5 : (\Carbon\Carbon::parse($start)->diffInDays(\Carbon\Carbon::parse($end)) + 1);
             $overQuota = false;
-            if (!$request->boolean('override_quota')) {
-                $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
-                if ($days > $bal['remaining']) {
-                    $name = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'This rider';
-                    $rem = $bal['remaining'] > 0 ? $bal['remaining'] : 0;
-                    return response()->json([
-                        'success' => false,
-                        'needs_confirm' => true,
-                        'message' => "{$name} has only {$rem} leave(s) left this year but this adds {$days}. Grant anyway (over quota)?",
-                    ], 200);
-                }
-            } else {
+            // 🚫 Owner ruling (Sep-3 2026): this used to warn and then let the manager override,
+            // which is how a balance reached −1. It is now a refusal that says what to do:
+            // raise the quota deliberately, then grant the leave.
+            $refusal = (new \App\Services\HR\LeavePolicyService())->overQuotaRefusal($userId, $days);
+            if ($refusal !== null) {
+                return response()->json(['success' => false, 'message' => $refusal], 422);
+            }
+            // Kept only so an older app build posting the old flag is still accepted; it no
+            // longer bypasses anything, because the refusal above already ran.
+            if ($request->boolean('override_quota')) {
                 $overQuota = true;
             }
 
@@ -1525,7 +1592,9 @@ class AttendanceController extends Controller
             try {
                 (new \App\Services\FirebaseService())->notifyUser(
                     (int) $att->user_id,
-                    ['title' => 'Meter entry unlocked', 'body' => 'Your manager opened meter entry — record your home meter within ' . $mins . ' minutes.'],
+                    // 🗣 Roman Urdu — the rider has to act on this one (owner ruling).
+                    ['title' => '🔓 Meter entry khul gayi',
+                     'body'  => 'Manager ne meter entry khol di hai — ' . $mins . ' minute ke andar apna home meter daal dein.'],
                     ['type' => 'home_meter_unlock'],
                     'shift_notifications'
                 );
@@ -1583,7 +1652,8 @@ class AttendanceController extends Controller
             try {
                 (new \App\Services\FirebaseService())->notifyUser(
                     (int) $att->user_id,
-                    ['title' => 'Checkout unlocked', 'body' => 'Your manager unlocked checkout — press OUT within ' . $mins . ' minutes from wherever you are.'],
+                    ['title' => '🔓 Checkout khul gaya',
+                     'body'  => 'Manager ne checkout khol diya hai — jahan bhi hain, ' . $mins . ' minute ke andar OUT daba dein.'],
                     ['type' => 'checkout_unlock'],
                     'shift_notifications'
                 );
@@ -1782,8 +1852,8 @@ class AttendanceController extends Controller
             try {
                 (new \App\Services\FirebaseService())->notifyUser(
                     (int) $att->user_id,
-                    ['title' => 'You are back on duty',
-                     'body' => 'Your manager reopened your day — open the app so your location starts again.'],
+                    ['title' => '🔄 Aap dobara duty par hain',
+                     'body'  => 'Manager ne aap ka din dobara khol diya hai — app kholein taake location dobara chalu ho jaye.'],
                     ['type' => 'checkout_undone'],
                     'shift_notifications'
                 );
@@ -1859,7 +1929,8 @@ class AttendanceController extends Controller
             try {
                 (new \App\Services\FirebaseService())->notifyUser(
                     (int) $validated['user_id'],
-                    ['title' => 'Check-in unlocked', 'body' => 'Your manager unlocked check-in — press IN within ' . $mins . ' minutes.'],
+                    ['title' => '🔓 Check-in khul gaya',
+                     'body'  => 'Manager ne check-in khol diya hai — ' . $mins . ' minute ke andar IN daba dein.'],
                     ['type' => 'checkin_unlock'],
                     'shift_notifications'
                 );
@@ -2071,6 +2142,8 @@ class AttendanceController extends Controller
             'days' => 'required|numeric|not_in:0|min:-365|max:365',
             'reason' => 'nullable|string|max:200',
             'kind' => 'nullable|in:yearly,bonus',
+            // null = not asked yet (the UI will be asked to choose), 1/0 = the answer.
+            'cover_absences' => 'nullable|boolean',
         ]);
         if ($validator->fails()) {
             return response()->json(['success' => false, 'message' => $validator->errors()->first()], 422);
@@ -2082,6 +2155,40 @@ class AttendanceController extends Controller
             $userId = (int) $request->user_id;
             $days = round((float) $request->days, 1);
             $kind = $request->input('kind') === 'bonus' ? 'bonus' : 'yearly';
+            $policy = new \App\Services\HR\LeavePolicyService();
+
+            // 🚫 A deduction may not push the balance below zero (owner ruling).
+            if ($days < 0) {
+                $refusal = $policy->overQuotaRefusal($userId, abs($days));
+                if ($refusal !== null) {
+                    return response()->json(['success' => false, 'message' => $refusal], 422);
+                }
+            }
+
+            // 🗓 A bonus day is exactly what settles a PARKED absence, so ask before it simply
+            // becomes leave. Same rule as payroll (oldest month first) — but the manager gets
+            // the choice here, because a bonus granted by hand may well be a gift rather than
+            // earned overtime. Asked once: the UI re-submits with cover_absences set.
+            $owed = 0.0;
+            $absSvc = new \App\Services\HR\AbsenceDecisionService();
+            if ($days > 0 && $kind === 'bonus') {
+                try { $owed = (float) $absSvc->outstandingDays($userId); } catch (\Throwable $e) { $owed = 0.0; }
+            }
+            if ($owed > 0 && $request->input('cover_absences') === null) {
+                $name = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'This employee';
+                $owedTxt = rtrim(rtrim(number_format($owed, 1), '0'), '.');
+                $useTxt  = rtrim(rtrim(number_format(min($days, $owed), 1), '0'), '.');
+                return response()->json([
+                    'success' => false,
+                    'needs_absence_choice' => true,
+                    'owed_days' => $owed,
+                    'would_cover' => min($days, $owed),
+                    'message' => $name . ' has ' . $owedTxt . ' day' . ($owedTxt === '1' ? '' : 's')
+                        . ' of parked absence still owed. Use ' . $useTxt . ' of these bonus day'
+                        . ($useTxt === '1' ? '' : 's') . ' to settle that, or give them all as leave?',
+                ], 200);
+            }
+
             DB::table('t_hr_leave_grant')->insert([
                 'user_id' => $userId,
                 'days' => $days,
@@ -2092,12 +2199,31 @@ class AttendanceController extends Controller
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+            // The grant is written; now spend it on the parked absences if that was the answer.
+            // Goes through PayrollService so the ledger row and the absence row are written by
+            // the SAME code the payroll panel uses — one engine, one audit trail.
+            $covered = 0.0;
+            if ($owed > 0 && $request->boolean('cover_absences')) {
+                try {
+                    $covered = (new \App\Services\HR\PayrollService())->coverAbsencesWithBonus(
+                        $userId, (int) floor($days), now()->format('Y-m'), (int) auth()->id(),
+                        'Covered absences from a bonus granted on the Attendance page'
+                    );
+                } catch (\Throwable $e) {
+                    \Log::error('Bonus-grant absence cover failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+                }
+            }
+
             $bal = (new \App\Services\HR\LeavePolicyService())->balance($userId);
             $verb = $days > 0 ? 'Granted' : 'Deducted';
             $what = $kind === 'bonus' ? 'bonus (overtime)' : 'yearly-allowance';
             return response()->json([
                 'success' => true,
-                'message' => "{$verb} " . abs($days) . " {$what} leave day(s). Balance is now {$bal['remaining']} of {$bal['effective_quota']}.",
+                'message' => "{$verb} " . abs($days) . " {$what} leave day(s)."
+                    . ($covered > 0
+                        ? ' ' . rtrim(rtrim(number_format($covered, 1), '0'), '.') . ' of them settled a parked absence.'
+                        : '')
+                    . " Balance is now {$bal['remaining']} of {$bal['effective_quota']}.",
                 'balance' => $bal,
             ]);
         } catch (\Throwable $e) {
@@ -2277,13 +2403,74 @@ class AttendanceController extends Controller
                 && !empty($existing->logout_time)
                 && $request->has('logout_time')
                 && !$request->filled('logout_time')) {
+                // ✅ Owner ruling (4 Sep 2026): an OLDER day never needs an un-checkout — it needs
+                //    the right time typed in. Undo checkout only reaches today/yesterday, so past
+                //    that bound this message must not send the manager to a door that will refuse
+                //    him.
+                $reopenable = in_array(
+                    substr((string) $validated['attendance_date'], 0, 10),
+                    [now()->format('Y-m-d'), now()->subDay()->format('Y-m-d')],
+                    true
+                );
                 return response()->json([
                     'success' => false,
-                    'undo_checkout_required' => true,
-                    'message' => 'To put him back on duty use 🔓 Rider bypasses → Undo checkout. '
-                        . 'That also clears his closing meter, checkout location and overtime — '
-                        . 'blanking the time here would leave all of those behind.',
+                    'undo_checkout_required' => $reopenable,
+                    'message' => $reopenable
+                        ? 'To put him back on duty use 🔓 Rider bypasses → Undo checkout. '
+                            . 'That also clears his closing meter, checkout location and overtime — '
+                            . 'blanking the time here would leave all of those behind.'
+                        : 'A checkout can\'t be blanked on an older day — type the correct time instead. '
+                            . 'Putting a rider back on duty is only possible for today or yesterday.',
                 ], 422);
+            }
+
+            // ⚠⚠ 4 Sep 2026 — Shabib typed a 21:17 checkout onto Rajab's OPEN day at midday
+            //    (row 2997): a 22↔21 fat-finger off the row one day above, which really did close
+            //    at 22:17. Validation here was only `date_format`, so a time that HAS NOT HAPPENED
+            //    YET saved silently and the rider read as finished for the rest of his shift — and
+            //    there is no undo on prod, so it took a hand-written UPDATE to clear.
+            //    On TODAY'S row neither a check-in nor a checkout can be later than the clock.
+            // ⭐ The `< login` escape is what keeps the past-midnight close legal: a genuine 00:23
+            //    checkout on a 10:44 row is EARLIER than the login, not later, so it never trips
+            //    this. Only a time later than the login AND later than now is impossible.
+            // ⚠ A row dated in the FUTURE is not covered — same class of mistake, but pre-dating a
+            //    row may be deliberate, so that is the owner's call, not an assumption made here.
+            $dateOnly = substr((string) $validated['attendance_date'], 0, 10);
+            if ($dateOnly === now()->format('Y-m-d')) {
+                // ⭐ Five minutes of slack. The modal prefills "now" from the BROWSER clock at
+                //    minute precision, while this compares against the SERVER clock to the
+                //    second — so a PC a few seconds fast would refuse a plain "OUT now" click
+                //    whenever the minute boundary differs. The incident this guards against was
+                //    a checkout typed NINE HOURS into the future, so a few minutes is not a hole.
+                $nowTs = now()->getTimestamp() + 300;
+                $tsOf = fn ($t) => strtotime($dateOnly . ' ' . $t);
+                $clockNow = now()->format('H:i');
+
+                if ($request->filled('login_time') && $tsOf($validated['login_time']) > $nowTs) {
+                    return response()->json([
+                        'success' => false,
+                        'future_time_blocked' => true,
+                        'message' => "That check-in time hasn't happened yet — it is only {$clockNow}. "
+                            . 'Check the time, and check you are on the right day.',
+                    ], 422);
+                }
+
+                if ($request->filled('logout_time')) {
+                    // The login this checkout belongs to: what is being saved now, else what is stored.
+                    $loginRef = $request->filled('login_time')
+                        ? $validated['login_time']
+                        : ($existing->login_time ?? null);
+                    $rollsOver = $loginRef && $tsOf($validated['logout_time']) < $tsOf($loginRef);
+
+                    if (!$rollsOver && $tsOf($validated['logout_time']) > $nowTs) {
+                        return response()->json([
+                            'success' => false,
+                            'future_time_blocked' => true,
+                            'message' => "That checkout time hasn't happened yet — it is only {$clockNow}. "
+                                . 'Check the time, and check you are on the right day.',
+                        ], 422);
+                    }
+                }
             }
 
             if ($existing) {
@@ -2487,8 +2674,12 @@ class AttendanceController extends Controller
 
                 while ($current <= $leaveEnd) {
                     $dateStr = $current->format('Y-m-d');
-                    // Only count if within the month range
-                    if ($dateStr >= $startDate && $dateStr <= $endDate) {
+                    // ⚠ Only up to TODAY, never the rest of the month. Every other counter on
+                    // this page (working days, absent, late) already stops at
+                    // $effectiveEndDate; leave did not, so an approved holiday later in the
+                    // month inflated this column and made the page disagree with the payslip
+                    // and with what the rider sees on his phone.
+                    if ($dateStr >= $startDate && $dateStr <= $effectiveEndDate) {
                         if ($isHalf) { $byUser[$record->user_id]['half_dates'][$dateStr] = true; }
                         else { $byUser[$record->user_id]['leave_dates'][$dateStr] = true; }
                     }
@@ -2630,8 +2821,9 @@ class AttendanceController extends Controller
             $otSvcMonth = new \App\Services\HR\OvertimeService();
             $otRangeMonth = $otSvcMonth->overtimeForRange($userId, $startDate, $effectiveEndDate);
             $userData['overtime_target_minutes'] = (int) ($otRangeMonth['total'] ?? 0);
+            // Carry-aware (Sep-2026): the SAME number payroll grants — see bonusLeavesFor().
             $userData['overtime_bonus_leaves'] = $otSvcMonth
-                ->bonusLeaves($userData['overtime_target_minutes']);
+                ->bonusLeavesFor($userId, $startDate, $effectiveEndDate, $userData['overtime_target_minutes']);
             $userData['overtime_minutes_per_bonus'] = $otSvcMonth->minutesPerBonusDay();
             // Stamp the per-DAY figure onto the day rows too. The Reports page used to derive
             // overtime client-side from logout vs shift_end — a third implementation that
@@ -2769,6 +2961,7 @@ class AttendanceController extends Controller
                 $userData['leave_earned_overtime'] = $bal['earned_overtime'];
                 $userData['leave_late_penalties']  = $bal['late_penalties'];
                 $userData['leave_manual_adjust']   = $bal['manual_adjust'];
+                $userData['leave_absence_cover']   = $bal['absence_cover'] ?? 0;   // bonus days spent on parked absences
             } catch (\Throwable $e) {
                 $userData['leave_remaining'] = null;
             }
@@ -3106,7 +3299,7 @@ class AttendanceController extends Controller
             $otRange    = $otSvc->overtimeForRange($userId, $startDate, $endDate);
             $otByDate   = $otRange['dates'] ?? [];
             $otMinutes  = (int) ($otRange['total'] ?? 0);
-            $otBonusDays = $otSvc->bonusLeaves($otMinutes);
+            $otBonusDays = $otSvc->bonusLeavesFor($userId, $startDate, $endDate, $otMinutes); // carry-aware, same as payroll
 
             foreach ($records as $record) {
                 $recDate = substr((string) $record->attendance_date, 0, 10);
@@ -3546,17 +3739,36 @@ class AttendanceController extends Controller
                 $meterDistance = abs((int) $meterEnd - (int) $meterStart);
             }
             
-            // ⭐ Get previous day's meter end for gap detection
-            $prevMeter = DB::table('t_ops_attendance')
-                ->where('user_id', $userId)
-                ->where('attendance_date', '<', $date)
-                ->whereNotNull('meter_end')
-                ->orderBy('attendance_date', 'desc')
-                ->select('meter_end', 'attendance_date')
-                ->first();
-            
-            $prevMeterEnd = $prevMeter->meter_end ?? null;
-            $prevMeterDate = $prevMeter->attendance_date ?? null;
+            // ⭐⭐ The baseline to measure this morning against — THE MACHINE's last reading, via
+            //    the one brain the day view and the red meter-gap verdict share. This modal used
+            //    to run its own rider-keyed `MAX(attendance_date)`, which on a machine-switch day
+            //    reported the gap between two different odometers as a "meter gap".
+            $prevMeterEnd = null; $prevMeterDate = null;
+            $prevMeterLabel = null; $prevMeterSource = 'rider'; $prevTransferDay = false;
+            try {
+                $mb = (new \App\Services\Riders\WorkJourneyService())->closingBaseline($userId, $date);
+                $prevTransferDay = (bool) $mb['transfer_day'];
+                if (!$mb['holds_nothing']) {
+                    $prevMeterEnd   = $mb['value'];
+                    $prevMeterDate  = $mb['date'];
+                    $prevMeterLabel = $mb['label'];
+                    $prevMeterSource = $mb['source'];
+                } else {
+                    $prevMeterSource = 'none';
+                }
+            } catch (\Throwable $e) {
+                // Never let the baseline break the details modal — fall back to the old lookup.
+                $prevMeter = DB::table('t_ops_attendance')
+                    ->where('user_id', $userId)
+                    ->where('attendance_date', '<', $date)
+                    ->whereNotNull('meter_end')
+                    ->orderBy('attendance_date', 'desc')
+                    ->select('meter_end', 'attendance_date')
+                    ->first();
+                $prevMeterEnd = $prevMeter->meter_end ?? null;
+                $prevMeterDate = $prevMeter->attendance_date ?? null;
+            }
+
             $meterGap = null;
             if ($prevMeterEnd && $meterStart) {
                 $meterGap = (int)$meterStart - (int)$prevMeterEnd;
@@ -3603,7 +3815,12 @@ class AttendanceController extends Controller
             $isCompanyBike = (new \App\Services\Riders\FuelClaimRules())
                 ->ridesCompanyBike($userId, substr((string) $date, 0, 10));
             $meterStory = [
-                'prev'  => ['value' => $prevMeterEnd !== null ? (int) $prevMeterEnd : null, 'date' => $prevMeterDate ? substr((string) $prevMeterDate, 0, 10) : null],
+                // `label` names the machine when the registry answered, so the modal can say
+                // "EDN-198's last reading" instead of an unattributed number.
+                'prev'  => ['value' => $prevMeterEnd !== null ? (int) $prevMeterEnd : null,
+                            'date' => $prevMeterDate ? substr((string) $prevMeterDate, 0, 10) : null,
+                            'label' => $prevMeterLabel, 'source' => $prevMeterSource,
+                            'transfer_day' => $prevTransferDay],
                 'start' => [
                     'value'  => $meterStart !== null ? (int) $meterStart : null,
                     'time'   => !empty($attendance->meter_start_recorded_at) ? substr((string) $attendance->meter_start_recorded_at, 11, 5) : null,
@@ -3659,6 +3876,8 @@ class AttendanceController extends Controller
                     'meter_end' => $meterEnd,
                     'prev_meter_end' => $prevMeterEnd,
                     'prev_meter_date' => $prevMeterDate,
+                    'prev_meter_label' => $prevMeterLabel,
+                    'prev_meter_source' => $prevMeterSource,
                     'meter_gap' => $meterGap,
                     'gps_straight_km' => $gpsDistance,
                     'gps_road_km' => $roadDistance !== null ? round($roadDistance, 1) : null,

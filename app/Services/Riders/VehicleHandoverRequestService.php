@@ -729,14 +729,17 @@ class VehicleHandoverRequestService
         try {
             app()->terminating(function () use ($riderId, $approved, $direction, $vehicleName, $why) {
                 try {
+                    // 🗣 Roman Urdu — this is the rider's own answer, and it tells him which
+                    // machine to ride tomorrow (owner ruling). $why is the manager's typed
+                    // reason and is passed through exactly as he wrote it.
                     $body = $approved
                         ? ($direction === self::DIR_RETURN
-                            ? "You have handed back {$vehicleName}."
-                            : "{$vehicleName} is yours now — record its meter as usual.")
-                        : ("Your request for {$vehicleName} was not approved."
-                            . ($why ? ' ' . $why : ' Keep using your current vehicle.'));
+                            ? "Aap ne {$vehicleName} wapas kar di hai."
+                            : "{$vehicleName} ab aap ki hai — meter hamesha ki tarah daal dein.")
+                        : ("{$vehicleName} ki request manzoor nahi hui."
+                            . ($why ? ' ' . $why : ' Apni maujooda bike hi istemal karte rahein.'));
                     app(\App\Services\FirebaseService::class)->notifyUser($riderId, [
-                        'title' => $approved ? 'Vehicle change approved' : 'Vehicle change declined',
+                        'title' => $approved ? '✅ Bike change manzoor ho gaya' : '❌ Bike change manzoor nahi hua',
                         'body'  => $body,
                     ], ['type' => 'vehicle_handover_decision'], 'shift_notifications');
                 } catch (\Throwable $e) { /* best effort */ }

@@ -23,11 +23,46 @@ class LeavePolicyService
 {
     private static ?bool $hasGrantTable = null;
 
+    /**
+     * 🚫 Owner ruling (Sep-3 2026): a leave balance must NEVER go below zero.
+     *
+     * Before this, a manager could push someone from 0 to −1 by granting leave on their behalf
+     * (the old flow warned once and then allowed an override) or by typing a negative manual
+     * adjustment. A negative balance is not a real thing — the year's allowance is what it is —
+     * and it quietly changed what payroll charged for lateness later.
+     *
+     * The fix the owner asked for is to refuse and say what to do instead: raise the quota on
+     * the Attendance page first, deliberately, so the extra days are a recorded decision rather
+     * than a side effect of approving one leave.
+     *
+     * @param float $days How many days this action would CONSUME (positive) — a manual
+     *                    adjustment of −2 is passed as 2.
+     * @return string|null The refusal to show, or null when there is room.
+     */
+    public function overQuotaRefusal(int $userId, float $days): ?string
+    {
+        if ($days <= 0) { return null; }
+        try {
+            $bal  = $this->balance($userId);
+            $left = (float) ($bal['remaining'] ?? 0);
+            if ($days <= $left) { return null; }
+            $name = DB::table('t_sys_user')->where('id', $userId)->value('fullname') ?: 'This employee';
+            $leftTxt = $left > 0 ? rtrim(rtrim(number_format($left, 1), '0'), '.') : '0';
+            $daysTxt = rtrim(rtrim(number_format($days, 1), '0'), '.');
+            return $name . ' has ' . $leftTxt . ' leave' . ($leftTxt === '1' ? '' : 's')
+                . ' left this year and this needs ' . $daysTxt . '. '
+                . 'A leave balance cannot go below zero — increase the leave quota first from the '
+                . 'Attendance page (leave balance › adjust), then do this again.';
+        } catch (\Throwable $e) {
+            return null;   // never block on a read failure
+        }
+    }
+
     /** t_fin_config read with a default; never throws. */
     private function config(string $key, $default)
     {
         try {
-            $v = DB::table('t_fin_config')->where('config_key', $key)->value('config_value');
+            $v = \App\Services\HR\ConfigMemo::get($key);
             return ($v === null || $v === '') ? $default : $v;
         } catch (\Throwable $e) {
             return $default;
@@ -38,8 +73,8 @@ class LeavePolicyService
     public function cycle(): array
     {
         try {
-            $s = DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_CYCLE_START')->value('config_value');
-            $e = DB::table('t_fin_config')->where('config_key', 'ATTENDANCE_CYCLE_END')->value('config_value');
+            $s = \App\Services\HR\ConfigMemo::get('ATTENDANCE_CYCLE_START');
+            $e = \App\Services\HR\ConfigMemo::get('ATTENDANCE_CYCLE_END');
             if ($s && $e && strtotime((string) $s) && strtotime((string) $e)) {
                 $s = substr((string) $s, 0, 10);
                 $e = substr((string) $e, 0, 10);
@@ -215,7 +250,11 @@ class LeavePolicyService
      */
     public function adjustmentBySource(int $userId, string $start, string $end): array
     {
-        $out = ['overtime' => 0.0, 'late_penalty' => 0.0, 'manual' => 0.0, 'half_day' => 0.0];
+        // 'absence_cover' (Sep-2026): bonus days spent settling PARKED absences instead of
+        // becoming leave. Negative. Listed here so it shows as itself — an unlabelled source
+        // still lands in the total via ledgerAdjustment(), which would leave the employee
+        // looking at a balance he cannot account for.
+        $out = ['overtime' => 0.0, 'late_penalty' => 0.0, 'manual' => 0.0, 'half_day' => 0.0, 'absence_cover' => 0.0];
         if (!$this->grantTableExists()) { return $out; }
         try {
             $rows = DB::table('t_hr_leave_grant')
@@ -291,6 +330,8 @@ class LeavePolicyService
             'earned_overtime'  => round($bySource['overtime'] ?? 0, 1),
             'late_penalties'   => round($bySource['late_penalty'] ?? 0, 1),   // negative
             'manual_adjust'    => round(($bySource['manual'] ?? 0) + ($bySource['half_day'] ?? 0), 1),
+            // Bonus days used to settle parked absences rather than becoming leave (negative).
+            'absence_cover'    => round($bySource['absence_cover'] ?? 0, 1),
             'effective_quota'  => round($effectiveQuota, 1),
             'taken_total'      => round($taken, 1),
             'remaining'        => round($remaining, 1),

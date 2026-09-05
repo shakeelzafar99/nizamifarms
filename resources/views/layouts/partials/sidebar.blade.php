@@ -862,6 +862,17 @@
                                   </div>
                               </a>
                           </div>
+                          {{-- 📊 Month Review (Sep-2026): packs made + the month's cost split.
+                               Shown to everyone in Frozen mode; the cost half inside the page is
+                               gated separately by view_khaas_month_review. --}}
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="{{ route('khaas.month-review') }}">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]"><i class="ki-filled ki-calendar-tick text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700">Month Review</span>
+                                  </div>
+                              </a>
+                          </div>
                       </div>
                   </div>
                   @endif

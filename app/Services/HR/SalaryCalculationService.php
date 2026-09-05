@@ -250,9 +250,27 @@ class SalaryCalculationService
      * The Payroll engine reuses THIS so its absent/late numbers are the same
      * harness-proven values the salary slip uses. Read-only; does not change the slip path.
      */
+    /**
+     * ⚠ PERF: a month's attendance is expensive (it resolves a shift for every day) and the
+     * same (user, month) is asked for repeatedly in one request — the grid, the leave panel
+     * and the absence nag all want it. Held for the request only; any write that changes
+     * attendance happens in a different request.
+     */
+    private static array $attMemo = [];
+
     public function attendanceSummary(int $userId, string $month): array
     {
-        return $this->getAttendanceData($userId, $month);
+        $k = $userId . '|' . $month;
+        if (!isset(self::$attMemo[$k])) {
+            self::$attMemo[$k] = $this->getAttendanceData($userId, $month);
+        }
+        return self::$attMemo[$k];
+    }
+
+    /** Drop the cached months (an attendance edit inside this request invalidates them). */
+    public static function forgetAttendanceMemo(): void
+    {
+        self::$attMemo = [];
     }
 
     /**

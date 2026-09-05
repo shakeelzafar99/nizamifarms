@@ -64,6 +64,9 @@
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Contact</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Purchase Method</th>
+                        @if($canSeeCosts ?? false)
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cost Type</th>
+                        @endif
                         <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Balance</th>
                         <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -101,6 +104,23 @@
                                 {{ $vendor->default_purchase_method === 'by_weight' ? '⚖️ By Weight' : '💵 By Total' }}
                             </span>
                         </td>
+                        @if($canSeeCosts ?? false)
+                        {{-- Decides which bucket this vendor's bills land in on the Month
+                             Review. Read at display time, so a change re-files every past
+                             bill too. --}}
+                        <td class="px-6 py-4">
+                            @php $vct = $vendorCostTypes[(string) $vendor->id] ?? ''; @endphp
+                            <select class="px-2 py-1 border border-gray-300 rounded text-xs bg-white"
+                                    onchange="khaasSetVendorCostType(this)" data-key="{{ $vendor->id }}">
+                                <option value="" {{ $vct === '' ? 'selected' : '' }} disabled>Not set</option>
+                                @foreach(($costTypes ?? []) as $t)
+                                    <option value="{{ $t }}" {{ $vct === $t ? 'selected' : '' }}>
+                                        {{ $t === 'product' ? 'Product' : ($t === 'fixed' ? 'Fixed' : 'One-time') }}
+                                    </option>
+                                @endforeach
+                            </select>
+                        </td>
+                        @endif
                         <td class="px-6 py-4 text-right">
                             <span class="font-semibold text-sm {{ $balance > 0 ? 'text-red-600' : ($balance < 0 ? 'text-green-600' : 'text-gray-500') }}">
                                 Rs. {{ number_format(abs($balance)) }}
@@ -124,7 +144,7 @@
                     </tr>
                     @empty
                     <tr>
-                        <td colspan="6" class="px-6 py-12 text-center">
+                        <td colspan="{{ ($canSeeCosts ?? false) ? 7 : 6 }}" class="px-6 py-12 text-center">
                             <div class="text-4xl mb-3">🏭</div>
                             <h3 class="text-lg font-semibold text-gray-700">No Khaas Vendors Found</h3>
                             <p class="text-sm text-gray-500 mt-1">Vendors assigned to the {{ $khaasBU->name }} business unit will appear here.</p>
@@ -146,4 +166,45 @@
     </div>
     @endif
 </div>
+
+@if($canSeeCosts ?? false)
+<script>
+(function () {
+    'use strict';
+    var CSRF = @json(csrf_token());
+    var URL_SET = @json(route('khaas.month-review.cost-type'));
+
+    window.khaasSetVendorCostType = function (sel) {
+        var key = sel.getAttribute('data-key');
+        var type = sel.value;
+        if (!key || !type) { return; }
+
+        sel.disabled = true;
+        var body = new URLSearchParams();
+        body.append('source_kind', 'vendor');
+        body.append('source_key', key);
+        body.append('cost_type', type);
+
+        fetch(URL_SET, {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': CSRF,
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: body.toString()
+        })
+        .then(function (r) { return r.json().catch(function () { return {success: false}; }); })
+        .then(function (d) {
+            sel.disabled = false;
+            if (!d || !d.success) { alert((d && d.message) ? d.message : 'Could not save that change.'); }
+        })
+        .catch(function () {
+            sel.disabled = false;
+            alert('Could not save that change. Check your connection and try again.');
+        });
+    };
+})();
+</script>
+@endif
 @endsection

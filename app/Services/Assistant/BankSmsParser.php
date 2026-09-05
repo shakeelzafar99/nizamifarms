@@ -68,6 +68,10 @@ class BankSmsParser
     // internal move that debits one of our accounts and credits another), the
     // word-count rule below still gets the final say and yields 'unknown' —
     // the Meezan lesson survives intact.
+    // "credit card" / "creditcard" / "credit card no" — the instrument phrase
+    // that must never count as the word "credit". Applied to the lowercased body.
+    private const CREDIT_CARD_PATTERN = '/\bcredit\s*card\b/';
+
     private const STRONG_CREDIT_PATTERNS = [
         '/\breceived\s+from\b.{0,140}?\bin\s+your\b/s',
         '/\breceived\s+in\s+your\b/',
@@ -111,6 +115,27 @@ class BankSmsParser
     /** Conservative debit/credit detection — 'unknown' whenever it's not clear. */
     private function direction(string $lowerPadded): string
     {
+        // CREDIT CARD = an instrument money LEAVES through, never a direction.
+        //
+        // ⚠ WHY THIS EXISTS (Sep-2026, owner ruling): SCB writes a card purchase
+        // as "PKR 11,580.70 have been paid at Attock Petroleum ... using Credit
+        // Card no 2345. Avail Limit ...". No debit word matched ("paid at", not
+        // "paid to"), and the bare word "credit" inside "Credit Card" counted as
+        // a credit — so 20 card spends were filed as money IN, and one of them
+        // was amount-matched onto a customer's invoice as "Bank confirmed".
+        //
+        // Rule: a card SMS can never be a customer credit. With the instrument
+        // words removed, a body that still says received/credited is our own
+        // repayment or a refund → 'unknown' (review list; the bank-side SMS for
+        // the same money already arrives as a normal debit, so a firm 'debit'
+        // here would double-count it). Anything else on a card is a spend →
+        // 'debit'. Checked BEFORE the strong patterns, because "credited to your
+        // Credit Card" would otherwise satisfy STRONG_CREDIT.
+        if (preg_match(self::CREDIT_CARD_PATTERN, $lowerPadded)) {
+            $sansInstrument = preg_replace(self::CREDIT_CARD_PATTERN, ' ', $lowerPadded);
+            return $this->containsAny($sansInstrument, self::CREDIT_WORDS) ? 'unknown' : 'debit';
+        }
+
         // Where the money landed relative to OUR account outranks word-counting:
         // "received from <payer> in your A/C" is a credit no matter how many
         // debit-ish words the bank's boilerplate also contains.
@@ -196,6 +221,18 @@ class BankSmsParser
         // Debit-card purchase → merchant identity (used for auto-ignore rules).
         if ($direction === 'debit' && preg_match('/\bcharged\b/i', $body)) {
             $merchant = $this->merchantName($body);
+            return $merchant
+                ? [$merchant, mb_substr('MERCHANT:' . $merchant, 0, 64)]
+                : [null, null];
+        }
+
+        // Credit-card purchase (Sep-2026): "PKR X have been paid at <MERCHANT>
+        // <city> PAK on 03-09-26 using Credit Card no 2345". Same MERCHANT: key
+        // space as the debit-card branch so "remember this merchant" rules
+        // work for card spends too. Kept as its OWN branch (not a change to
+        // merchantName) so every existing MERCHANT: key stays byte-identical.
+        if ($direction === 'debit' && preg_match(self::CREDIT_CARD_PATTERN, mb_strtolower($body))) {
+            $merchant = $this->cardMerchantName($body);
             return $merchant
                 ? [$merchant, mb_substr('MERCHANT:' . $merchant, 0, 64)]
                 : [null, null];
@@ -357,6 +394,23 @@ class BankSmsParser
         $candidate = trim(end($m[1]));
         // Trim the country suffix ("... ISLAMABAD PK.") and trailing noise.
         $candidate = preg_replace('/\s+PK\.?$/i', '', $candidate);
+        $candidate = trim($candidate, " .,-'");
+        return $candidate !== '' ? mb_substr($candidate, 0, 50) : null;
+    }
+
+    /**
+     * Merchant on a CREDIT-CARD purchase: the text after "paid at", cut where
+     * the bank's own boilerplate resumes — " on <date>", " using", a "PAK"/"PK"
+     * country tag, or a trailing city-less period. Returns null rather than a
+     * noisy tail, so a rule is never learnt against a date string.
+     */
+    private function cardMerchantName(string $body): ?string
+    {
+        if (!preg_match('/\bpaid\s+at\s+(.{2,80}?)(?:\s+on\s+\d|\s+using\b|\s+dated?\b|[.,]|$)/is', $body, $m)) {
+            return null;
+        }
+        $candidate = trim($m[1]);
+        $candidate = preg_replace('/\s+PAK?\.?$/i', '', $candidate);
         $candidate = trim($candidate, " .,-'");
         return $candidate !== '' ? mb_substr($candidate, 0, 50) : null;
     }
