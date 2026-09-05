@@ -632,6 +632,18 @@ class VanController extends Controller
             isset($data['latitude']) ? (float) $data['latitude'] : null,
             isset($data['longitude']) ? (float) $data['longitude'] : null);
 
+        // 🚚 "I'm here" tells the riders who still owe a scan (Sep-2026). Until
+        //    now only DEPARTURE and STOP SET pushed; arrival — the one moment a
+        //    rider should walk to the van and scan — was silent. Once per stop
+        //    (`arrival_notified_at`), best-effort, never in the way of the reach.
+        if ($res['ok'] && !empty($res['id'])) {
+            try {
+                $this->announceArrival((int) $user->id, (int) $res['id'], $stops);
+            } catch (\Throwable $e) {
+                Log::warning('Van arrival push failed', ['driver' => $user->id, 'error' => $e->getMessage()]);
+            }
+        }
+
         return response()->json(['success' => $res['ok'], 'message' => $res['message'],
                                  'stop' => $stops->currentStopPayload((int) $user->id)],
                                 $res['ok'] ? 200 : 422);
@@ -944,6 +956,7 @@ class VanController extends Controller
                 'sub'          => $sub,
                 'orders'       => $cargo->count(),
                 'packets'      => (int) $cargo->sum(fn ($c) => (int) ($c->expected_packets ?: 1)),
+                'driver_id'    => $driverId,
                 'driver_name'  => $driverName,
                 'stop'         => $stop,
                 // When the van will be at the stop, and when HE can be — null
@@ -1310,6 +1323,10 @@ class VanController extends Controller
                 //    mobile one. Drawing it for everybody would put a button on
                 //    the screen whose only outcome for some managers is a 403.
                 'can_dispatch_own' => $user->hasMobilePermission('view_open_orders'),
+                // 🆘 May THIS viewer record a no-scan handover / take a box off the
+                //    van (Sep-2026)? Same `assign_riders` right the two endpoints
+                //    check, echoed so the buttons are only drawn where they work.
+                'can_manage'       => $this->canManageStops($user),
             ]);
         } catch (\Throwable $e) {
             Log::error('Van storePanel failed', ['error' => $e->getMessage()]);
@@ -1902,6 +1919,11 @@ class VanController extends Controller
             'scan_code' => 'required|string|max:190',
             'latitude'  => 'nullable|numeric',
             'longitude' => 'nullable|numeric',
+            // Sep-2026: WHICH door he scanned from, and whether his phone thought
+            // it was at the van. `order_page` + `near_van:false` = a late scan at
+            // the customer — allowed, noted, logged (see VanService::handoverScan).
+            'source'    => 'nullable|string|in:meet_card,order_page',
+            'near_van'  => 'nullable|boolean',
         ]);
 
         $order = OrderModel::find($id);
@@ -1910,8 +1932,27 @@ class VanController extends Controller
         $res = $van->handoverScan(
             $order, $data['scan_code'], (int) $user->id,
             isset($data['latitude']) ? (float) $data['latitude'] : null,
-            isset($data['longitude']) ? (float) $data['longitude'] : null
+            isset($data['longitude']) ? (float) $data['longitude'] : null,
+            $data['source'] ?? 'meet_card',
+            array_key_exists('near_van', $data) && $data['near_van'] !== null ? (bool) $data['near_van'] : null
         );
+        return response()->json(['success' => $res['ok']] + $res, $res['ok'] ? 200 : 422);
+    }
+
+    /**
+     * 🆘 Rider at the van cannot scan a label — tell the store (Sep-2026).
+     * POST /rider/van/orders/{id}/handover-help  { reason }
+     */
+    public function handoverHelp(Request $request, VanService $van, $id)
+    {
+        $user = Auth::user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 401);
+        $data = $request->validate(['reason' => 'required|string|max:190']);
+
+        $order = OrderModel::find($id);
+        if (!$order) return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+
+        $res = $van->handoverHelp($order, (int) $user->id, $data['reason']);
         return response()->json(['success' => $res['ok']] + $res, $res['ok'] ? 200 : 422);
     }
 
@@ -2021,6 +2062,67 @@ class VanController extends Controller
         }
         Log::info('Van stop announced', ['driver' => $driverId, 'riders_notified' => $sent,
                                          'label' => $stop['label'] ?? null]);
+        return $sent;
+    }
+
+    /**
+     * 🚚 The van has ARRIVED at the meet-up (Sep-2026). Pushed to every rider who
+     *    still has an UNCOLLECTED box on this van — a rider who already scanned
+     *    everything is not told, and nobody is told twice for the same stop
+     *    (`t_ops_van_handover.arrival_notified_at`; without that column the push
+     *    is skipped entirely rather than risk repeating). Tapping it lands on the
+     *    Orders tab, where the meet card's Collect button is.
+     */
+    private function announceArrival(int $driverId, int $stopId, \App\Services\Riders\VanStopService $stops): int
+    {
+        if (!\Schema::hasColumn(VanService::T_HANDOVER, 'arrival_notified_at')) return 0;
+
+        // Claim the stop first: a double "I'm here" must not push twice.
+        $claimed = DB::table(VanService::T_HANDOVER)
+            ->where('id', $stopId)->whereNull('arrival_notified_at')
+            ->update(['arrival_notified_at' => now()]);
+        if (!$claimed) return 0;
+
+        // Riders with at least one box on this van that is loaded and not yet collected.
+        $riders = DB::table('t_crm_prod_order')
+            ->where('van_user_id', $driverId)
+            ->where('order_status', VanService::STATUS_ON_VAN)
+            ->where('assigned_rider_user_id', '!=', $driverId)
+            ->whereNotNull('van_loaded_at')
+            ->whereNull('handover_at')
+            ->where('van_loaded_at', '>=', now()->subHours(VanService::STALE_TAG_HOURS))
+            ->groupBy('assigned_rider_user_id')
+            ->select('assigned_rider_user_id', DB::raw('COUNT(*) as n'))
+            ->get();
+        if ($riders->isEmpty()) return 0;
+
+        $stop  = $stops->currentStopPayload($driverId);
+        $label = $stop['label'] ?? 'meet-up point';
+        $sent  = 0;
+        foreach ($riders as $r) {
+            $rid = (int) $r->assigned_rider_user_id;
+            if (!$rid) continue;
+            try {
+                app(\App\Services\FirebaseService::class)->notifyUser(
+                    $rid,
+                    [
+                        'title' => '🚚 Van ' . $label . ' par pahunch gayi',
+                        'body'  => 'Aap ke ' . (int) $r->n . ' order tayyar hain — app khol kar "Apne orders lein" dabayen aur scan karein.',
+                    ],
+                    [
+                        'type'        => 'van_arrived',
+                        'van_user_id' => (string) $driverId,
+                        'stop_id'     => (string) $stopId,
+                        'label'       => (string) $label,
+                    ],
+                    'shift_notifications'
+                );
+                $sent++;
+            } catch (\Throwable $e) {
+                Log::warning('Van arrival push failed', ['rider' => $rid, 'error' => $e->getMessage()]);
+            }
+        }
+        Log::info('Van arrival announced', ['driver' => $driverId, 'stop' => $stopId, 'riders_notified' => $sent]);
         return $sent;
     }
 

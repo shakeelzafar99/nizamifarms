@@ -252,7 +252,9 @@ class LedgerAdjustmentModel extends BaseModel
         // do NOT reopen/trim settlement, and do NOT move balances. The adjustment stands
         // as the audit record and the order total carries the correction (revenue is
         // order-based). Unsettled invoices keep the existing apply behaviour below.
-        if ($ledger->transaction_type === LedgerModel::TYPE_INVOICE && $ledger->settlement_status === 'settled') {
+        // Sep-2026: "settled WITH cash" — a free order's Rs 0 invoice is auto-settled at
+        // posting with no cash behind it, so a re-price falls through and reopens it below.
+        if ($ledger->transaction_type === LedgerModel::TYPE_INVOICE && $ledger->isSettledWithCash()) {
             $ledger->comments = ($ledger->comments ?? '') .
                 " | Post-settlement correction Rs. " . number_format($ledger->amount, 2) . " → Rs. " . number_format($this->new_amount, 2) .
                 " ABSORBED — invoice + rider balance unchanged (adjustment #{$this->id})";
@@ -299,7 +301,12 @@ class LedgerAdjustmentModel extends BaseModel
         // Update the ledger entry amount
         $ledger->amount = $newAmount;
         $ledger->updated_by = auth()->id() ?? 1;
-        
+
+        // Rs 0 ⇄ priced (cash invoices): settle as nothing-to-collect, or reopen a
+        // nothing-to-collect row the moment it carries a price again. Runs BEFORE the
+        // settled-row handling below so a reopened free order is already 'open' there.
+        $ledger->refreshNothingToCollectSettlement("adjustment #{$this->id}");
+
         // ================================================================
         // Handle settlement status
         // ================================================================
@@ -336,9 +343,9 @@ class LedgerAdjustmentModel extends BaseModel
                 }
             }
         }
-        
+
         $ledger->save();
-        
+
         // ⭐ [Ledger L3, D15 fix] Move balances by the difference ONLY if this row's money is
         // actually in the books (the engine's balance_updated flag). A pending_l1 invoice edited
         // before approval must rewrite the amount ONLY — its (corrected) amount enters the books

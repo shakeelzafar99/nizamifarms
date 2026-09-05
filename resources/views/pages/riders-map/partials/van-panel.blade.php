@@ -199,6 +199,14 @@
 .vp-sendbtn{border:1px solid #0d9488;background:#0d9488;color:#fff;border-radius:7px;
             padding:5px 11px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
 .vp-sendbtn:hover{background:#0f766e;border-color:#0f766e;}
+/* 🆘 Repair doors for an uncollected box + the rider's "label won't scan" note. */
+.vp-repair{gap:6px;padding:4px 10px 7px;}
+.vp-minibtn{border:1px solid #b45309;background:#fff7ed;color:#9a3412;border-radius:6px;
+            padding:3px 9px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.vp-minibtn:hover{background:#ffedd5;}
+.vp-minibtn-grey{border-color:#9ca3af;background:#f9fafb;color:#374151;}
+.vp-minibtn-grey:hover{background:#f3f4f6;}
+.vp-help{background:#fffbeb;color:#92400e;font-weight:600;font-size:11.5px;padding:4px 10px;}
 .vp-otime{color:#9ca3af;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 /* GPS freshness chip — the same three states, colours and words as the mobile
    boards, so "grey dot" means one thing across the whole system. */
@@ -563,7 +571,8 @@ function vpGroups(v) {
                 o.handed_over ? 'collected' : (o.dispatched ? 'delivering' : 'on the van'),
                 o.handed_over ? 'ok' : 'wait',
                 o.handover_at ? vpWhen(o.handover_at) : '',
-                o.priority   // planned drop position — see vpORow
+                o.priority,   // planned drop position — see vpORow
+                vpRepairRow(o, g.name)
             )).join(''));
     });
 
@@ -591,14 +600,62 @@ function vpGrp(vid, key, title, count, right, dflt, rows) {
    an absent plan must look absent, not like stop zero. The to-load group never
    passes it — those rows aren't aboard yet, so a drop position would be a
    promise the load scan hasn't made. */
-function vpORow(no, cust, state, tone, time, seq) {
+function vpORow(no, cust, state, tone, time, seq, extra) {
     return '<div class="vp-orow">'
          +   (seq != null ? '<span class="vp-oseq">' + vpEsc(seq) + '</span>' : '')
          +   '<span class="vp-ono">' + vpEsc(no) + '</span>'
          +   '<span class="vp-ocust">' + vpEsc(cust) + '</span>'
          +   (time ? '<span class="vp-otime">' + vpEsc(time) + '</span>' : '')
          +   '<span class="vp-ostate ' + tone + '">' + vpEsc(state) + '</span>'
+         + '</div>'
+         + (extra || '');
+}
+
+/* 🆘 The two repair doors for a box a rider has NOT collected (Sep-2026). Until now the
+   refusal text on every manual status change promised "a manager records a no-scan
+   handover from the van panel" — and no panel had the button. Drawn only for uncollected
+   rows, and only when the server says this viewer holds `assign_riders`. The rider's own
+   "label won't scan" ask (help_note) shows amber above them so the store knows WHY. */
+function vpRepairRow(o, riderName) {
+    if (o.handed_over) return '';
+    const note = o.help_note
+        ? '<div class="vp-orow vp-help">🆘 ' + vpEsc(riderName || 'Rider') + ': ' + vpEsc(o.help_note) + '</div>'
+        : '';
+    if (!(vpData && vpData.can_manage)) return note;
+    return note
+         + '<div class="vp-orow vp-oact vp-repair">'
+         +   '<button type="button" class="vp-minibtn" onclick="vpOverride(' + o.id + ',' + vpJs(o.order_number) + ',' + vpJs(riderName || '') + ')">✍ No-scan handover</button>'
+         +   '<button type="button" class="vp-minibtn vp-minibtn-grey" onclick="vpUnload(' + o.id + ',' + vpJs(o.order_number) + ')">⬇ Take off van</button>'
          + '</div>';
+}
+
+function vpOverride(orderId, orderNo, riderName) {
+    const reason = prompt('Record ' + orderNo + ' as handed to ' + (riderName || 'its rider')
+        + ' WITHOUT a scan.\n\nWhy could it not be scanned? (damaged label, dead phone…)');
+    if (reason === null) return;
+    if (reason.trim().length < 3) { alert('Please give a short reason.'); return; }
+    fetch('/orders/van/orders/' + orderId + '/handover-override', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''},
+        body: JSON.stringify({reason: reason.trim()}),
+    }).then(r => r.json()).then(res => {
+        alert(res.message || (res.success ? 'Handover recorded.' : 'Could not record that handover.'));
+        vpLoad();
+    }).catch(() => alert('Could not record that handover.'));
+}
+
+function vpUnload(orderId, orderNo) {
+    if (!confirm('Take ' + orderNo + ' off the van?\n\nIt goes back to Processing at the store — the same as changing its status by hand.')) return;
+    fetch('/orders/van/orders/' + orderId + '/unload', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Accept': 'application/json',
+                  'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content || ''},
+        body: '{}',
+    }).then(r => r.json()).then(res => {
+        alert(res.message || (res.success ? 'Taken off the van.' : 'Could not take it off the van.'));
+        vpLoad();
+    }).catch(() => alert('Could not take it off the van.'));
 }
 
 /* ▓▓▓░░ One journey bar. Clicking it opens the live map focused on this van.

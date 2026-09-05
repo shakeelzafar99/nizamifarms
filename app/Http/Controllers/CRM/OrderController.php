@@ -2019,7 +2019,10 @@ class OrderController extends Controller
                             // below (revenue is order-based). Unsettled invoices keep the existing
                             // behaviour (rider still holds the money → his open balance correctly
                             // follows the corrected amount).
-                            $isSettledInvoice = ($ledger->settlement_status === 'settled');
+                            // ⭐ Sep-2026: ask "was cash handed over?", not "is it settled?" — a
+                            // free order's Rs 0 invoice is auto-settled at posting with no cash
+                            // behind it, so a re-price must still reach the rider's balance.
+                            $isSettledInvoice = $ledger->isSettledWithCash();
                             if ($isSettledInvoice) {
                                 $ledger->comments = ($ledger->comments ?? '') .
                                     " | Post-settlement correction Rs. " . number_format($oldAmount, 2) . " → Rs. " . number_format($newAmount, 2) .
@@ -2039,6 +2042,8 @@ class OrderController extends Controller
                                 $ledger->comments = ($ledger->comments ?? '') .
                                     " | Amount adjusted from Rs. " . number_format($oldAmount, 2) . " to Rs. " . number_format($newAmount, 2) .
                                     " (Auto-approved by " . $currentUser->fullname . " on " . now()->format('Y-m-d H:i:s') . ")";
+                                // Rs 0 ⇄ priced: settle (nothing to collect) or reopen (rider holds cash).
+                                $ledger->refreshNothingToCollectSettlement('order edit by ' . $currentUser->fullname);
                                 $ledger->save();
                                 $engine->apply($ledger);            // new amount into the books
                             } else {
@@ -2265,8 +2270,9 @@ class OrderController extends Controller
                     $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
                     
                     if ($ledger) {
-                        // Check if invoice is already settled
-                        if ($ledger->settlement_status === 'settled') {
+                        // Check if invoice is already settled (with cash — a free order's
+                        // auto-settled Rs 0 invoice may still change method: it reposts as Rs 0)
+                        if ($ledger->isSettledWithCash()) {
                             return response()->json([
                                 'success' => false,
                                 'message' => 'Cannot change payment method: Invoice has already been settled.',

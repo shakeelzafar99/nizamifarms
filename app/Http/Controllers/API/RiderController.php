@@ -458,6 +458,10 @@ class RiderController extends Controller
                     'id' => $order->id,
                     'order_number' => $order->order_number,
                     'order_status' => $order->order_status,
+                    // 🚚 Van custody (Sep-2026) — see vanBlockFor. The page had no
+                    //    way to know a box was still on a van, so it offered the
+                    //    delivery scanner at the meet-up (Arslan, Sep-3).
+                    'van' => $this->vanBlockFor($order),
                     'status_display' => ucwords(str_replace(['_', '-'], ' ', $order->order_status)),
                     'order_date' => $order->order_date,
                     'delivery_date' => $order->delivery_date,
@@ -3467,9 +3471,15 @@ class RiderController extends Controller
     public function getOrderLiveFlags(Request $request, $orderId)
     {
         try {
+            // Van custody columns ride along for `vanBlockFor` (Sep-2026); each is
+            // read through `??` there, so a server without batch 14 still answers.
+            $vanCols = [];
+            foreach (['order_status', 'assigned_rider_user_id', 'van_user_id', 'van_loaded_at', 'handover_at'] as $c) {
+                if (\Schema::hasColumn('t_crm_prod_order', $c)) $vanCols[] = $c;
+            }
             $order = \DB::table('t_crm_prod_order')
                 ->where('id', $orderId)
-                ->select('id', 'customer_id', 'expected_packets')
+                ->select(array_merge(['id', 'customer_id', 'expected_packets'], $vanCols))
                 ->first();
             if (!$order) {
                 return response()->json(['success' => false, 'message' => 'Order not found'], 404);
@@ -3523,6 +3533,12 @@ class RiderController extends Controller
                     //    was delivered 1-of-2. This poll is the fresh source of truth.
                     'expected_packets'           => (int) ($order->expected_packets ?: 0),
                     'payment_proof'              => $paymentProof,
+                    // 🚚 Whose hands the box is in (Sep-2026) — so the order page
+                    //    swaps "Mark Delivered" for the handover scan while the box
+                    //    is still on somebody's van, and swaps back within this
+                    //    poll once it is collected. Null = no van info (old server
+                    //    or van features off) = today's behaviour.
+                    'van'                        => $this->vanBlockFor($order),
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -3598,6 +3614,40 @@ class RiderController extends Controller
                 // A scan is valid when the order-number part of the QR (before '|') matches THIS order.
                 $scanOrderNumber = $scanCode !== '' ? trim(explode('|', $scanCode)[0]) : '';
                 $scanMatches = $scanOrderNumber !== '' && $scanOrderNumber === (string) $order->order_number;
+
+                // ⭐ A SCAN TAKEN BEFORE THE HANDOVER IS NOT A DOOR SCAN (Sep-2026).
+                //    The phone keeps a completed scan for 24h so a screen rebuild
+                //    never forces a re-scan — and on Sep-3 that let a scan taken
+                //    AT THE VAN close the delivery two hours later. The app now
+                //    sends when the scan was captured; if that predates the
+                //    handover the rider is asked to scan again at the door —
+                //    the same `scan_required` the app already knows how to
+                //    handle (clears the saved scan, reopens the scanner).
+                //    Old builds send nothing → rule inert. A rider with NO
+                //    handover at all never reaches here (the van guard above).
+                $scannedAtMs = $request->input('scanned_at');
+                if ($scanMatches && is_numeric($scannedAtMs) && !empty($order->handover_at)) {
+                    try {
+                        $scannedAt  = \Carbon\Carbon::createFromTimestampMs((int) $scannedAtMs, config('app.timezone'));
+                        $handoverAt = \Carbon\Carbon::parse($order->handover_at, config('app.timezone'));
+                        if ($scannedAt->lt($handoverAt)) {
+                            \Log::warning('Delivery used a pre-handover scan — asked to re-scan', [
+                                'order' => $order->id, 'number' => $order->order_number,
+                                'rider' => $user->id, 'scanned_at' => $scannedAt->toDateTimeString(),
+                                'handover_at' => $handoverAt->toDateTimeString(),
+                            ]);
+                            return response()->json([
+                                'success' => false,
+                                'code' => 'scan_required',
+                                'require_scan' => true,
+                                'allow_bypass' => $allowBypass,
+                                'message' => 'Ye scan van par hua tha — customer ke paas packet dobara scan karein.',
+                            ], 422);
+                        }
+                    } catch (\Throwable $e) {
+                        // an unparseable timestamp must never block a delivery
+                    }
+                }
 
                 if ($scanMatches) {
                     $notes .= ' (scan verified)';
@@ -3954,19 +4004,84 @@ class RiderController extends Controller
      * (re-scans don't move it). Safe before the SQL migration runs — a missing column is caught.
      * POST /api/rider/orders/{id}/delivery-scan-mark
      */
+    /**
+     * 🚚 The `van` block the order page and its live-flags poll both carry
+     *    (Sep-2026). ONE derivation (`VanService::custodyState`) shared with the
+     *    status guard, so "the page hides Mark Delivered" and "the server
+     *    refuses Mark Delivered" can never drift apart.
+     *
+     *    Null when van features are not installed — the app reads null as
+     *    "no van info" and behaves exactly as before. Never throws: a van
+     *    lookup must not cost the rider his order page.
+     */
+    private function vanBlockFor($order): ?array
+    {
+        try {
+            $vs = new \App\Services\Riders\VanService();
+            if (!$vs->available()) return null;
+            $c = \App\Services\Riders\VanService::custodyState($order);
+            $driverId = !empty($order->van_user_id) ? (int) $order->van_user_id : null;
+
+            $driverName = null;
+            $stop = null;
+            if ($c['needs_handover'] && $driverId) {
+                $driverName = \DB::table('t_sys_user')->where('id', $driverId)->value('fullname');
+                try {
+                    $stop = app(\App\Services\Riders\VanStopService::class)->currentStopPayload($driverId);
+                } catch (\Throwable $e) {
+                    $stop = null;
+                }
+            }
+
+            return [
+                'on_van'         => $c['on_van'],
+                'needs_handover' => $c['needs_handover'],
+                'drivers_own'    => $c['drivers_own'] && $c['on_van'],
+                'driver_id'      => $driverId,
+                'driver_name'    => $driverName,
+                'loaded_at'      => $order->van_loaded_at ?? null,
+                'handover_at'    => $order->handover_at ?? null,
+                'stop'           => $stop ? [
+                    'id'         => $stop['id'],
+                    'label'      => $stop['label'],
+                    'latitude'   => $stop['latitude'],
+                    'longitude'  => $stop['longitude'],
+                    'reached_at' => $stop['reached_at'],
+                ] : null,
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     public function deliveryScanMark(Request $request, $id)
     {
         try {
             $user = Auth::user();
             $order = \DB::table('t_crm_prod_order')
                 ->where('id', $id)
-                ->select('id', 'assigned_rider_user_id', 'delivery_scanned_at')
+                ->select('id', 'order_number', 'order_status', 'assigned_rider_user_id', 'delivery_scanned_at',
+                         'van_user_id', 'van_loaded_at', 'handover_at')
                 ->first();
             if (!$order) {
                 return response()->json(['success' => false, 'message' => 'Order not found'], 404);
             }
             if ((int) $order->assigned_rider_user_id !== (int) $user->id) {
                 return response()->json(['success' => false, 'message' => 'Not authorized for this order'], 403);
+            }
+            // 🚚 NOT A DOOR SCAN IF THE BOX IS STILL ON THE VAN (Sep-2026). This
+            //    ping used to stamp `delivery_scanned_at` for an order the rider
+            //    had only just met at the van — the stamp then looked like proof
+            //    the box reached the customer. Same rule as Mark Delivered itself;
+            //    refused AND logged so the next one is one grep away. The app
+            //    fires this best-effort, so an older build simply sees nothing.
+            $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, 'delivered');
+            if ($vanBlock !== null) {
+                \Log::info('Delivery scan attempted on an on-van order', [
+                    'order' => $order->id, 'number' => $order->order_number ?? null,
+                    'rider' => $user->id, 'van' => $order->van_user_id ?? null,
+                ]);
+                return response()->json(['success' => false, 'code' => 'on_van', 'message' => $vanBlock], 422);
             }
             // Stamp only the first scan — keeps the earliest proof; later re-scans don't overwrite.
             if (empty($order->delivery_scanned_at)) {
@@ -5475,6 +5590,13 @@ class RiderController extends Controller
                     'latitude' => $assignedLocation->latitude,
                     'longitude' => $assignedLocation->longitude,
                     'radius_meters' => $assignedLocation->radius_meters,
+                    // ⭐ Sep-2026: the radius the SERVER actually judges against (location radius
+                    //   capped by OFFICE_AT_RADIUS_M) + the "coarse fix" line, so the app's map
+                    //   circle and its verdict can never disagree with the 422 that follows. Before
+                    //   this the app used the RAW radius — "On-site" at 1.5 km from the main office
+                    //   (2000 m) and then a server rejection at 300. Additive; old APKs ignore both.
+                    'effective_radius_m' => (int) round(LocationService::effectiveOfficeRadius((float) $assignedLocation->radius_meters)),
+                    'coarse_fix_m' => (int) $this->attnConfig('COARSE_FIX_M', 150),
                     // R1 — this rider may check in at ANY office (banner shows it; server authoritative).
                     'any_office' => $anyOfficeAllowed,
                 ] : null,
@@ -5824,6 +5946,11 @@ class RiderController extends Controller
         //    reference for a 00:05 OUT instead of vanishing at midnight and leaving
         //    only the office. Same-day shifts: >= today 00:00 == the old whereDate.
         $sinceTs = ($shiftDate ?: now()->toDateString()) . ' 00:00:00';
+        // The drop's own recorded accuracy travels with it (column exists after the GPS-accuracy
+        // hardening SQL; NULL before it and on rows stamped by older APKs).
+        $dropAccCol = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_order_status_history', 'delivery_accuracy_m')
+            ? 'h.delivery_accuracy_m'
+            : \DB::raw('NULL as delivery_accuracy_m');
         $last = \DB::table('t_crm_order_status_history as h')
             ->join('t_crm_prod_order as o', 'o.id', '=', 'h.order_id')
             ->where('h.status_code', 'delivered')
@@ -5831,13 +5958,26 @@ class RiderController extends Controller
             ->whereNotNull('h.delivery_latitude')->whereNotNull('h.delivery_longitude')
             ->where('h.changed_at', '>=', $sinceTs)
             ->orderByDesc('h.changed_at')
-            ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at', 'o.order_number')
+            ->select('h.delivery_latitude', 'h.delivery_longitude', 'h.changed_at', 'o.order_number', $dropAccCol)
             ->first();
-        $dDrop = null; $ageMin = null;
+        $dDrop = null; $ageMin = null; $dropSlack = 0.0; $dropAcc = null;
         if ($last) {
             $ageMin = \Carbon\Carbon::parse($last->changed_at)->diffInMinutes(now(), false);
             $dDrop = $this->haversineDistance($lat, $lng, (float) $last->delivery_latitude, (float) $last->delivery_longitude);
-            if ($ageMin >= 0 && $ageMin <= $windowMins && ($dDrop - $slack) <= $radiusM) {
+            // ⭐ Sep-5 2026 — the REFERENCE point's own error bar. The drop this checkout is
+            //   measured against was itself a GPS stamp; when THAT stamp was vague (Kanan's NF-19423
+            //   on Aug-31 was recorded 700 m off by a canned cell fix), an honest rider standing at
+            //   the customer's door reads as "too far" and has to phone a manager. Let the drop's
+            //   recorded accuracy widen the circle — capped at COARSE_FIX_M, so the 150 m limit can
+            //   never grow past 300 m, and only when the stamp itself says it was that vague.
+            //   This is about the reference, not the rider: his CURRENT fix still gets no slack
+            //   (CHECKOUT_ACCURACY_SLACK_M stays 0 — the anti-abuse choice is untouched), the
+            //   15-min window still applies, and the office test is unchanged. NULL accuracy
+            //   (older APKs / pre-hardening rows) ⇒ 0 ⇒ exactly the previous rule.
+            $dropAcc = ($last->delivery_accuracy_m !== null && is_numeric($last->delivery_accuracy_m))
+                ? (float) $last->delivery_accuracy_m : null;
+            $dropSlack = $dropAcc !== null ? min($dropAcc, $coarseM) : 0.0;
+            if ($ageMin >= 0 && $ageMin <= $windowMins && ($dDrop - $slack - $dropSlack) <= $radiusM) {
                 return ['ok' => true, 'basis' => 'delivery'];
             }
         }
@@ -5847,7 +5987,10 @@ class RiderController extends Controller
         // when he had no delivery today. distance/limit + which limit broke (subreason).
         if ($last) {
             // Distance dominates the message ("he isn't there any more"); else it's the time window.
-            $sub = ($dDrop !== null && $dDrop > $radiusM) ? 'too_far'
+            // limit_m is the EFFECTIVE limit (radius + the drop's own slack): the app's retry card
+            // turns the OUT button green when live distance <= limit_m, so it must match the gate.
+            $effLimit = $radiusM + $dropSlack;
+            $sub = ($dDrop !== null && $dDrop > $effLimit) ? 'too_far'
                  : (($ageMin !== null && $ageMin > $windowMins) ? 'too_late' : 'wrong_place');
             $detail = [
                 'subreason'   => $sub,
@@ -5858,10 +6001,14 @@ class RiderController extends Controller
                 'ref_label'   => ($last->order_number !== null && $last->order_number !== '')
                                     ? (string) $last->order_number : null,
                 'distance_m'  => $dDrop !== null ? (int) round($dDrop) : null,
-                'limit_m'     => (int) $radiusM,
+                'limit_m'     => (int) round($effLimit),
                 'age_min'     => $ageMin !== null ? (int) $ageMin : null,
                 'accuracy_m'  => $accM,
                 'is_coarse'   => $isCoarseFix,
+                // The reference drop's own quality — so the manager's bypass modal can tell
+                // "he moved" from "the delivery was stamped vaguely" before unlocking.
+                'ref_accuracy_m' => $dropAcc,
+                'ref_coarse'     => $dropAcc !== null && $dropAcc > $coarseM,
             ];
         } else {
             $detail = [
@@ -6006,6 +6153,24 @@ class RiderController extends Controller
                     $dist = isset($locationData['distance'])
                         ? LocationService::formatDistance((int) $locationData['distance'])
                         : null;
+                    // ⭐ Sep-5 2026 (Waseem/Kanan at Orchard Lacarne): a COARSE fix is not a
+                    //   verdict. The phone handed over a canned ±700 m cell centroid 1.1 km away and
+                    //   this branch told the rider he was "1.1km from Orchard Lacarne" — an accusation
+                    //   the fix could not support. Same block, honest words: the GPS was vague, go
+                    //   get a sharp one. `fix_coarse` lets the app show its own retry state; old
+                    //   APKs render `message`, so they get the honest text for free.
+                    if (!empty($locationData['is_coarse'])) {
+                        $acc = isset($locationData['accuracy_m']) ? (int) round($locationData['accuracy_m']) : null;
+                        return response()->json([
+                            'success' => false,
+                            'require_location' => true,
+                            'fix_coarse' => true,
+                            'accuracy_m' => $acc,
+                            'message' => 'GPS signal kamzor hai' . ($acc ? " (±{$acc} m)" : '')
+                                . " — is se pata nahi chal sakta aap {$where} par hain ya nahi. "
+                                . 'Khule mein aayein, WiFi band karein aur dobara koshish karein.',
+                        ], 422);
+                    }
                     return response()->json([
                         'success' => false,
                         'require_location' => true,
@@ -6231,7 +6396,20 @@ class RiderController extends Controller
             $shiftLocationId = (new \App\Services\ShiftResolutionService())
                 ->getUserShift($userId, now()->format('Y-m-d'))['location_id'] ?? null;
         } catch (\Throwable $e) { /* fall back to the user's assigned location below */ }
-        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId, $shiftLocationId);
+
+        // ⭐ Sep-2026 — the fix's OWN error bar, the way every other location door already
+        //   reads it (checkout gate, home-meter stamp, home fence: COARSE_FIX_M, default 150 m).
+        //   slack   = min(accuracy, COARSE_FIX_M) — up to 150 m of the distance may be the fix's
+        //             fault before we call him remote (a wildly bad fix can never buy a pass).
+        //   coarse  = accuracy > COARSE_FIX_M — the fix cannot resolve a 300 m question at all;
+        //             the caller reports "GPS was vague" instead of "he was elsewhere".
+        //   No accuracy sent (older APKs) ⇒ slack 0, coarse false ⇒ exactly the previous rule.
+        $accM     = ($accuracy !== null && is_numeric($accuracy) && (float) $accuracy > 0) ? (float) $accuracy : null;
+        $coarseM  = (float) $this->attnConfig('COARSE_FIX_M', 150);
+        $isCoarse = $accM !== null && $accM > $coarseM;
+        $slackM   = $accM !== null ? min($accM, $coarseM) : 0.0;
+
+        $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId, $shiftLocationId, $slackM);
 
         // R1 — "check in at ANY office" riders: if the resolved (shift/assigned) location reads
         // remote, accept when he's at ANY active company office instead. Widens WHERE, not
@@ -6252,13 +6430,19 @@ class RiderController extends Controller
         }
 
         // ⭐ Detailed logging for attendance location tracking
+        // ⚠ `method`/`source` are what the APP BELIEVED, not what happened: the fused provider
+        //   answers a "fresh high-accuracy" request with a network fix when GPS hasn't locked, and
+        //   the app used to label that method 1. Only `accuracy_meters` is real — `fix_quality`
+        //   is derived from it and is the field to trust. (Method 4 = the app's network fallback;
+        //   it had no label here, so it logged as "Unknown".)
         $methodLabels = [
-            1 => 'Fresh GPS (Method 1 - Best)',
+            1 => 'Fresh GPS (Method 1)',
             2 => 'Recent GPS Cache (Method 2)',
-            3 => 'Network/Fallback (Method 3 - ⚠️ Check GPS)',
+            3 => 'Cached GPS (Method 3)',
+            4 => 'Network/Cell (Method 4 - ⚠️ coarse)',
         ];
         $methodLabel = $methodLabels[$method] ?? "Unknown (Method {$method})";
-        
+
         \Log::info('📍 ATTENDANCE CHECK-IN: Location captured', [
             'user_id' => $userId,
             'user_name' => \DB::table('t_sys_user')->where('id', $userId)->value('fullname'),
@@ -6267,19 +6451,24 @@ class RiderController extends Controller
             'location_method' => $methodLabel,
             'source' => $source ?? 'unknown',
             'accuracy_meters' => $accuracy,
+            'fix_quality' => $accM === null ? 'unknown' : ($isCoarse ? "COARSE (>{$coarseM}m — not a verdict)" : 'sharp'),
+            'slack_m' => (int) round($slackM),
             'latitude' => $latitude,
             'longitude' => $longitude,
             'distance_from_office' => $distanceInfo['distance_meters'] ? round($distanceInfo['distance_meters']) . 'm' : 'N/A',
+            'effective_radius_m' => $distanceInfo['effective_radius_m'] ?? null,
             'is_remote' => $distanceInfo['is_remote'] ? 'YES' : 'NO',
             'office_location' => $distanceInfo['base_location']->location_name ?? 'N/A',
         ]);
 
-        // Log warning if fallback method was used (method 3)
-        if ($method == 3) {
-            \Log::warning('📍 ATTENDANCE: Fallback location used - GPS may have been unavailable', [
+        // Warn on a COARSE fix (judged by accuracy — the old `method == 3` test was aimed at the
+        // cached-GPS attempt, so it never fired for the network fallback it was written for).
+        if ($isCoarse) {
+            \Log::warning('📍 ATTENDANCE: Coarse (network-grade) fix at check-in — cannot place the rider', [
                 'user_id' => $userId,
                 'accuracy' => $accuracy,
-                'recommendation' => 'User should ensure GPS is enabled and try outdoors'
+                'distance_m' => $distanceInfo['distance_meters'],
+                'recommendation' => 'Rider should step outside / disable WiFi and retry for a GPS lock',
             ]);
         }
 
@@ -6301,6 +6490,11 @@ class RiderController extends Controller
             ],
             'is_remote' => $distanceInfo['is_remote'],
             'distance' => $distanceInfo['distance_meters'],
+            // Fix quality for the mandatory-location block: a coarse fix gets the honest
+            // "GPS was vague" refusal instead of "you're X from Y".
+            'is_coarse' => $isCoarse,
+            'accuracy_m' => $accM,
+            'effective_radius_m' => $distanceInfo['effective_radius_m'] ?? null,
             // Name of the base we measured against (for the mandatory-location block
             // message); null when no base is configured for this rider.
             'base_name' => $distanceInfo['base_location']->location_name ?? null,
@@ -13865,6 +14059,13 @@ class RiderController extends Controller
                 'qurbani_rider_delivered_enabled' => $qurbaniRiderDeliveredEnabled,
                 'qurbani_eta_refresh_enabled' => $etaRefreshEnabled,
                 'qurbani_eta_refresh_minutes' => $etaRefreshMinutes,
+                // Sep-2026 — barcode scan verification for the store scanner:
+                // 'single' (apply on the first camera frame) or 'double' (wait for
+                // a second identical frame). Owner switch on Admin → Operations.
+                // ⭐ Defaults to 'double': owner ruling after the 5-Sep 6.044 kg misread
+                // and his own A/B (median cost 0.34 s, no wrong reads). A phone on an
+                // older APK ignores this field entirely and keeps single-read.
+                'barcode_scan_verify_mode' => \App\Models\FIN\ConfigModel::get('barcode_scan_verify_mode', 'double') === 'single' ? 'single' : 'double',
                 'expense_backdate_days' => (int)$expenseBackdateDays
             ]);
             
@@ -21864,7 +22065,14 @@ class RiderController extends Controller
             
             // Get all invoices
             $allInvoices = $invoicesQuery->orderBy('transaction_date', 'desc')->get();
-            
+
+            // Sep-2026 (same as web Daily Closing): an unsettled row with nothing left to
+            // collect (Rs 0 free / replacement order) is not owed — keep it out of open/partial.
+            $allInvoices = $allInvoices->reject(function($invoice) {
+                return $invoice->settlement_status !== 'settled'
+                    && round((float) $invoice->amount - (float) ($invoice->settled_amount ?? 0), 2) < 0.01;
+            });
+
             // Separate into categories (EXACT web app logic)
             $openInvoices = $allInvoices->filter(function($invoice) {
                 return $invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) == 0;
@@ -26476,6 +26684,13 @@ class RiderController extends Controller
             return response()->json(['success' => false, 'message' => 'Line item not found in this order'], 404);
         }
 
+        // Sep-2026: capture what the line carried BEFORE this write. A manual
+        // correction clears quantity_scanned_barcode, which is exactly how the
+        // 5-Sep 6.044 kg misread lost its evidence (corrected at 19:08, code gone).
+        // The log line below is now the only place the old code survives.
+        $previousScannedBarcode = $lineItem->quantity_scanned_barcode;
+        $previousSource = $lineItem->quantity_source;
+
         $service = new \App\Services\CRM\LineItemQuantityService();
         $result = $service->setQuantity(
             $order,
@@ -26504,6 +26719,8 @@ class RiderController extends Controller
                 'scanned_barcode' => $rawBarcode,
                 'scanned_kg' => $scannedKg,
                 'previous_quantity' => $result['previous_quantity'] ?? null,
+                'previous_source' => $previousSource,
+                'previous_scanned_barcode' => $previousScannedBarcode,
                 'new_quantity' => $result['new_quantity'] ?? null,
                 'by_user_id' => (int) $user->id,
                 'by' => $user->fullname ?? null,

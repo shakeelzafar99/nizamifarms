@@ -609,6 +609,82 @@ class WorkshopVisitService
     //  READING
     // ─────────────────────────────────────────────────────────────────────────────
 
+    /**
+     * ⭐⭐ THE BIKE CHANGED HANDS — its booked workshop day goes with it (owner, 5-Sep-2026:
+     *    "the subsequent actions… follow the correct rider so if a new person is assigned to
+     *     the bike it follows it").
+     *
+     * A visit is "take THIS machine in on Friday". It is stored against the rider who was
+     * going to take it, but the errand belongs to the machine: when the bike moves to Rajab,
+     * Rajab is the one riding it to the workshop on Friday. So every LIVE visit on the machine
+     * that is today-or-later is re-pointed to the new holder, and his acceptance is asked for
+     * afresh — the old rider's "accepted" was a promise about a bike he no longer has.
+     *
+     * ⚠ Only today-or-later. A visit dated in the past is history and stays with the man who
+     *   (did or did not) do it.
+     * ⚠ Taken back to NOBODY: the visit is left as it is — there is nobody to give it to —
+     *   and the next assign() will move it, because that fires this hook too.
+     * ⚠ Never throws; a note or push must not undo a committed handover.
+     *
+     * @return int how many visits moved
+     */
+    public function onHandover(int $vehicleId, ?int $fromUserId, ?int $toUserId, ?int $actorId = null): int
+    {
+        if (!$this->available() || !$toUserId) return 0;
+        try {
+            $rows = DB::table(self::T_VISIT)
+                ->where('vehicle_id', $vehicleId)
+                ->whereIn('status', self::LIVE_STATUSES)
+                ->whereDate('visit_date', '>=', now()->format('Y-m-d'))
+                ->where('user_id', '!=', $toUserId)
+                ->get(['id', 'user_id', 'visit_date', 'note', 'location_id']);
+            if ($rows->isEmpty()) return 0;
+
+            $name = function (?int $id): ?string {
+                return $id ? DB::table('t_sys_user')->where('id', $id)->value('fullname') : null;
+            };
+            $from = $name($fromUserId) ?: 'the previous rider';
+            $to   = $name($toUserId)   ?: 'the new rider';
+
+            foreach ($rows as $v) {
+                $line = 'Bike moved from ' . $from . ' to ' . $to . ' on ' . now()->format('d M') . ' — this visit is now his.';
+                DB::table(self::T_VISIT)->where('id', (int) $v->id)->update([
+                    'user_id'      => $toUserId,
+                    'status'       => 'scheduled',        // he has to accept it himself
+                    'accepted_at'  => null,
+                    'accepted_by'  => null,
+                    'accepted_via' => null,
+                    'note'         => trim((string) $v->note . "\n" . $line),
+                    'updated_at'   => now(),
+                ]);
+                /**
+                 * ⚠⚠ THE PHASE-4 PIN IS KEYED BY THE RIDER, NOT THE VISIT. It is a one-day row in
+                 *    `t_ops_user_shift_assignment` for the OLD rider, pointing his shift at the
+                 *    workshop. Re-pointing the visit alone would leave Waseem checking in at a
+                 *    workshop he is not going to, and Rajab — who IS going — marked late or
+                 *    remote there. Move the pin with the visit: clear his, pin the new holder.
+                 */
+                $this->clearShiftLocation((int) $v->id, (int) $v->user_id);
+                if (!empty($v->location_id)) {
+                    $this->applyShiftLocation((int) $v->id, $toUserId, substr((string) $v->visit_date, 0, 10), (int) $v->location_id);
+                }
+                try {
+                    // Same push he would have got had it been booked for him in the first place.
+                    app(\App\Services\FirebaseService::class)->notifyWorkshopVisit('scheduled', (int) $v->id, (int) ($actorId ?: 0));
+                } catch (\Throwable $e) {
+                    Log::warning('Handover workshop push failed', ['visit' => $v->id, 'error' => $e->getMessage()]);
+                }
+            }
+            Log::info('Workshop visits travelled with the machine', [
+                'vehicle_id' => $vehicleId, 'from_user' => $fromUserId, 'to_user' => $toUserId, 'visits' => $rows->count(),
+            ]);
+            return $rows->count();
+        } catch (\Throwable $e) {
+            Log::warning('WorkshopVisitService::onHandover failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
     public function find(int $visitId): ?array
     {
         if (!$this->available()) return null;

@@ -183,6 +183,7 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/drill/expenses', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenses']);
         Route::get('/drill/expense', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenseDetail']);
         Route::get('/drill/salaries', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'salaries']);
+        Route::get('/drill/salary-employee', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'salaryDetail']);
         Route::get('/drill/customers', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'customers']);
         Route::get('/drill/receivables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'receivables']);
         Route::get('/drill/payables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'payables']);
@@ -220,6 +221,25 @@ Route::middleware(['auth'])->group(function () {
         ];
         return view('admin.operations', compact('appUpdateInfo'));
     })->name('admin.operations')->middleware('block.rider');
+    // Sep-2026 — barcode scan verification switch ('single' | 'double'), read by
+    // the store scanner through /rider/permissions.
+    // ⚠ PATH SHAPE IS LOAD-BEARING: prod's StackProtect bot filter challenges by URL
+    // SHAPE, and every path it blocked ends in /settings or /config (it silently killed
+    // /orders/delivery-scan/settings). This path carries neither word and mirrors
+    // /admin/payments/reconcile — a POST fetched from this same Operations page that
+    // works in production today. Verify with a browser fetch before trusting a rename.
+    Route::post('/admin/operations/scan-verify', function (\Illuminate\Http\Request $request) {
+        $mode = $request->input('mode') === 'double' ? 'double' : 'single';
+        \App\Models\FIN\ConfigModel::set('barcode_scan_verify_mode', $mode,
+            'Store barcode scanner: single = apply on first camera frame, double = wait for a second identical frame');
+        return response()->json([
+            'success' => true,
+            'mode' => $mode,
+            'message' => $mode === 'double'
+                ? 'Verified scanning ON — every scan now waits for a second matching read (~0.3 s). Takes effect on each phone the next time the app is opened.'
+                : 'Single-read scanning — labels apply on the first camera frame, as before. Takes effect on each phone the next time the app is opened.',
+        ]);
+    })->name('admin.operations.scan-verify')->middleware('block.rider');
 
     // Line-item quick-note presets (chips shown next to the per-line-item
     // "Add note" box). Shared team-wide list; same controller backs the mobile
@@ -312,6 +332,12 @@ Route::middleware(['auth'])->group(function () {
     //    `out_for_delivery` laundering the store had to use twice on 29 Aug,
     //    which stripped the ETA and left no van history behind.
     Route::post('/orders/van/dispatch-selected', [\App\Http\Controllers\API\VanController::class, 'dispatchSelected'])->name('orders.van.dispatch-selected');
+    // 🆘 Sep-2026: the two repair doors the van card's refusal text always named
+    //    but nothing ever wired — a manager's no-scan handover (label unreadable,
+    //    dead phone) and taking a box back off the van. Same controller actions
+    //    the app calls; both check `assign_riders` themselves.
+    Route::post('/orders/van/orders/{id}/handover-override', [\App\Http\Controllers\API\VanController::class, 'handoverOverride'])->name('orders.van.handover-override');
+    Route::post('/orders/van/orders/{id}/unload', [\App\Http\Controllers\API\VanController::class, 'unload'])->name('orders.van.unload');
     Route::post('/orders/van/stops', [\App\Http\Controllers\API\VanController::class, 'saveStop'])->name('orders.van.stops.create');
     Route::post('/orders/van/stops/promote/{handoverId}', [\App\Http\Controllers\API\VanController::class, 'promoteStop'])->name('orders.van.stops.promote');
     // ⭐ Send a van to a meet-up point from the WEB — the same controller action

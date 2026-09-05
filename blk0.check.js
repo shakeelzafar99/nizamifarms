@@ -436,7 +436,7 @@ function flRenderDetail(r) {
                     ? 'The machine he ended the day on'
                     : 'He was on this earlier in the day and handed it back before the day ended';
                 return '<span class="fl-vdaychip" style="' + (last ? '' : 'opacity:.7;') + '" title="' + tip + '">'
-                     + (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label)
+                     + flOwnerIcon(m) + ' ' + flEsc(m.label)
                      + (last ? '' : ' <span style="opacity:.8;">· handed back</span>') + '</span>';
             }).join(' <span class="fl-muted">→</span> ');
 
@@ -459,7 +459,7 @@ function flRenderDetail(r) {
                         rd = '<span class="fl-muted">no reading</span>';
                     }
                     const at = m.start_at || m.end_at;
-                    return '<div>' + (m.is_company ? '🏍 ' : '👤 ') + '<b>' + flEsc(m.label) + '</b> · ' + rd
+                    return '<div>' + flOwnerIcon(m) + ' <b>' + flEsc(m.label) + '</b> · ' + rd
                          + (at ? ' <span class="fl-muted">· ' + flEsc(at) + '</span>' : '') + '</div>';
                 }).join('')
                 + '</div>';
@@ -482,7 +482,7 @@ function flRenderDetail(r) {
                     ? 'Rs ' + m.rs_per_km.toFixed(2) + '/km' : '<span class="fl-muted">no rate</span>';
                 return '<div class="fl-mrow">' +
                     '<span class="fl-pill ' + (m.is_company ? 'fl-company' : 'fl-own') + '">' +
-                      (m.is_company ? '🏍 ' : '👤 ') + flEsc(m.label) + '</span>' +
+                      flOwnerIcon(m) + ' ' + flEsc(m.label) + '</span>' +
                     '<span class="fl-mkm">' + flNum(m.km_with_him) + ' km</span>' +
                     '<span class="fl-muted">' + m.days + ' day' + (m.days === 1 ? '' : 's') +
                       (m.shared_km ? ' · 🔁 ' + flNum(m.shared_km) + ' shared' : '') + '</span>' +
@@ -693,105 +693,274 @@ function flRenderWorkshop(uid, visits, canSchedule) {
     + btn;
 }
 
-function flScheduleWorkshop(uid, ticketId) {
-    const date = window.prompt(
-        'Workshop date (YYYY-MM-DD).\n\n'
-        + 'He still works that day as normal — this is an errand, not a day off.\n'
-        + 'Booking again on the same bike MOVES the existing date.',
-        flvTodayYmd());
-    if (date === null) return;
-    const day = String(date).trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) { alert('Give the date as YYYY-MM-DD.'); return; }
+/* ═══════════════════════════════════════════════════════════════════════════════
+   🪟 ONE IN-PAGE FORM FOR THE QUICK ACTIONS (owner, 5-Sep: "these should be proper pop ups,
+   not these system-type notifications"). The workshop scheduler alone was FOUR browser
+   prompt() boxes in a row; Report a problem, Cancel, Accept and Mark done each had their
+   own. They all now open this one modal, described by a field list, and show their result
+   inside it instead of in alert().
 
-    const time = window.prompt('Time (HH:MM), or leave blank for "sometime that day".', '');
-    if (time === null) return;
-    const t = String(time).trim();
-    if (t && !/^\d{2}:\d{2}$/.test(t)) { alert('Give the time as HH:MM, for example 11:00.'); return; }
+   flForm({ title, intro, fields: [{key, label, type, options, value, placeholder, hint,
+            required}], okLabel, onSubmit(values, done) })
+     type: date | time | text | number | textarea | select | radio | checkbox
+     done(ok, message, warnings)  — renders the outcome in the modal; on ok the button
+                                    becomes "Close" so the manager can read the warnings.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+let flFormSpec = null;
 
-    /* 📍 A REGISTERED workshop also pins his shift location for the day, so he cannot be
-       marked late or remote for being where he was told to be. A free-text name does not —
-       the prompt says so, because that difference is the whole of Phase 4. */
-    let shop = '', locationId = null;
-    if (flWorkshopLocations.length) {
-        const lines = flWorkshopLocations.map((w, i) => (i + 1) + '. ' + w.name).join('\n');
-        const pick = window.prompt(
-            'Which workshop?\n\n' + lines
-            + '\n\nPick a number — he then checks in THERE, so no lateness lands on that day.'
-            + '\nOr type a name for a workshop that is not on the list (no check-in cover).',
-            '1');
-        if (pick === null) return;
-        const idx = parseInt(pick, 10) - 1;
-        if (!isNaN(idx) && idx >= 0 && idx < flWorkshopLocations.length) {
-            locationId = flWorkshopLocations[idx].id;
-            shop = flWorkshopLocations[idx].name;
-        } else {
-            shop = String(pick).trim();
+function flForm(spec) {
+    flFormSpec = spec;
+    const esc = flEsc;
+    document.getElementById('flFormTitle').textContent = spec.title || '';
+    document.getElementById('flFormIntro').innerHTML = spec.intro ? esc(spec.intro) : '';
+    document.getElementById('flFormIntro').style.display = spec.intro ? '' : 'none';
+    const lab = 'display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;';
+    const inp = 'width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;box-sizing:border-box;';
+    document.getElementById('flFormBody').innerHTML = (spec.fields || []).map(f => {
+        const id = 'flF_' + f.key;
+        const hint = f.hint ? '<div style="font-size:11px;color:#9ca3af;margin-top:3px;">' + esc(f.hint) + '</div>' : '';
+        if (f.type === 'checkbox') {
+            return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#111827;margin-top:12px;cursor:pointer;">'
+                 + '<input type="checkbox" id="' + id + '"' + (f.value ? ' checked' : '') + '> ' + esc(f.label) + '</label>' + hint;
         }
-    } else {
-        const typed = window.prompt('Which workshop? (optional)', '');
-        if (typed === null) return;
-        shop = String(typed).trim();
+        if (f.type === 'radio') {
+            return '<div style="' + lab + '">' + esc(f.label) + '</div>'
+                 + '<div style="display:flex;flex-direction:column;gap:6px;">'
+                 + (f.options || []).map((o, i) =>
+                     '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#111827;cursor:pointer;">'
+                   + '<input type="radio" name="' + id + '" value="' + esc(String(o.value)) + '"'
+                   + ((f.value !== undefined ? String(f.value) === String(o.value) : i === 0) ? ' checked' : '') + '> '
+                   + esc(o.label) + '</label>').join('')
+                 + '</div>' + hint;
+        }
+        if (f.type === 'select') {
+            return '<label style="' + lab + '">' + esc(f.label) + '</label>'
+                 + '<select id="' + id + '" style="' + inp + '">'
+                 + (f.options || []).map(o => '<option value="' + esc(String(o.value)) + '"'
+                     + (String(f.value) === String(o.value) ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('')
+                 + '</select>' + hint;
+        }
+        if (f.type === 'textarea') {
+            return '<label style="' + lab + '">' + esc(f.label) + '</label>'
+                 + '<textarea id="' + id + '" rows="3" placeholder="' + esc(f.placeholder || '') + '" style="' + inp + 'resize:vertical;">'
+                 + esc(f.value || '') + '</textarea>' + hint;
+        }
+        return '<label style="' + lab + '">' + esc(f.label) + (f.required ? ' <span style="color:#b91c1c;">*</span>' : '') + '</label>'
+             + '<input type="' + (f.type || 'text') + '" id="' + id + '" value="' + esc(f.value || '') + '"'
+             + ' placeholder="' + esc(f.placeholder || '') + '"' + (f.min !== undefined ? ' min="' + esc(String(f.min)) + '"' : '')
+             + ' style="' + inp + '">' + hint;
+    }).join('');
+    const r = document.getElementById('flFormResult');
+    r.style.display = 'none'; r.innerHTML = '';
+    const ok = document.getElementById('flFormOk');
+    ok.textContent = spec.okLabel || 'Save';
+    ok.disabled = false;
+    ok.onclick = flFormSubmit;
+    document.getElementById('flFormModal').style.display = 'flex';
+    const first = document.querySelector('#flFormBody input, #flFormBody select, #flFormBody textarea');
+    if (first && first.focus) setTimeout(() => first.focus(), 30);
+}
+
+function flFormClose() {
+    document.getElementById('flFormModal').style.display = 'none';
+    flFormSpec = null;
+}
+
+function flFormValues() {
+    const out = {};
+    (flFormSpec.fields || []).forEach(f => {
+        const id = 'flF_' + f.key;
+        if (f.type === 'checkbox') { out[f.key] = !!document.getElementById(id).checked; return; }
+        if (f.type === 'radio') {
+            const c = document.querySelector('input[name="' + id + '"]:checked');
+            out[f.key] = c ? c.value : null; return;
+        }
+        const el = document.getElementById(id);
+        out[f.key] = el ? String(el.value || '').trim() : '';
+    });
+    return out;
+}
+
+function flFormSubmit() {
+    if (!flFormSpec) return;
+    const v = flFormValues();
+    for (const f of (flFormSpec.fields || [])) {
+        if (f.required && !v[f.key]) { flFormShow(false, (f.label || 'This') + ' is required.'); return; }
     }
-
-    const payload = { user_id: uid, visit_date: day };
-    if (t) payload.visit_time = t;
-    if (shop) payload.workshop = shop;
-    if (locationId) payload.location_id = locationId;
-    if (ticketId) payload.ticket_id = ticketId;
-
-    flPostWorkshop('', payload, function (res) {
-        // ⭐ Warnings are shown AFTER the visit is created, never as a block: an
-        //   appointment on his off day may be exactly what was agreed with him. What
-        //   matters is that the manager is not left unaware of it.
-        let msg = res.message || 'Saved.';
-        if (res.warnings && res.warnings.length) {
-            msg += '\n\n⚠ ' + res.warnings.join('\n⚠ ');
+    const ok = document.getElementById('flFormOk');
+    ok.disabled = true;
+    flFormSpec.onSubmit(v, function (good, message, warnings) {
+        flFormShow(good, message, warnings);
+        if (good) {
+            // Leave the outcome (and any warning) on screen; the button now just closes.
+            ok.textContent = 'Close';
+            ok.disabled = false;
+            ok.onclick = flFormClose;
+        } else {
+            ok.disabled = false;
         }
-        alert(msg);
+    });
+}
+
+function flFormShow(good, message, warnings) {
+    const r = document.getElementById('flFormResult');
+    r.style.display = '';
+    r.style.background = good ? '#f0fdf4' : '#fef2f2';
+    r.style.borderColor = good ? '#bbf7d0' : '#fecaca';
+    r.style.color = good ? '#166534' : '#b91c1c';
+    r.innerHTML = flEsc(message || (good ? 'Saved.' : 'Could not save.'))
+        + ((warnings && warnings.length)
+            ? '<div style="margin-top:8px;padding:8px 10px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;color:#92400e;">'
+              + warnings.map(w => '⚠ ' + flEsc(w)).join('<br>') + '</div>'
+            : '');
+}
+
+/* Small helper: the ticked workshops, fetched once per page and reused by the scheduler. */
+let flWorkshopList = null;
+function flWorkshopsThen(cb) {
+    if (flWorkshopList !== null) { cb(flWorkshopList); return; }
+    fetch('/orders/riders-map/fleet/workshop?limit=1', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { flWorkshopList = (j && j.workshops) || []; cb(flWorkshopList); })
+        .catch(() => { flWorkshopList = []; cb([]); });
+}
+
+/**
+ * @param uid        the rider who takes it in — OR null when `vehicleId` is given
+ * @param vehicleId  ⭐ VEHICLE-FIRST (5-Sep): from the machine's page, or from a ticket row,
+ *                   name the BIKE and let the registry say who holds it. The old ticket-row call
+ *                   passed the RAISER, who since tickets follow the machine may no longer hold it.
+ */
+function flScheduleWorkshop(uid, ticketId, vehicleId) {
+    const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate() + 1);
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    flWorkshopsThen(function (list) {
+        const fields = [
+            { key: 'date', label: 'Which day', type: 'date', value: tomorrow, required: true,
+              hint: 'He still works that day as normal — this is an errand, not a day off. Booking again on the same bike MOVES the existing date.' },
+            { key: 'time', label: 'Time (optional)', type: 'time', hint: 'Leave blank for "sometime that day".' },
+            { key: 'purpose', label: 'What for', type: 'select', value: 'service',
+              options: [{ value: 'service', label: 'Service' }, { value: 'repair', label: 'Repair' },
+                        { value: 'inspection', label: 'Inspection' }, { value: 'other', label: 'Other' }] },
+        ];
+        if (list.length) {
+            fields.push({ key: 'location_id', label: 'Which workshop', type: 'radio',
+                options: list.map(w => ({ value: w.id, label: w.name })).concat([{ value: '', label: 'Somewhere else (type it below)' }]),
+                hint: 'A registered workshop becomes his shift location that day — he checks in THERE, so no lateness lands on him.' });
+        }
+        fields.push({ key: 'workshop', label: list.length ? 'Other workshop (only if "somewhere else")' : 'Workshop name (optional)', type: 'text',
+            placeholder: 'e.g. Bilal Auto',
+            hint: list.length ? '' : 'No location is ticked as a workshop yet — tick them on the Locations page to pick from a list and pin his check-in there.' });
+        fields.push({ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'Anything the rider or the mechanic should know' });
+        flForm({
+            title: '🔧 Schedule a workshop visit',
+            fields: fields,
+            okLabel: 'Book it',
+            onSubmit: function (v, done) {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date)) { done(false, 'Give the date as YYYY-MM-DD.'); return; }
+                if (v.time && !/^\d{2}:\d{2}$/.test(v.time)) { done(false, 'Give the time as HH:MM, e.g. 11:00.'); return; }
+                const payload = vehicleId ? { vehicle_id: vehicleId, visit_date: v.date } : { user_id: uid, visit_date: v.date };
+                if (v.time) payload.visit_time = v.time;
+                if (v.purpose) payload.purpose = v.purpose;
+                if (v.location_id) payload.location_id = parseInt(v.location_id, 10);
+                else if (v.workshop) payload.workshop = v.workshop;
+                if (v.note) payload.note = v.note;
+                if (ticketId) payload.ticket_id = ticketId;
+                flPostWorkshop('', payload, function (res) {
+                    done(true, res.message || 'Booked.', res.warnings || []);
+                }, function (msg) { done(false, msg); });
+            }
+        });
     });
 }
 
 function flWorkshopAccept(id) {
-    if (!window.confirm('Mark this as accepted on the rider’s behalf?\n\n'
-        + 'Use this only when his app is not working. It is recorded as accepted BY YOU FOR HIM, '
-        + 'not as his own confirmation.')) return;
-    flPostWorkshop('/' + id + '/accept', {});
+    flForm({
+        title: '✅ Accept on the rider’s behalf',
+        intro: 'He told you in person, or he cannot reach his phone. It is recorded as accepted BY YOU for him — not as his own confirmation.',
+        fields: [],
+        okLabel: 'Accept for him',
+        onSubmit: function (v, done) {
+            flPostWorkshop('/' + id + '/accept', {}, function (res) { done(true, res.message || 'Accepted.'); },
+                           function (msg) { done(false, msg); });
+        }
+    });
 }
 
 function flWorkshopCancel(id) {
-    const why = window.prompt('Cancel this workshop visit.\n\nReason (optional) — the rider is told.', '');
-    if (why === null) return;
-    flPostWorkshop('/' + id + '/cancel', { reason: why || null });
+    flForm({
+        title: '✖ Cancel this workshop visit',
+        intro: 'The rider is told, with your reason if you give one.',
+        fields: [{ key: 'reason', label: 'Reason (optional)', type: 'textarea', placeholder: 'e.g. Part has not arrived yet' }],
+        okLabel: 'Cancel the visit',
+        onSubmit: function (v, done) {
+            flPostWorkshop('/' + id + '/cancel', { reason: v.reason || null },
+                           function (res) { done(true, res.message || 'Cancelled.'); }, function (msg) { done(false, msg); });
+        }
+    });
 }
 
 /**
  * ⭐ PHASE 3 — completing the visit RECORDS THE SERVICE. Giving a meter writes a typed
- *   service record through the same engine "Record service" uses, against the job the
- *   visit was booked for. That is the loop this whole round exists to close: a workshop
- *   trip should never leave the countdown untouched.
- * ⚠ The meter is optional — an inspection has nothing to record — but if it is given and
- *   the type cannot be recorded (an "as conditions" job), the server refuses and the visit
- *   stays OPEN rather than being marked done with no service behind it.
+ *   service record against the job the visit was booked for, through the same engine as
+ *   "Record service"; leaving it blank just closes the errand (an inspection has nothing
+ *   to record). If the type cannot be recorded (an "as conditions" job) the server refuses
+ *   and the visit stays open — that is shown here, not lost in an alert.
  */
 function flWorkshopDone(id) {
-    const meter = window.prompt(
-        'Mark this workshop visit as done.\n\n'
-        + 'Odometer at the service (km) — this RECORDS the service against the job the visit '
-        + 'was booked for, so the right countdown resets.\n\n'
-        + 'Leave blank if nothing was serviced (an inspection, or the bill is being filed as a '
-        + 'maintenance request instead).', '');
-    if (meter === null) return;
-    const km = String(meter).replace(/[^0-9]/g, '');
-
-    const note = window.prompt('What was the outcome? (optional)', '');
-    if (note === null) return;
-
-    const payload = { outcome_note: note || null };
-    if (km) payload.meter = parseInt(km, 10);
-    flPostWorkshop('/' + id + '/done', payload);
+    flForm({
+        title: '🛠 Mark the visit done',
+        fields: [
+            { key: 'meter', label: 'Odometer at the service (km)', type: 'number', min: 0, placeholder: 'e.g. 28100',
+              hint: 'Fills in the service record for the job this visit was booked for. Leave blank if nothing was serviced (an inspection).' },
+            { key: 'note', label: 'What was the outcome? (optional)', type: 'textarea', placeholder: 'e.g. Chain and sprocket replaced' },
+        ],
+        okLabel: 'Mark done',
+        onSubmit: function (v, done) {
+            const payload = {};
+            if (v.meter) payload.meter = parseInt(v.meter, 10);
+            if (v.note) payload.outcome_note = v.note;
+            flPostWorkshop('/' + id + '/done', payload, function (res) { done(true, res.message || 'Done.'); },
+                           function (msg) { done(false, msg); });
+        }
+    });
 }
 
-function flPostWorkshop(suffix, payload, onOk) {
+/**
+ * 🎫 REPORT A PROBLEM FROM THE MACHINE'S PAGE (owner, 5-Sep). Managers had no way to raise a
+ *    ticket on the web at all — riders raise from the phone. Same endpoint the phone posts to;
+ *    the registry fills in who holds the bike (`VehicleTicketService::open`).
+ */
+function flvReportProblem(vehicleId) {
+    flForm({
+        title: '🎫 Report a problem with this bike',
+        fields: [
+            { key: 'title', label: 'What is wrong (one line)', type: 'text', required: true, placeholder: 'e.g. Front brake is loose' },
+            { key: 'urgent', label: 'Not rideable right now (urgent)', type: 'checkbox' },
+            { key: 'body', label: 'Details (optional)', type: 'textarea', placeholder: 'What you noticed, since when…' },
+        ],
+        okLabel: 'Raise the ticket',
+        onSubmit: function (v, done) {
+            fetch('/orders/riders-map/fleet/tickets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                           'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+                body: JSON.stringify({ vehicle_id: vehicleId, title: v.title, urgent: v.urgent ? 1 : 0, category: 'problem', body: v.body || null })
+            })
+            .then(r => r.json())
+            .then(res => {
+                if (!res.success) { done(false, res.message || 'Could not raise it.'); return; }
+                done(true, res.message || 'Raised. The holder of the bike and the managers are told.');
+                if (flvOpenId === vehicleId) flvLoadTickets(vehicleId);
+            })
+            .catch(() => done(false, 'Could not raise it. Please try again.'));
+        }
+    });
+}
+
+/* @param onErr  optional — receives the server's message instead of an alert(), so a form
+                 can show it inline (the in-page modals above pass one). */
+function flPostWorkshop(suffix, payload, onOk, onErr) {
     fetch('/orders/riders-map/fleet/workshop' + suffix, {
         method: 'POST',
         headers: {
@@ -803,11 +972,13 @@ function flPostWorkshop(suffix, payload, onOk) {
     })
     .then(r => r.json())
     .then(res => {
-        if (!res.success) { alert(res.message || 'Could not save.'); return; }
+        if (!res.success) { if (onErr) onErr(res.message || 'Could not save.'); else alert(res.message || 'Could not save.'); return; }
         if (onOk) onOk(res); else if (res.message) alert(res.message);
         if (flSelected) flLoadWorkshop(flSelected);
+        // 🔧 The same actions now live on the VEHICLE panel too — refresh its block as well.
+        if (typeof flvOpenId !== 'undefined' && flvOpenId && typeof flvLoadVisits === 'function') flvLoadVisits(flvOpenId);
     })
-    .catch(() => alert('Could not save. Please try again.'));
+    .catch(() => { if (onErr) onErr('Could not save. Please try again.'); else alert('Could not save. Please try again.'); });
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -851,6 +1022,37 @@ function flTicketPill(t) {
          + 'padding:2px 7px;border-radius:999px;">' + m[2] + '</span>';
 }
 
+/**
+ * ⭐ ONE ROW RENDERER, TWO CALLERS (5-Sep-2026) — the rider drawer and the VEHICLE panel.
+ *   The owner asked for this box on the vehicle as well; copying the markup would have meant
+ *   two places to fix the next time a badge or a status colour changes.
+ *
+ * @param opts.showWho  name the rider on each row. ON for the vehicle panel — the whole point
+ *                      there is the machine's history ACROSS holders, so "raised by Waseem"
+ *                      is the useful half; OFF in the rider drawer, where every row is his.
+ */
+function flTicketRowsHtml(list, opts) {
+    opts = opts || {};
+    return list.map(t =>
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;"'
+        + ' onclick="flOpenTicket(' + t.id + ')">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">'
+        + '<b style="font-size:12.5px;">' + (t.urgent ? '🔴 ' : '') + flEsc(t.title) + '</b>'
+        + (t.unread ? '<span style="background:#dc2626;color:#fff;font-size:10px;font-weight:800;'
+                    + 'border-radius:999px;padding:1px 6px;">' + t.unread + '</span>' : '')
+        + '</div>'
+        + '<div style="font-size:11px;color:#6b7280;margin-top:3px;">'
+        + (opts.showWho
+             ? (t.opened_for_name || t.opened_by_name
+                  ? 'raised by ' + flEsc(t.opened_by_name || t.opened_for_name) : 'raised')
+               + (t.opened_at ? ' · ' + flvDate(t.opened_at) : '')
+             : flEsc(t.vehicle_name || 'bike')
+               + (t.opened_for_name ? ' · ' + flEsc(t.opened_for_name) : ''))
+        + '</div>'
+        + '<div style="margin-top:5px;">' + flTicketPill(t) + '</div>'
+        + '</div>').join('');
+}
+
 function flRenderTicketList(list, canManage) {
     const box = document.getElementById('flTickets');
     if (!box) return;
@@ -860,19 +1062,7 @@ function flRenderTicketList(list, canManage) {
             + 'Faults a rider raises from his phone appear here.</div>';
         return;
     }
-    box.innerHTML = '<h5>🛠 Bike tickets</h5>' + list.map(t =>
-        '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;"'
-        + ' onclick="flOpenTicket(' + t.id + ')">'
-        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">'
-        + '<b style="font-size:12.5px;">' + (t.urgent ? '🔴 ' : '') + flEsc(t.title) + '</b>'
-        + (t.unread ? '<span style="background:#dc2626;color:#fff;font-size:10px;font-weight:800;'
-                    + 'border-radius:999px;padding:1px 6px;">' + t.unread + '</span>' : '')
-        + '</div>'
-        + '<div style="font-size:11px;color:#6b7280;margin-top:3px;">'
-        + flEsc(t.vehicle_name || 'bike') + (t.opened_for_name ? ' · ' + flEsc(t.opened_for_name) : '')
-        + '</div>'
-        + '<div style="margin-top:5px;">' + flTicketPill(t) + '</div>'
-        + '</div>').join('')
+    box.innerHTML = '<h5>🛠 Bike tickets</h5>' + flTicketRowsHtml(list)
         + '<div id="flTicketThread"></div>';
 }
 
@@ -932,7 +1122,7 @@ function flOpenTicket(id) {
                 //    ticket id rides along: the visit writes itself into this thread and
                 //    moves the ticket to "workshop set".
                 + (j.can_manage
-                    ? '<button class="fl-btn" onclick="flScheduleWorkshop(' + (t.opened_for_user_id || t.opened_by) + ', ' + id + ')">🔧 Schedule workshop</button>'
+                    ? '<button class="fl-btn" onclick="flScheduleWorkshop(null, ' + id + ', ' + (parseInt(t.vehicle_id, 10) || 0) + ')">🔧 Schedule workshop</button>'
                     : '')
                 + (j.can_close ? '<button class="fl-btn" onclick="flCloseTicket(' + id + ')">Close ticket</button>' : '')
                 + '</span>'
@@ -988,18 +1178,26 @@ function flReplyTicket(id) {
 }
 
 function flCloseTicket(id) {
-    const note = window.prompt('Close this ticket.\n\nAdd a note (optional) — the rider sees it.', '');
-    if (note === null) return;
-    fetch('/orders/riders-map/fleet/tickets/' + id + '/close', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json',
-                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
-        body: JSON.stringify({ note: note || null })
-    }).then(r => r.json()).then(res => {
-        if (!res.success) { alert(res.message || 'Could not close.'); return; }
-        flOpenTicket(id);
-        if (flSelected) flLoadTickets(flSelected);
-    }).catch(() => alert('Could not close. Please try again.'));
+    flForm({
+        title: '✅ Close this ticket',
+        intro: 'The rider holding the bike sees your note.',
+        fields: [{ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. Chain replaced, tension checked' }],
+        okLabel: 'Close the ticket',
+        onSubmit: function (v, done) {
+            fetch('/orders/riders-map/fleet/tickets/' + id + '/close', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                           'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+                body: JSON.stringify({ note: v.note || null })
+            }).then(r => r.json()).then(res => {
+                if (!res.success) { done(false, res.message || 'Could not close.'); return; }
+                done(true, res.message || 'Closed.');
+                flOpenTicket(id);
+                if (flSelected) flLoadTickets(flSelected);
+                if (typeof flvOpenId !== 'undefined' && flvOpenId) flvLoadTickets(flvOpenId);
+            }).catch(() => done(false, 'Could not close. Please try again.'));
+        }
+    });
 }
 
 /**
@@ -1767,6 +1965,15 @@ let flNewSvcLogId = null;
  *   retyped and nothing can drift, because the server inherits them from the log itself.
  */
 function flvAddBill(logId, riderId, label) {
+    // The label is derived HERE from the loaded history, never passed through an inline
+    // onclick (a quoted string inside a double-quoted attribute truncates it).
+    if (!label) {
+        const s = ((typeof flvData !== 'undefined' && flvData && flvData.service_history) || [])
+            .find(r => Number(r.log_id) === Number(logId));
+        label = s
+            ? flvDate(s.date) + ' · ' + (s.kind || 'Service') + (s.meter ? ' · ' + flNum(s.meter) + ' km' : '')
+            : 'the recorded service';
+    }
     flOpenNew('Maintenance');
     flNewSvcLogId = logId;
     const sel = document.getElementById('flNewRider');
@@ -2122,7 +2329,7 @@ function flNewLoadVehicles() {
                     + 'border:1px solid #d1d5db;background:#fff;border-radius:999px;padding:6px 11px;'
                     + 'font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;'
                     + (claimed ? 'opacity:.65;' : '') + '">'
-                    + (v.is_company ? '🚚' : '🏍️') + ' <b>' + flEsc(v.label) + '</b>'
+                    + flMachineIcon(v) + ' <b>' + flEsc(v.label) + '</b>'
                     + (km !== null ? ' <span style="color:#6b7280;">' + flNum(km) + ' km</span>' : '')
                     + (claimed ? ' <span style="color:#b45309;">' + (v.claim.status === 'approved' ? '✅' : '⏳') + '</span>' : '')
                     + '</button>';
@@ -2726,6 +2933,19 @@ function flMonthLabel(m) {
     const x = new Date(m + '-01T12:00:00');
     return isNaN(x) ? m : x.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 }
+// ⭐ WHAT THE MACHINE IS — the registry's `vtype` ('bike' | 'van') and nothing else.
+//   `is_company` answers a different question (whose fuel we buy) and was standing in
+//   for this: it drew a company BIKE as a van, and every van in a company/own pairing
+//   as a bike. Unknown vtype ⇒ bike, which is what those payloads always showed.
+function flMachineIcon(v) {
+    return (v && String(v.vtype || '') === 'van') ? '🚚' : '🏍️';
+}
+// The company/own pill: WHOSE it is decides between the machine and the person, and
+// only then does the machine's own shape pick the glyph.
+function flOwnerIcon(m) {
+    if (!m || !m.is_company) return '👤';
+    return String(m.vtype || '') === 'van' ? '🚚' : '🏍';
+}
 function flEsc(s) {
     return String(s === null || s === undefined ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -2802,6 +3022,20 @@ function flvLoad() {
             }
             flvRenderIntro(res);
             flvRenderGrid(res.vehicles || []);
+
+            /* ⭐ DEEP LINK (Qasim/Shabib, 5-Sep): a toast's "Open Bikes →" now names the
+               machine (`#bikes?vehicle=ID`, parked by index.blade.php as window.flDeepLink).
+               Honour it ONCE, here, where the list it belongs to has just arrived — and only
+               if the machine is actually in that list, so a stale link cannot open a panel
+               for a bike this manager may not see. Consumed immediately: a refresh or a
+               tab switch afterwards behaves exactly as it always did. */
+            const dl = window.flDeepLink;
+            if (dl && dl.vehicle) {
+                const wanted = parseInt(dl.vehicle, 10);
+                const listed = (res.vehicles || []).some(v => parseInt(v.id, 10) === wanted);
+                window.flDeepLink = dl.ticket ? { vehicle: null, ticket: dl.ticket } : null;
+                if (listed) flvOpen(wanted);
+            }
         })
         .catch(err => {
             grid.innerHTML = '<div class="fl-empty">'
@@ -3173,6 +3407,74 @@ let flvView = 'list';              // list | fuel | days
 /* ⚠ Guards the one-time ‘jump to the last month with activity’ so it cannot loop. */
 let flvMonthAuto = false;
 
+/**
+ * 🎫 THE MACHINE'S OPEN PROBLEMS, ON THE MACHINE'S PAGE (owner ask, 5-Sep-2026):
+ *    "this issue box should come in vehicles too… currently it's coming in the riders part only."
+ *
+ * ⚠ Same endpoint, same renderer, same thread opener as the rider drawer — only the FILTER
+ *   differs (`vehicle_id` instead of `user_id`). The server decides who may see what
+ *   (`VehicleTicketService::visibilityScope`); this never re-implements that.
+ * ⚠ Its own fetch, not part of the vehicle payload: a ticket list has its own permission
+ *   question, and folding it in would make two places decide who may know one exists.
+ */
+let flvTickets = null;      // { vehicleId, list } for the panel that is open
+let flvTicketSeq = 0;
+
+function flvLoadTickets(vehicleId) {
+    flvTickets = null;
+    const seq = ++flvTicketSeq;                        // last answer wins
+    fetch('/orders/riders-map/fleet/tickets?status=' + (flvTicketsAll ? 'all' : 'open')
+          + '&limit=' + (flvTicketsAll ? 40 : 10) + '&vehicle_id=' + encodeURIComponent(vehicleId),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (seq !== flvTicketSeq || !j || !j.success) return;
+            if (flvOpenId !== vehicleId) return;        // he moved on to another machine
+            flvTickets = { vehicleId: vehicleId, list: j.tickets || [], canManage: !!j.can_manage };
+            if (flvLastRes) flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+
+            /* 🎫 The second half of a ticket deep link: the vehicle is open and its tickets
+               have just been drawn (so #flTicketThread exists) — open the one the toast named,
+               and only if it is genuinely on this machine's list. Consumed once. */
+            const dl = window.flDeepLink;
+            if (dl && dl.ticket) {
+                const wanted = parseInt(dl.ticket, 10);
+                window.flDeepLink = null;
+                if ((j.tickets || []).some(t => parseInt(t.id, 10) === wanted)) flOpenTicket(wanted);
+            }
+        })
+        .catch(() => {});                              // a panel never breaks the page
+}
+
+/* 🎫 History on the vehicle: open only by default; the toggle refetches with closed rows. */
+let flvTicketsAll = false;
+function flvToggleTicketHistory() {
+    flvTicketsAll = !flvTicketsAll;
+    if (flvOpenId) flvLoadTickets(flvOpenId);
+}
+
+/**
+ * 🔧 THE MACHINE'S WORKSHOP DAY, ON THE MACHINE'S PAGE (owner, 5-Sep: "to add a workshop day it
+ *    shouldn't solely depend on a ticket being raised — there should be a button on the vehicle").
+ *    Same endpoint and same rows as the rider drawer, filtered by `vehicle_id`; the buttons
+ *    (Accept · Mark done · Move · Cancel) are the drawer's own functions.
+ */
+let flvVisits = null;       // { vehicleId, list, canSchedule } for the panel that is open
+let flvVisitSeq = 0;
+function flvLoadVisits(vehicleId) {
+    const seq = ++flvVisitSeq;
+    fetch('/orders/riders-map/fleet/workshop?vehicle_id=' + encodeURIComponent(vehicleId),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (seq !== flvVisitSeq || !j || !j.success) return;
+            if (flvOpenId !== vehicleId) return;
+            flvVisits = { vehicleId: vehicleId, list: j.visits || [], canSchedule: !!j.can_schedule };
+            if (flvLastRes) flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
+        })
+        .catch(() => {});
+}
+
 function flvHistRerender() {
     if (flvLastRes) flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
 }
@@ -3263,6 +3565,9 @@ function flvOpen(id, keepMonth) {
     const box = document.getElementById('flVehDetail');
     box.style.display = '';
     box.innerHTML = '<div class="fl-vdbody">Loading…</div>';
+    if (!keepMonth || flvOpenId !== id) { flvTicketsAll = false; flvVisits = null; }
+    flvLoadTickets(id);          // 🎫 in parallel with the detail — see flvLoadTickets
+    flvLoadVisits(id);           // 🔧 likewise — see flvLoadVisits
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     // ⚠ Pass the month the manager is actually looking at. Without it the popover
@@ -3295,7 +3600,7 @@ function flvOpen(id, keepMonth) {
                 if (!spent && !claims) {
                     const newest = (res.service_history || [])
                         .map(r => String(r.date || '').slice(0, 7))
-                        .filter(m => /^d{4}-d{2}$/.test(m) && m < flvMonth)
+                        .filter(m => /^\d{4}-\d{2}$/.test(m) && m < flvMonth)
                         .sort().pop();
                     if (newest) { flvMonth = newest; flvOpen(id, true); return; }
                 }
@@ -3699,6 +4004,69 @@ function flvRenderDetail(v, canManage, res) {
                               : 'due in ' + flNum(sv.due_in_km) + ' km')
           + '</span>';
 
+    /* 🎫 The machine's open problems — loaded beside the detail, see flvLoadTickets. */
+    const tks = (flvTickets && flvTickets.vehicleId === v.id) ? flvTickets.list : null;
+    const tkChip = (tks && tks.length)
+        ? '<span class="fl-vduechip" style="background:'
+          + (tks.some(t => t.urgent) ? '#fef2f2;color:#b91c1c;' : '#fffbeb;color:#b45309;') + '">'
+          + '🎫 ' + tks.length + (tks.length === 1 ? ' open ticket' : ' open tickets') + '</span>'
+        : '';
+    /* ⭐ ALWAYS a place for tickets & chat on the machine (owner, 5-Sep: "do I always see a
+         tickets/issues/chat button that opens these chats or history?"). The block is there the
+         moment the answer arrives, empty or not; history is one click; raising one is a button. */
+    const tkCanManage = !!(flvTickets && flvTickets.vehicleId === v.id && flvTickets.canManage);
+    const tkBlock = tks === null
+        ? ''
+        : '<div class="fl-vsec">'
+          + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">'
+          +   '<h4 style="margin:0;">Tickets &amp; chat</h4>'
+          +   '<button type="button" class="fl-vchipbtn' + (flvTicketsAll ? ' on' : '') + '" onclick="flvToggleTicketHistory()">'
+          +     (flvTicketsAll ? 'Hide closed' : 'Show history') + '</button>'
+          +   (tkCanManage
+                 ? '<button type="button" class="fl-vchipbtn" style="margin-left:auto;" onclick="flvReportProblem(' + v.id + ')">🎫 Report a problem</button>'
+                 : '')
+          + '</div>'
+          + (tks.length
+                ? flTicketRowsHtml(tks, { showWho: true }) + '<div id="flTicketThread"></div>'
+                : '<div style="font-size:12px;color:#9ca3af;">'
+                  + (flvTicketsAll ? 'No tickets have ever been raised on this machine.'
+                                   : 'Nothing open on this machine. Faults a rider reports from his phone appear here.')
+                  + '</div><div id="flTicketThread"></div>')
+          + '</div>';
+
+    /* 🔧 THE WORKSHOP DAY — booked against the machine, so it lives here too. Buttons are the
+         rider drawer's own; nothing is decided twice. */
+    const vs = (flvVisits && flvVisits.vehicleId === v.id) ? flvVisits.list : null;
+    const wsCan = !!(flvVisits && flvVisits.vehicleId === v.id && flvVisits.canSchedule);
+    const wsBtn = wsCan
+        ? '<button type="button" class="fl-vchipbtn" onclick="flScheduleWorkshop(null, null, ' + v.id + ')">🔧 '
+          + (vs && vs.length ? 'Move' : 'Schedule workshop') + '</button>'
+        : '';
+    const wsBlock = vs === null
+        ? ''
+        : '<div class="fl-vsec">'
+          + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">'
+          +   '<h4 style="margin:0;">Workshop</h4>'
+          +   (wsBtn ? '<span style="margin-left:auto;">' + wsBtn + '</span>' : '')
+          + '</div>'
+          + (vs.length
+                ? vs.map(w =>
+                    '<div class="fl-vhrow" style="align-items:center;">'
+                  +   '<b style="min-width:110px;">' + flEsc(w.visit_date) + (w.visit_time ? ' ' + flEsc(w.visit_time) : '') + '</b>'
+                  +   '<span style="color:#374151;">' + flEsc(w.rider_name || v.keeper_name || 'rider') + ' takes it'
+                  +     (w.workshop ? ' · ' + flEsc(w.workshop) : '') + (w.purpose ? ' · ' + flEsc(w.purpose) : '') + '</span>'
+                  +   '<span class="fl-vchip ' + (w.accepted ? 'ok' : 'unk') + '">' + (w.accepted ? 'accepted' : 'not yet accepted') + '</span>'
+                  +   (wsCan
+                        ? '<span style="margin-left:auto;display:flex;gap:4px;">'
+                          + (!w.accepted ? '<button type="button" class="fl-vbtn" onclick="flWorkshopAccept(' + w.id + ')">Accept for him</button>' : '')
+                          + '<button type="button" class="fl-vbtn" onclick="flWorkshopDone(' + w.id + ')">Mark done</button>'
+                          + '<button type="button" class="fl-vbtn" onclick="flWorkshopCancel(' + w.id + ')">Cancel</button>'
+                          + '</span>'
+                        : '')
+                  + '</div>').join('')
+                : '<div style="font-size:12px;color:#9ca3af;">Nothing booked for this machine.</div>')
+          + '</div>';
+
     const cs = (res && res.cost_summary && res.cost_summary.windows) || null;
     const costStrip = cs
         ? '<div class="fl-vsec"><h4>What it has cost</h4>'
@@ -3714,7 +4082,7 @@ function flvRenderDetail(v, canManage, res) {
                        is reading is visibly the one the clock above is set to. */
                   const liveKey = flvRange === 'q' ? 'quarter' : flvRange === 'all' ? 'lifetime' : flvRange;
                   const on = (k === liveKey);
-                  return '<div style="flex:1 1 150px;min-width:150px;border:1px solid ' + (on ? '#fdba74' : '#e5e7eb') + ';border-radius:9px;background:' + (on ? '#fffbf5' : '#fff') + ';padding:9px 11px;background:#fff;">'
+                  return '<div style="flex:1 1 150px;min-width:150px;border:1px solid ' + (on ? '#fdba74' : '#e5e7eb') + ';border-radius:9px;background:' + (on ? '#fffbf5' : '#fff') + ';padding:9px 11px;">'
                        + '<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;margin-bottom:5px;">' + label + '</div>'
                        + (line('🛢 Regular', w.regular_rs, '#374151')
                           || line('🛢 Regular', 0, '#374151'))
@@ -3768,6 +4136,7 @@ function flvRenderDetail(v, canManage, res) {
            “due in 920 km” cannot be read as the wrong service. The full per-type schedule is
            still below; this is the headline of it. */
       +   (dueChip || '')
+      +   tkChip
       /* ⭐ VEHICLE-CENTRIC ACTIONS (owner ask, 3-Sep): "new maintenance should also be an
            option here, currently it's only in the riders section". Both open the SAME forms
            the Riders tab uses, pre-set to this machine and its keeper — so the approval rule,
@@ -3838,6 +4207,10 @@ function flvRenderDetail(v, canManage, res) {
       +   '</div>'
       /* ⭐ The record itself gets its OWN section rather than trailing off the end of the
            schedule — it is the longest thing here and needs its own controls. */
+      /* 🎫 Above Activity: an open fault is what a manager acts on TODAY; the cost and
+           service record are what he reads about. */
+      +   tkBlock
+      +   wsBlock
       +   activity
       /* ⭐ Rarely-needed sections collapse (owner: "it seems messy"). Nothing is removed —
            photos and keeper history are one click away instead of in the way. */
@@ -3960,9 +4333,11 @@ function flvServiceHistoryHtml(res) {
                 the server the moment a linked claim is rejected, so a rejected bill's service
                 offers this again rather than sitting there looking paid. */
           +     (s.log_id && !s.bill_id && canFix
-                  ? ' <a href="#" onclick="flvAddBill(' + s.log_id + ',' + (s.rider_id || 0) + ','
-                    + JSON.stringify(flvDate(s.date) + ' · ' + (s.kind || 'Service')
-                        + (s.meter ? ' · ' + flNum(s.meter) + ' km' : '')) + ');return false;" '
+                  /* ⚠⚠ ID ONLY in the inline onclick — the label is rebuilt inside flvAddBill from
+                        the row. JSON.stringify here put DOUBLE QUOTES inside this double-quoted
+                        attribute and truncated it, so the link never fired (same trap as
+                        "New own bike", 14 Aug). */
+                  ? ' <a href="#" onclick="flvAddBill(' + s.log_id + ',' + (s.rider_id || 0) + ');return false;" '
                     + 'title="Attach the workshop bill to this service. Its odometer, job and date are kept." '
                     + 'style="font-size:11px;font-weight:700;color:#047857;">Add the bill</a>'
                   : '')

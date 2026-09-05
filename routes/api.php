@@ -184,6 +184,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/van/orders/{id}/handover-scan', [\App\Http\Controllers\API\VanController::class, 'handoverScan']);
         Route::post('/van/orders/{id}/handover-override', [\App\Http\Controllers\API\VanController::class, 'handoverOverride']);
         Route::post('/van/orders/{id}/unload', [\App\Http\Controllers\API\VanController::class, 'unload']);
+        // 🆘 Sep-2026: the rider cannot scan the label at the van → tell the store
+        //    (push + note on the Van tab) so a manager records a no-scan handover.
+        Route::post('/van/orders/{id}/handover-help', [\App\Http\Controllers\API\VanController::class, 'handoverHelp']);
 
         // 📍 Meet-up STOPS. Presets live in t_ops_company_locations behind
         //    `is_handover_point` (they are NOT offices — see LocationService).

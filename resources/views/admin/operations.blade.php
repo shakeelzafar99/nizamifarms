@@ -789,6 +789,43 @@
             <div id="qurbaniFeedback" class="mt-3 hidden"></div>
         </div>
 
+        {{-- Sep-2026 — Barcode scan verification (store scanner). ONE server switch,
+             read by the phones through /rider/permissions, so the team can be moved
+             between the two modes without an APK. Background: a scale label can be
+             misread into a DIFFERENT but perfectly valid code (the check digit cannot
+             catch it) — 28-Aug 0.505→9.205 kg, 5-Sep 2.000→6.044 kg. A misread is a
+             one-frame event, so "wait for a second identical frame" (~0.3 s) is the
+             defence that does not depend on the weight looking odd. --}}
+        @php
+            $scanVerifyDouble = \App\Models\FIN\ConfigModel::get('barcode_scan_verify_mode', 'double') !== 'single';
+        @endphp
+        <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-medium text-gray-800">🔖 Barcode Scan Verification</h2>
+            </div>
+            <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-900 space-y-1">
+                <p><strong>Single read</strong> — a label applies on the first camera frame (fastest; how it has always worked).</p>
+                <p><strong>Verified (2 reads)</strong> — every scan waits for a second frame that reads the <em>same</em> code before it is offered. Adds about 0.3 s per scan. A misread never repeats identically, so it simply never applies.</p>
+                <p>No app update needed — each phone picks the setting up the next time the app is opened (close it fully and reopen).</p>
+            </div>
+            <div class="p-4 bg-gray-50 rounded-lg">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900">📷 Store scanner mode</h3>
+                        <p class="text-xs text-gray-600 mt-1">Applies to every phone in Store mode:</p>
+                    </div>
+                    <span id="scanVerifyBadge" class="px-4 py-2 rounded-full text-sm font-bold {{ $scanVerifyDouble ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800' }}">
+                        {{ $scanVerifyDouble ? 'VERIFIED (2 READS)' : 'SINGLE READ' }}
+                    </span>
+                </div>
+                <button type="button" id="scanVerifyButton" onclick="toggleScanVerify()"
+                        class="w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 {{ $scanVerifyDouble ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white' }}">
+                    {{ $scanVerifyDouble ? 'Switch to single read' : 'Switch to verified (2 reads)' }}
+                </button>
+            </div>
+            <div id="scanVerifyFeedback" class="mt-3 hidden"></div>
+        </div>
+
         <!-- Payment Proof Reconciliation Card -->
         <div class="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
             <div class="flex items-center justify-between mb-4">
@@ -985,6 +1022,52 @@
                 feedback.classList.remove('hidden');
                 btn.disabled = false;
                 btn.textContent = currentlyEnabled ? ('Disable on ' + label) : ('Enable on ' + label);
+            });
+        }
+
+        // Sep-2026 — barcode scan verification switch (single ⇄ double). Same
+        // shape as toggleQurbaniMode above: optimistic disable, server decides,
+        // badge + button re-painted from the server's answer.
+        function toggleScanVerify() {
+            const btn = document.getElementById('scanVerifyButton');
+            const badge = document.getElementById('scanVerifyBadge');
+            const feedback = document.getElementById('scanVerifyFeedback');
+            const currentlyDouble = badge.textContent.indexOf('VERIFIED') !== -1;
+            const nextMode = currentlyDouble ? 'single' : 'double';
+            const paint = (isDouble) => {
+                badge.textContent = isDouble ? 'VERIFIED (2 READS)' : 'SINGLE READ';
+                badge.className = 'px-4 py-2 rounded-full text-sm font-bold ' + (isDouble ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800');
+                btn.textContent = isDouble ? 'Switch to single read' : 'Switch to verified (2 reads)';
+                btn.className = 'w-full px-4 py-3 text-sm font-semibold rounded-lg transition-colors duration-200 ' + (isDouble ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-green-600 hover:bg-green-700 text-white');
+            };
+            btn.disabled = true;
+            btn.textContent = 'Updating...';
+            fetch('{{ route("admin.operations.scan-verify") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
+                },
+                body: JSON.stringify({ mode: nextMode })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    paint(data.mode === 'double');
+                    feedback.innerHTML = '<div class="p-2 bg-green-50 border border-green-200 rounded text-green-800 text-xs">' + data.message + '</div>';
+                    feedback.classList.remove('hidden');
+                    setTimeout(() => feedback.classList.add('hidden'), 5000);
+                } else {
+                    paint(currentlyDouble);
+                }
+                btn.disabled = false;
+            })
+            .catch(err => {
+                feedback.innerHTML = '<div class="p-2 bg-red-50 border border-red-200 rounded text-red-800 text-xs">Error: ' + err.message + '</div>';
+                feedback.classList.remove('hidden');
+                paint(currentlyDouble);
+                btn.disabled = false;
             });
         }
         </script>

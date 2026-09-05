@@ -124,6 +124,64 @@ class VanService
     // =================================================================
 
     /** Has batch 14 been run? Cached per process. */
+    /** Sep-2026 column (`handover_help_note`) — schema-guarded, memoised. */
+    public static function hasHelpNoteColumn(): bool
+    {
+        static $has = null;
+        if ($has === null) {
+            try {
+                $has = Schema::hasColumn('t_crm_prod_order', 'handover_help_note');
+            } catch (\Throwable $e) {
+                $has = false;
+            }
+        }
+        return $has;
+    }
+
+    /**
+     * 🆘 The rider cannot scan the label at the van (Sep-2026). Records his ask on
+     *    the order so the store Van tab and the web van card show it, and pushes
+     *    the dispatch-alert group. He is NOT blocked by this — his order page keeps
+     *    the scanner; this is the door to the manager's no-scan record.
+     */
+    public function handoverHelp(OrderModel $order, int $riderId, string $reason): array
+    {
+        if (!$this->available()) return $this->fail('Van features are not set up yet (SQL batch 14).');
+        if ((int) $order->assigned_rider_user_id !== $riderId) {
+            return $this->fail('That order is not assigned to you.');
+        }
+        $c = self::custodyState($order);
+        if (!$c['needs_handover']) {
+            return $this->fail($c['handed_over']
+                ? 'Ye order already collect ho chuka hai.'
+                : 'Ye order abhi van par nahi hai.');
+        }
+        $reason = trim($reason);
+        if (mb_strlen($reason) < 3) return $this->fail('Wajah likhein (kam az kam 3 huroof).');
+
+        try {
+            if (self::hasHelpNoteColumn()) {
+                $order->handover_help_note = mb_substr(now()->format('H:i') . ' — ' . $reason, 0, 190);
+                $order->save();
+            }
+            $riderName = DB::table('t_sys_user')->where('id', $riderId)->value('fullname') ?: ('Rider #' . $riderId);
+            try {
+                app(\App\Services\FirebaseService::class)->notifyVanHandoverHelp(
+                    (int) $order->id, (string) $order->order_number, $riderId, $riderName, $reason);
+            } catch (\Throwable $e) {
+                Log::warning('Van handover help push failed', ['order' => $order->id, 'error' => $e->getMessage()]);
+            }
+            Log::warning('Van handover help requested', [
+                'order' => $order->id, 'number' => $order->order_number,
+                'rider' => $riderId, 'van' => $order->van_user_id, 'reason' => $reason,
+            ]);
+            return ['ok' => true, 'message' => 'Store ko bata diya gaya hai — woh bina scan handover record karenge.'];
+        } catch (\Throwable $e) {
+            Log::error('VanService::handoverHelp failed', ['order' => $order->id, 'error' => $e->getMessage()]);
+            return $this->fail('Could not send that request.');
+        }
+    }
+
     public function available(): bool
     {
         static $ok = null;
@@ -650,6 +708,7 @@ class VanService
             $order->van_loaded_at = null;
             $order->van_loaded_by = null;
             $order->van_loaded_packets = null;
+            if (self::hasHelpNoteColumn()) $order->handover_help_note = null;
             $order->save();
             $order->changeStatus('processing', 'Taken off the van', $actorId);
 
@@ -679,7 +738,8 @@ class VanService
      * because `delivery_priority` is not cleared on this transition.
      */
     public function handoverScan(OrderModel $order, string $scanCode, int $scannerId,
-                                 ?float $lat = null, ?float $lng = null): array
+                                 ?float $lat = null, ?float $lng = null,
+                                 string $source = 'meet_card', ?bool $nearVan = null): array
     {
         if (!$this->available()) return $this->fail('Van features are not set up yet (SQL batch 14).');
 
@@ -732,13 +792,47 @@ class VanService
                     $order->dispatch_scanned_by      = $scannerId;
                     $order->dispatch_scanned_packets = json_encode(array_values($scanned));
                 }
+                // ⭐ A DELIVERY SCAN OLDER THAN THE HANDOVER WAS NOT A DELIVERY
+                //    SCAN (Sep-2026). The order page used to let a rider run the
+                //    door scanner on a box still on the van; that stamped
+                //    `delivery_scanned_at` at the meet-up and the column stopped
+                //    meaning "scanned at the customer". Clearing it here keeps the
+                //    column honest and lets the real door scan stamp it afresh.
+                if (!empty($order->delivery_scanned_at)) {
+                    $order->delivery_scanned_at      = null;
+                    $order->delivery_scanned_by      = null;
+                    if (Schema::hasColumn('t_crm_prod_order', 'delivery_scanned_packets')) {
+                        $order->delivery_scanned_packets = null;
+                    }
+                }
+                // The scan happened after all — retire any "label won't scan" ask.
+                if (self::hasHelpNoteColumn() && !empty($order->handover_help_note)) {
+                    $order->handover_help_note = null;
+                }
             }
             $order->save();
 
             if ($complete) {
+                // ⭐ A LATE SCAN IS ALLOWED, AND SAYS SO (Sep-2026). The rider who
+                //    forgot to collect at the meet-up scans the box from his order
+                //    page at the customer's door — that IS the way out we give
+                //    him, never a block. But the note and a warning line make it
+                //    visible: the store sees ⚠ on the row, Taimur can grep it.
+                $late = $source === 'order_page' && $nearVan === false;
+                $note = $late ? 'Handed over from the van (late scan at delivery)' : 'Handed over from the van';
+                if ($source === 'order_page') {
+                    try {
+                        Log::log($late ? 'warning' : 'info', $late ? 'Late van handover scan' : 'Van handover scan from order page', [
+                            'order' => $order->id, 'number' => $order->order_number,
+                            'rider' => $scannerId, 'van' => $order->van_user_id, 'near_van' => $nearVan,
+                        ]);
+                    } catch (\Throwable $e) {
+                        // a log line is never worth a failed handover
+                    }
+                }
                 // → OFD, still undispatched. `van_user_id` is KEPT: it is how the
                 //   reports answer "which orders went out on the van".
-                $order->changeStatus(self::STATUS_OFD, 'Handed over from the van', $scannerId);
+                $order->changeStatus(self::STATUS_OFD, $note, $scannerId);
 
                 // The last box of the last rider ends the meet-up by itself —
                 // the driver never needed a "Done" press for a finished handover.
@@ -783,6 +877,7 @@ class VanService
         try {
             $order->handover_at = now();
             $order->handover_scanned_by = $actorId;
+            if (self::hasHelpNoteColumn()) $order->handover_help_note = null;
             $order->save();
             $order->changeStatus(self::STATUS_OFD,
                 'Handed over without scan: ' . mb_substr($reason, 0, 180), $actorId);
@@ -902,6 +997,18 @@ class VanService
         }
 
         try {
+            // The rider's "label won't scan" note rides along when the column
+            // exists (Sep-2026 SQL) — `help_note` is null on a server without it.
+            $cols = [
+                'o.id', 'o.order_number', 'o.order_status', 'o.assigned_rider_user_id',
+                'o.delivery_priority', 'o.expected_packets', 'o.handover_at',
+                'o.eta_calculated_at', 'o.address_line1', 'o.address_city',
+                'o.van_loaded_packets', 'o.van_loaded_at',
+                'u.fullname as rider_name',
+                DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
+            ];
+            if (self::hasHelpNoteColumn()) $cols[] = 'o.handover_help_note';
+
             $rows = DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
@@ -909,14 +1016,7 @@ class VanService
                 ->whereIn('o.order_status', [self::STATUS_ON_VAN, self::STATUS_OFD])
                 ->whereNotNull('o.van_loaded_at')
                 ->orderByRaw('COALESCE(o.delivery_priority, 999) ASC, o.id ASC')
-                ->get([
-                    'o.id', 'o.order_number', 'o.order_status', 'o.assigned_rider_user_id',
-                    'o.delivery_priority', 'o.expected_packets', 'o.handover_at',
-                    'o.eta_calculated_at', 'o.address_line1', 'o.address_city',
-                    'o.van_loaded_packets', 'o.van_loaded_at',
-                    'u.fullname as rider_name',
-                    DB::raw('CONCAT(COALESCE(c.first_name,""), " ", COALESCE(c.last_name,"")) as customer_name'),
-                ]);
+                ->get($cols);
 
             $mine = [];
             $byRider = [];
@@ -951,6 +1051,10 @@ class VanService
                     'loaded_at'     => $r->van_loaded_at,
                     'handover_at'   => $r->handover_at,
                     'dispatched_at' => $r->eta_calculated_at,
+                    // ⚠ "Label scan nahi ho raha" — the rider asked the store for a
+                    //   no-scan handover (Sep-2026). Cleared by the scan, the
+                    //   override, or the unload. Null = nothing asked.
+                    'help_note'     => $r->handover_at === null ? ($r->handover_help_note ?? null) : null,
                 ];
 
                 if ((int) $r->assigned_rider_user_id === $vanUserId) {
@@ -1397,6 +1501,50 @@ class VanService
      *   the manifest drops the order (it filters on_van/OFD), so the driver just
      *   brings the box back. Everything else must go through a van door.
      */
+    /**
+     * ⭐⭐ ONE READING OF "WHOSE HANDS IS THIS BOX IN" (Sep-2026).
+     *
+     * The guard below, the rider's order page and the delivery-scan endpoints
+     * all need the same four facts about an order. Until Sep-5 the order page
+     * had NONE of them — it could not tell a box riding on somebody's van from
+     * a box in the rider's hand, so it offered "Mark Delivered" (and the
+     * delivery scanner) for an order still on the van. Arslan scanned two boxes
+     * through that scanner at the meet-up on Sep-3, thinking it was the
+     * handover. Derived here ONCE so the page can never disagree with the guard
+     * about whether a handover is still owed.
+     *
+     * Pure: reads the model, touches nothing, never throws.
+     *
+     * @return array{on_van:bool, loaded:bool, handed_over:bool, drivers_own:bool,
+     *               fresh:bool, needs_handover:bool}
+     */
+    public static function custodyState($order): array
+    {
+        try {
+            $current    = (string) ($order->order_status ?? '');
+            $loaded     = !empty($order->van_loaded_at) && !empty($order->van_user_id);
+            $handedOver = !empty($order->handover_at);
+            $driversOwn = $loaded
+                && (int) ($order->assigned_rider_user_id ?? 0) === (int) $order->van_user_id;
+            $fresh = $loaded && $order->van_loaded_at >= now()->subHours(self::STALE_TAG_HOURS);
+
+            return [
+                'on_van'         => $current === self::STATUS_ON_VAN,
+                'loaded'         => $loaded,
+                'handed_over'    => $handedOver,
+                'drivers_own'    => $driversOwn,
+                'fresh'          => $fresh,
+                // The one question the order page asks: is a handover scan
+                // still the rider's next step for this box?
+                'needs_handover' => $current === self::STATUS_ON_VAN
+                    && $loaded && !$handedOver && !$driversOwn && $fresh,
+            ];
+        } catch (\Throwable $e) {
+            return ['on_van' => false, 'loaded' => false, 'handed_over' => false,
+                    'drivers_own' => false, 'fresh' => false, 'needs_handover' => false];
+        }
+    }
+
     public static function manualChangeBlock($order, string $targetStatus): ?string
     {
         $refusal = self::manualChangeReason($order, $targetStatus);
@@ -1440,16 +1588,18 @@ class VanService
             if ($targetStatus === self::STATUS_ON_VAN) return null;
 
             $current    = (string) ($order->order_status ?? '');
-            $loaded     = !empty($order->van_loaded_at) && !empty($order->van_user_id);
-            $handedOver = !empty($order->handover_at);
+            // Same reading as the order page (see custodyState) — the guard and
+            // the page must never disagree about whether a handover is owed.
+            $custody    = self::custodyState($order);
+            $loaded     = $custody['loaded'];
+            $handedOver = $custody['handed_over'];
 
             // ⭐⭐ THE DRIVER'S OWN STOPS ARE NEVER "HANDED OVER" — he cannot
             //    collect from himself, so `handover_at` stays NULL on them for
             //    life and his load scan IS their custody proof. Without this
             //    exclusion the guard below would refuse to let him deliver his
             //    own boxes, which is most of what the van actually does.
-            $isDriversOwn = $loaded
-                && (int) ($order->assigned_rider_user_id ?? 0) === (int) $order->van_user_id;
+            $isDriversOwn = $custody['drivers_own'];
 
             if ($current !== self::STATUS_ON_VAN) {
                 // ⚠⚠ THE TWO-HOP BYPASS (found in prod, 21 Aug). The rules below
@@ -1546,10 +1696,22 @@ class VanService
                      . 'time. Changing it by hand here would put it on the road with no ETA.';
             }
 
-            return 'This order is on the van. '
-                 . ($rider ? $rider : 'The assigned rider')
-                 . ' must collect it with the handover scan (or a manager records a no-scan '
-                 . 'handover from the van panel) — that is what proves who took it and where.';
+            // ⭐ NAME ONLY DOORS THAT EXIST (Sep-2026). This used to promise "a
+            //    manager records a no-scan handover from the van panel" — an
+            //    endpoint nothing on mobile or web ever called. Now the three
+            //    real exits: the rider's own scan (works anywhere, the order
+            //    page offers it), the store's no-scan record (store Van tab /
+            //    web van card), or taking the box off the van.
+            $riderName = $rider ?: 'the assigned rider';
+            if ($targetStatus === 'delivered') {
+                return 'Ye order abhi van par hai — pehle van handover scan karein '
+                     . '(order page par "Van handover scan karein"). Label scan nahi ho raha '
+                     . 'to store se "Bina scan handover" record karwayein.';
+            }
+            return 'This order is on the van and ' . $riderName . ' has not collected it. '
+                 . 'He scans it from his order page or the meet-up card; if the label cannot be '
+                 . 'scanned, record a no-scan handover from the Van tab; or set it to Processing '
+                 . 'to take it off the van.';
         } catch (\Throwable $e) {
             // The guard must never turn a status change into a 500. Fail open =
             // pre-van behaviour.

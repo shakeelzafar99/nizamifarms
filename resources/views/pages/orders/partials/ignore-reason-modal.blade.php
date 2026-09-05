@@ -7,10 +7,16 @@
   this lives in its own partial, included UNCONDITIONALLY, and publishes exactly one
   global: `window.nfPickIgnoreReason({orderNumber, onPick})`.
 
-  ⚠ WRAPPED IN @verbatim ON PURPOSE. There is not a single Blade variable in here, and
-    the JS below contains braces that Blade would otherwise be free to misread — the
-    same class of trap that has bitten this codebase before. Nothing to interpolate,
-    so nothing is interpolated.
+  ⚠ WRAPPED IN A VERBATIM BLOCK ON PURPOSE. There is not a single Blade variable in
+    here, and the JS below contains braces that Blade would otherwise be free to
+    misread — the same class of trap that has bitten this codebase before. Nothing to
+    interpolate, so nothing is interpolated.
+
+  ⚠⚠ NEVER write that directive with its @ sigil inside this comment. Blade lifts
+    verbatim blocks out of the source BEFORE it strips comments, so a mention up here
+    becomes the real opening directive: it swallows the closing brace-brace-dash of
+    this comment along with the whole block, and the entire comment then prints as
+    plain text at the top of the orders page. (Exactly what happened on 2026-09-05.)
 --}}
 @verbatim
 <style>

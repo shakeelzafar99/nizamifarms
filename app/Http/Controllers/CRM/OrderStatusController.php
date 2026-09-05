@@ -275,8 +275,9 @@ class OrderStatusController extends Controller
                 $ledger = \App\Models\FIN\LedgerModel::find($order->ledger_transaction_id);
 
                 if ($ledger && $ledger->approval_status !== \App\Models\FIN\LedgerModel::STATUS_REVERSED) {
-                    // Check if ledger is settled
-                    if ($ledger->settlement_status === 'settled') {
+                    // Check if ledger is settled WITH cash (a free order's auto-settled
+                    // Rs 0 invoice moved no money — cancelling it just reverses the row)
+                    if ($ledger->isSettledWithCash()) {
                         return response()->json([
                             'success' => false,
                             'message' => 'Cannot cancel order: Invoice has already been settled. Please reverse the settlement first.',

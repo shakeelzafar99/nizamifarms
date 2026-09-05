@@ -1990,6 +1990,32 @@ class VehicleService
                     ->moveCargo($vehicleId, (int) $displaced->user_id, $userId, $actorId);
             }
 
+            // ⭐ THE OPEN PROBLEMS GO WITH THE MACHINE TOO (owner ruling 5-Sep) — same reasoning
+            //   as the cargo above, and outside the transaction for the same reason: the
+            //   assignment is what must be atomic. A note or a push that fails must never undo
+            //   a handover that really happened.
+            app(VehicleTicketService::class)->onHandover(
+                $vehicleId, isset($displaced->user_id) ? (int) $displaced->user_id : null, $userId, $actorId
+            );
+            // 🔧 …and its booked workshop day: the errand belongs to the machine, so the new
+            //   holder is now the one taking it in (and is asked to accept it afresh).
+            app(WorkshopVisitService::class)->onHandover(
+                $vehicleId, isset($displaced->user_id) ? (int) $displaced->user_id : null, $userId, $actorId
+            );
+
+            /**
+             * ⚠⚠ AND THE MACHINE HE JUST STEPPED OFF. Giving a rider a bike releases whatever
+             *    else he was holding (step 3 above) — that machine changed hands too, and its
+             *    threads deserve the same dated line. Without this the visibility DID follow
+             *    the registry (he stops seeing its tickets, correctly) while the thread said
+             *    nothing about why he stopped answering. Found by walking the displaced side,
+             *    not the obvious one.
+             *  ⚠ No new holder, so no push — exactly like release().
+             */
+            if ($vacatedVehicleId && $vacatedVehicleId !== $vehicleId) {
+                app(VehicleTicketService::class)->onHandover($vacatedVehicleId, $userId, null, $actorId);
+            }
+
             // ⚠ A handover re-attributes claims and readings, so the machine's whole
             //   derivation changes. BOTH calls are needed: bumpServiceEvidence clears
             //   this class's memos + the shared cache, and VehicleResolver keeps its
@@ -2182,6 +2208,14 @@ class VehicleService
             if (!$displacedSettleFollows) {
                 $this->disarmHomeJourney((int) $current->user_id);
             }
+
+            // ⭐ The machine's open problems get the same dated line as on assign() — the bike
+            //   is now with nobody, and a reader of the thread should be able to see that.
+            //   No push here: there is no new holder to warn, and the man who just handed it
+            //   back does not need telling about a bike he no longer has.
+            app(VehicleTicketService::class)->onHandover(
+                $vehicleId, (int) $current->user_id, null, $actorId
+            );
 
             Log::info('Vehicle released', ['vehicle_id' => $vehicleId, 'from_user' => $current->user_id, 'on' => $date]);
             return ['ok' => true, 'message' => 'Released.', 'changed' => true,

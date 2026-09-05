@@ -29,6 +29,9 @@ class VehicleTicketController extends Controller
      *  WhatsApp voice-note caps so one attachment path behaves like the others. */
     private const MAX_MEDIA_KB = 8192;
 
+    /** Why the last voice note was refused, in the rider's words — shown verbatim on the phone. */
+    private string $lastVoiceError = '';
+
     private bool $mobileContext = false;
 
     /**
@@ -38,6 +41,17 @@ class VehicleTicketController extends Controller
      *   note silently missing, and a rider has no other way to know.
      */
     private int $lastFailed = 0;
+
+    /**
+     * ⚠⚠ How many uploads the last attachUploads() call DID store. This exists because the
+     *    string it returns was being read as a success flag, and for exactly ONE successful
+     *    attachment that string is '' ("nothing extra to say") — which reply() took to mean
+     *    "every attachment failed". So every voice-only reply, and every single-photo reply
+     *    with no caption, was SAVED and then reported to the phone as "Not sent". The rider
+     *    retapped and sent it twice. That is Waseem's 5-Sep 12:03 "the attachment could not
+     *    be uploaded" — reproduced on the replica: HTTP 422 with one new message row.
+     */
+    private int $lastSaved = 0;
 
     public function __construct(private VehicleTicketService $tickets)
     {
@@ -178,11 +192,22 @@ class VehicleTicketController extends Controller
             $status   = $res['status'] ?? $status;
         }
 
+        $this->lastVoiceError = '';
         $attached = $this->attachUploads($request, $user, (int) $id, $reopened || $sentAny, $reopened, $status);
-        if (!$sentAny && $attached === '') {
+        /* ⚠⚠ Judge by the COUNT, not the string. `$attached === ''` is ALSO what one successful
+             attachment returns, so this branch fired on every voice-only reply after the note
+             had already been stored — see $lastSaved. */
+        if (!$sentAny && $this->lastSaved === 0) {
             // Every attachment failed and there was no text — say so rather than
             // claiming success on an empty message.
-            return response()->json(['success' => false, 'message' => 'The attachment could not be uploaded.'], 422);
+            // ⚠ The phone shows this string VERBATIM as the alert (it is
+            //   `e.response.data.message`), so it must name the thing that failed and
+            //   tell the rider what to do — "The attachment could not be uploaded" told
+            //   Waseem neither.
+            $msg = $this->lastVoiceError !== ''
+                ? $this->lastVoiceError
+                : 'Photo ya voice note upload nahi hui — dobara bhejein. (The attachment could not be uploaded.)';
+            return response()->json(['success' => false, 'message' => $msg], 422);
         }
 
         $this->notify('replied', (int) $id, $user);
@@ -277,6 +302,28 @@ class VehicleTicketController extends Controller
             //   same AAC stream half a dozen ways, and a renamed .exe must not land in
             //   the media folder. Same allow-list as WhatsAppController::sendVoiceNote.
             $detected = $file && $file->isValid() ? strtolower((string) $file->getMimeType()) : '';
+            /**
+             * ⚠⚠ AN EMPTY RECORDING IS THE COMMON FIRST-SEND FAILURE (Waseem, 5-Sep 12:03:
+             *    "Not sent — the attachment could not be uploaded", then fine on the retry).
+             *    A 0-byte file sniffs as `application/x-empty` and a truncated one as
+             *    `application/octet-stream`; neither is on the allow-list, so it was dropped
+             *    with NO log line — the 5-Sep log has nothing at all for that minute. Refuse
+             *    it by name so the rider knows to re-record, and log every reject with what
+             *    was seen, so the next one is a diagnosis instead of a mystery.
+             */
+            $size = $file && $file->isValid() ? (int) $file->getSize() : 0;
+            if ($size < 1024) {
+                Log::warning('Ticket voice note rejected: empty or truncated file', [
+                    'ticket' => $ticketId, 'user' => $user->id ?? null, 'bytes' => $size,
+                    'client_name' => $file ? $file->getClientOriginalName() : null,
+                    'client_mime' => $file ? $file->getClientMimeType() : null,
+                    'sniffed' => $detected,
+                ]);
+                $this->lastVoiceError = 'Voice note khaali thi — dobara record kar ke bhejein. '
+                    . '(The recording was empty; please record it again.)';
+                $failed++;
+                $file = null;   // fall through the allow-list with nothing to check
+            }
             $allowed  = ['audio/mp4', 'audio/aac', 'audio/x-m4a', 'audio/m4a', 'audio/mpeg',
                          'audio/mp3', 'audio/ogg', 'audio/opus', 'audio/3gpp', 'audio/amr',
                          'video/mp4',  // Android often reports .m4a as video/mp4
@@ -284,7 +331,18 @@ class VehicleTicketController extends Controller
                          //   this, not audio/aac. Found by the real-HTTP smoke test, which
                          //   uploaded one and got a "success" with the note silently missing.
                          'audio/x-hx-aac-adts', 'audio/vnd.dlna.adts'];
-            if (!in_array($detected, $allowed, true)) {
+            if ($file === null) {
+                // already counted above
+            } elseif (!in_array($detected, $allowed, true)) {
+                // ⚠ Was a silent `$failed++`. Say what was seen — this is the only way a
+                //   new Android label ever gets added to the allow-list.
+                Log::warning('Ticket voice note rejected: unsupported format', [
+                    'ticket' => $ticketId, 'user' => $user->id ?? null, 'bytes' => $size,
+                    'client_name' => $file->getClientOriginalName(),
+                    'client_mime' => $file->getClientMimeType(), 'sniffed' => $detected,
+                ]);
+                $this->lastVoiceError = 'Voice note ka format support nahi hua (' . $detected . '). '
+                    . 'Dobara record karein. (Unsupported audio format.)';
                 $failed++;
             } else {
                 $path = $this->storeOne($file, $ticketId, 'voice');
@@ -300,6 +358,13 @@ class VehicleTicketController extends Controller
                         $reopened = $reopened || !empty($res['reopened']);
                         $status   = $res['status'] ?? $status;
                     } else {
+                        // The file saved but the TICKET refused it (closed too long ago, not
+                        // visible…). That reason is the useful one — keep it and say it.
+                        Log::warning('Ticket voice note refused by the ticket', [
+                            'ticket' => $ticketId, 'user' => $user->id ?? null,
+                            'reason' => $res['message'] ?? null,
+                        ]);
+                        $this->lastVoiceError = (string) ($res['message'] ?? '');
                         $failed++;
                         $this->deleteQuietly($path);
                     }
@@ -308,6 +373,7 @@ class VehicleTicketController extends Controller
         }
 
         $this->lastFailed = $failed;
+        $this->lastSaved  = $saved;   // ⚠ the caller must read THIS, never test the string for ''
         if ($saved && !$failed) return $saved === 1 ? '' : "{$saved} attachments added.";
         if ($saved && $failed)  return "{$saved} attached, {$failed} could not be uploaded.";
         if ($failed)            return $alreadySent

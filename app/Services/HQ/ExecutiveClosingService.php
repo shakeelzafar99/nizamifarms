@@ -1318,27 +1318,113 @@ class ExecutiveClosingService
             fn () => $this->salaryByEmployeeCompute($unit, $year, $month));
     }
 
+    /**
+     * ⭐ ONE ROW PER EMPLOYEE (Sep-2026, owner ruling). The salary engine emits one row per
+     * PAYMENT — a person paid in two instalments, or paid plus holding an unrecovered
+     * advance, appeared two or three times (Aug-2026: 41 rows for 12 people). Level 1 is
+     * the summary you scan, so it groups here and the individual payments moved to
+     * Level 2 (salaryEmployeeDetail), matching every other drill on this page.
+     * The total is unchanged — grouping only folds rows together.
+     */
     private function salaryByEmployeeCompute(string $unit, int $year, int $month): array
     {
         [$start, $end] = $this->period($unit, $year, $month);
         $khaasId = (int) ($this->khaasBusinessUnitId() ?: -1);
         $nfName = 'Nizami Farms'; $khName = 'Khaas · Frozen';
-        $out = [];
+        $groups = [];
 
         // Same engine as the headline Salaries figure, so the drill always sums to it.
-        // Rows are per employee and include advances already paid out but not yet recovered,
-        // labelled as such so an unpaid month explains itself instead of showing a bare number.
+        // Includes advances already paid out but not yet recovered, labelled as such so an
+        // unpaid month explains itself instead of showing a bare number.
         foreach ((new \App\Services\HR\SalaryCostService())->detailForWindow($start, $end, $khaasId) as $r) {
             if ($unit === self::UNIT_KH && !$r['is_khaas']) { continue; }
             if ($unit === self::UNIT_NF && $r['is_khaas']) { continue; }
+
+            // Key on user_id; fall back to the name so a legacy slip with no user still gets
+            // its own row instead of merging every such slip into one.
+            $key = $r['user_id'] !== null ? 'u' . $r['user_id'] : 'n:' . $r['employee'];
+            if (!isset($groups[$key])) {
+                $groups[$key] = [
+                    'user_id'  => $r['user_id'],
+                    'name'     => $r['employee'],
+                    'unit'     => $r['is_khaas'] ? $khName : $nfName,
+                    'payments' => 0,
+                    'amount'   => 0.0,
+                    'advances' => 0,
+                ];
+            }
+            $groups[$key]['payments']++;
+            $groups[$key]['amount'] += (float) $r['amount'];
+            if (($r['kind'] ?? '') === 'advance_open') { $groups[$key]['advances']++; }
+        }
+
+        $out = [];
+        foreach ($groups as $g) {
+            // Keep the wording the ungrouped list had: every entry an advance = the salary
+            // itself is still unpaid; only some = a paid salary plus an advance still open.
+            $suffix = '';
+            if ($g['advances'] > 0) {
+                $suffix = $g['advances'] === $g['payments']
+                    ? ' · advance — salary not paid yet'
+                    : ' · includes an advance not yet recovered';
+            }
             $out[] = [
-                'employee' => $r['employee'] . ($r['note'] ? ' · ' . $r['note'] : ''),
-                'unit'     => $r['is_khaas'] ? $khName : $nfName,
-                'amount'   => round((float) $r['amount']),
+                'user_id'      => $g['user_id'],
+                'employee'     => $g['name'] . $suffix,
+                'employee_key' => $g['name'],   // clean name — Level 2 lookup + panel title
+                'unit'         => $g['unit'],
+                'payments'     => $g['payments'],
+                'amount'       => round($g['amount']),
             ];
         }
         usort($out, fn ($a, $b) => $b['amount'] <=> $a['amount']);
         return $out;
+    }
+
+    /**
+     * Salaries → Level 2: the individual payments behind one employee's grouped row.
+     * Reads the SAME engine as Level 1, so the entries always add up to the row clicked.
+     * Not cached — Level 1 is, and this is one person's short list.
+     */
+    public function salaryEmployeeDetail(string $unit, int $year, int $month, ?int $userId, string $employee = ''): array
+    {
+        $unit = $this->normalizeUnit($unit);
+        if ($unit === self::UNIT_QB) {
+            return []; // salaries are never a Qurbani cost
+        }
+        [$start, $end] = $this->period($unit, $year, $month);
+        $khaasId = (int) ($this->khaasBusinessUnitId() ?: -1);
+        $out = [];
+
+        foreach ((new \App\Services\HR\SalaryCostService())->detailForWindow($start, $end, $khaasId) as $r) {
+            if ($unit === self::UNIT_KH && !$r['is_khaas']) { continue; }
+            if ($unit === self::UNIT_NF && $r['is_khaas']) { continue; }
+            $isMine = $userId !== null
+                ? $r['user_id'] === $userId
+                : ($r['user_id'] === null && $r['employee'] === $employee);
+            if (!$isMine) { continue; }
+
+            $out[] = [
+                'raw_date' => (string) ($r['date'] ?? ''),
+                'kind'     => (string) ($r['kind'] ?? ''),
+                'amount'   => round((float) $r['amount']),
+            ];
+        }
+
+        // Oldest first, biggest first within a day — reads like a statement.
+        usort($out, function ($a, $b) {
+            return ($a['raw_date'] <=> $b['raw_date']) ?: ($b['amount'] <=> $a['amount']);
+        });
+
+        return array_map(fn ($r) => [
+            'date'   => $r['raw_date'] !== '' ? Carbon::parse($r['raw_date'])->format('M d') : '—',
+            'type'   => match ($r['kind']) {
+                'advance_open' => 'Advance — salary not paid yet',
+                'slip'         => 'Salary slip (legacy)',
+                default        => 'Salary payment',
+            },
+            'amount' => $r['amount'],
+        ], $out);
     }
 
 

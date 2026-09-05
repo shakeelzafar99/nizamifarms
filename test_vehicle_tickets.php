@@ -137,8 +137,36 @@ DB::table('t_ops_vehicle_assignment')->insert([
 VehicleResolver::flush(); RiderDayLegs::flush();
 ok('after a handover the NEW keeper can read the bikes tickets',
    $svc->mayRead($otherRider, $svc->find($t1)), true);
-ok('  …and the original reporter still can (he raised it)',
+/**
+ * ⭐⭐ OWNER RULING, 5-Sep-2026 — this assertion is the OPPOSITE of what it used to be.
+ *
+ *    "Since the bike moved to someone else, the new owner should be the one seeing this
+ *     ticket until it's moved back."
+ *
+ *    A ticket belongs to the MACHINE, so `opened_by` is no longer a standalone grant. The
+ *    old rule is exactly what put a handed-back bike's ticket on the previous rider's phone
+ *    an hour after it became someone else's. The row still records who raised it — the
+ *    history never moves — but the VIEW follows the registry.
+ */
+ok('  …and the original reporter can NO LONGER read it — it went with the bike',
+   $svc->mayRead($rider, $svc->find($t1)), false);
+ok('  …nor does it appear in his list',
+   in_array($t1, array_column($svc->listFor($rider, ['status' => 'all', 'limit' => 50]), 'id'), true), false);
+
+// …and "until it's moved back": give the machine back, and it is his to see again. The
+// rest of the suite continues with him holding it, as it did before this section.
+DB::table('t_ops_vehicle_assignment')->where('vehicle_id', $riderVid)->whereNull('released_on')
+    ->update(['released_on' => now()->format('Y-m-d')]);
+DB::table('t_ops_vehicle_assignment')->insert([
+    'vehicle_id' => $riderVid, 'user_id' => (int) $rider->id,
+    'assigned_on' => now()->format('Y-m-d'), 'assigned_by' => (int) $manager->id,
+    'created_at' => now(), 'updated_at' => now(),
+]);
+VehicleResolver::flush(); RiderDayLegs::flush();
+ok('  …and when the bike comes BACK to him, so does the ticket',
    $svc->mayRead($rider, $svc->find($t1)), true);
+ok('  …while the interim keeper no longer sees it',
+   $svc->mayRead($otherRider, $svc->find($t1)), false);
 
 // ─────────────────────────────────────────────────────────────────────────────
 head('§4 replies');
@@ -333,13 +361,15 @@ $waTables = array_values(array_filter(['t_wa_conversations', 't_wa_messages', 't
 $waBefore = [];
 foreach ($waTables as $t) $waBefore[$t] = DB::table($t)->count();
 // The full flow: open with text, photo reply, voice reply, close.
-// ⚠ §3 handed $rider's bike to $otherRider inside this transaction, so the keeper now
-//   is $otherRider — the manager opens it FOR him against that machine.
-$iso = $svc->open($manager, ['vehicle_id' => $riderVid, 'opened_for_user_id' => (int) $otherRider->id,
+// ⚠ §3 handed the machine to $otherRider and then BACK to $rider (the "until it's moved
+//   back" ruling), so the keeper here is $rider again — the manager opens it FOR him.
+//   The replier below must be the keeper: since 5-Sep visibility follows the registry, a
+//   non-keeper's reply is refused and the message count would come up short.
+$iso = $svc->open($manager, ['vehicle_id' => $riderVid, 'opened_for_user_id' => (int) $rider->id,
                              'title' => 'Isolation probe', 'body' => 'text']);
 ok('the probe ticket opened', $iso['ok'] ?? false, true);
 $svc->reply($manager, (int) $iso['ticket_id'], ['kind' => 'photo', 'media_path' => 'vehicle-tickets/x/p.jpg', 'media_mime' => 'image/jpeg']);
-$svc->reply($otherRider, (int) $iso['ticket_id'], ['kind' => 'voice', 'media_path' => 'vehicle-tickets/x/v.m4a', 'media_mime' => 'audio/mp4', 'duration_ms' => 3000]);
+$svc->reply($rider, (int) $iso['ticket_id'], ['kind' => 'voice', 'media_path' => 'vehicle-tickets/x/v.m4a', 'media_mime' => 'audio/mp4', 'duration_ms' => 3000]);
 $svc->close($manager, (int) $iso['ticket_id'], 'done');
 foreach ($waTables as $t) {
     ok("no row was written to $t", DB::table($t)->count(), $waBefore[$t]);

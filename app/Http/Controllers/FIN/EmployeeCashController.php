@@ -2299,7 +2299,18 @@ class EmployeeCashController extends Controller
             
             // Get all invoices
             $allInvoices = $invoicesQuery->orderBy('transaction_date', 'desc')->get();
-            
+
+            // ⭐ Sep-2026: an UNSETTLED row with nothing left to collect (Rs 0 free /
+            // replacement order, or a row worn down to 0) is not "owed" — drop it from
+            // the open/partial lists and their counts. The settle lists already drop
+            // anything under Rs 0.01 (SH-21250 guard), so such a row could never be
+            // actioned here; it only cluttered the rider's card as "Open · ✓ Paid".
+            // New Rs 0 cash invoices are auto-settled at posting; this is the backstop.
+            $allInvoices = $allInvoices->reject(function($invoice) {
+                return $invoice->settlement_status !== 'settled'
+                    && round((float) $invoice->amount - (float) ($invoice->settled_amount ?? 0), 2) < 0.01;
+            });
+
             // Separate into categories
             $openInvoices = $allInvoices->filter(function($invoice) {
                 return $invoice->settlement_status === 'open' && ($invoice->settled_amount ?? 0) == 0;

@@ -325,6 +325,78 @@ class LedgerModel extends BaseModel
     }
 
     /**
+     * ⭐ "Nothing to collect" — the ONE rule for Rs 0 cash invoices (Sep-2026).
+     *
+     * A free / replacement order (every line FREE, priced 0, or 100% discounted) is
+     * still invoiced at delivery so the order keeps its ledger link and the audit's
+     * "delivered without a ledger entry" list stays clean — but there is no cash for
+     * the rider to hand over, so the row is settled the moment it is posted. Before
+     * this rule such rows sat 'open' forever: the settle lists drop anything under
+     * Rs 0.01 (the SH-21250 guard), so no surface could ever settle them.
+     *
+     * Only CASH invoices: an online Rs 0 invoice keeps its normal approval flow.
+     *
+     * Identity = "settled, but no cash was ever settled on it" (settled_amount 0).
+     * Deliberately NOT keyed on the current amount: a re-price rewrites amount
+     * first and then asks this to decide whether to reopen. Exact on the data —
+     * every real settlement writes settled_amount ≥ amount > 0 (engine rule), and
+     * the replica has 0 settled cash invoices with settled_amount 0 and amount > 0.
+     */
+    public function isSettledNothingToCollect(): bool
+    {
+        return $this->transaction_type === self::TYPE_INVOICE
+            && $this->settlement_status === 'settled'
+            && $this->mode === self::MODE_CASH
+            && round((float) ($this->settled_amount ?? 0), 2) < 0.01;
+    }
+
+    /**
+     * True only when the holder actually handed cash over. Every "already settled"
+     * guard (cancel, rider change, payment-method change, post-settlement correction
+     * absorb) must ask THIS, not settlement_status: a free order auto-settled at
+     * posting has moved no money, so those actions stay allowed on it.
+     */
+    public function isSettledWithCash(): bool
+    {
+        return $this->settlement_status === 'settled' && !$this->isSettledNothingToCollect();
+    }
+
+    /**
+     * Keep the nothing-to-collect flag in step with the amount. Call after the
+     * amount is (re)written and BEFORE save(). Two directions, one place:
+     *   amount → 0 on an unsettled cash invoice  ⇒ settle it (nothing to collect)
+     *   amount → > 0 on a nothing-to-collect row ⇒ reopen it (the rider now holds cash)
+     * A row with real settled cash is never touched here.
+     */
+    public function refreshNothingToCollectSettlement(string $context): void
+    {
+        if ($this->transaction_type !== self::TYPE_INVOICE || $this->mode !== self::MODE_CASH) {
+            return;
+        }
+        if (round((float) ($this->settled_amount ?? 0), 2) >= 0.01) {
+            return; // real cash was settled on this row — not ours to flip
+        }
+        $stamp = now()->format('Y-m-d H:i:s');
+        $isZero = round((float) $this->amount, 2) < 0.01;
+
+        if ($isZero && $this->settlement_status !== 'settled') {
+            $this->settlement_status = 'settled';
+            $this->settled_amount = 0.00;
+            $this->settled_at = now();
+            $this->settled_via_ledger_id = null;
+            $this->comments = trim(($this->comments ?? '') .
+                " | Rs 0 invoice — nothing to collect, auto-settled ({$context}, {$stamp})", ' |');
+        } elseif (!$isZero && $this->isSettledNothingToCollect()) {
+            $this->settlement_status = 'open';
+            $this->settled_amount = 0.00;
+            $this->settled_at = null;
+            $this->settled_via_ledger_id = null;
+            $this->comments = trim(($this->comments ?? '') .
+                " | Re-priced to Rs " . number_format((float) $this->amount, 2) . " — reopened, rider now holds cash ({$context}, {$stamp})", ' |');
+        }
+    }
+
+    /**
      * Generate content hash for deduplication
      */
     public static function generateContentHash($data): string

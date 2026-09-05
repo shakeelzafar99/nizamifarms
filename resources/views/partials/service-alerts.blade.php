@@ -40,7 +40,7 @@
         + (a.keeper_name ? '<br><span style="opacity:.85;">with '+esc(a.keeper_name)+'</span>' : '')
         +'</div>'
         +'<span data-dismiss="'+esc(a.alert_key)+'" title="Dismiss" style="cursor:pointer;font-size:18px;line-height:1;opacity:.85;">&times;</span></div>'
-        +'<div style="margin-top:8px;"><a href="/riders-map" style="color:#FECACA;font-weight:700;text-decoration:underline;">Open Bikes &rarr;</a></div>';
+        +'<div style="margin-top:8px;"><a href="/riders-map#bikes?vehicle='+encodeURIComponent(a.vehicle_id||'')+'" style="color:#FECACA;font-weight:700;text-decoration:underline;">Open Bikes &rarr;</a></div>';
       box.appendChild(el);
       el.querySelector('[data-dismiss]').addEventListener('click', function(){
         var key = this.getAttribute('data-dismiss');

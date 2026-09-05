@@ -270,7 +270,7 @@ class LocationService
      * @param int|null $userId Optional user ID to check assigned location
      * @return array ['distance_meters' => int, 'is_remote' => bool, 'base_location' => object|null, 'error' => string|null]
      */
-    public static function calculateDistanceFromBase($latitude, $longitude, $userId = null, ?int $baseLocationId = null): array
+    public static function calculateDistanceFromBase($latitude, $longitude, $userId = null, ?int $baseLocationId = null, float $slackM = 0.0): array
     {
         // Explicit base (e.g. today's SHIFT location) wins when valid & active; else fall
         // back to the user's assigned location, else the primary.
@@ -310,9 +310,17 @@ class LocationService
             // the cap tightens it. Never loosens a location whose radius is already smaller.
             $effectiveRadius = self::effectiveOfficeRadius((float) $baseLocation->radius_meters);
 
+            // $slackM (Sep-2026): how much of the distance the fix's OWN error bar may explain —
+            // the caller passes min(accuracy, COARSE_FIX_M), the same forgiveness the checkout gate,
+            // the home-meter stamp and the home fence already give. Default 0 keeps every other
+            // caller (web Mark Attendance recompute, report recomputes) byte-identical.
+            $slackM = max(0.0, $slackM);
+
             return [
                 'distance_meters' => (int) round($distance),
-                'is_remote' => $distance > $effectiveRadius,
+                'is_remote' => ($distance - $slackM) > $effectiveRadius,
+                'effective_radius_m' => (int) round($effectiveRadius),
+                'slack_m' => (int) round($slackM),
                 'base_location' => $baseLocation,
                 'error' => null
             ];

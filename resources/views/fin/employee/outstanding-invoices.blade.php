@@ -978,7 +978,12 @@
                                             </span>
                                         @endif
                                     </div>
-                                    <span class="font-semibold text-gray-800">Rs. {{ number_format($invoice['amount'], 0) }}</span>
+                                    @if((float) $invoice['amount'] < 0.01)
+                                        {{-- Rs 0 free / replacement order, auto-settled at delivery --}}
+                                        <span class="font-medium text-gray-500" title="Free / replacement order — nothing to collect">Free</span>
+                                    @else
+                                        <span class="font-semibold text-gray-800">Rs. {{ number_format($invoice['amount'], 0) }}</span>
+                                    @endif
                                 </div>
                                 @endforeach
                             </div>
@@ -1201,7 +1206,12 @@
                                         Rs. {{ number_format($invoice->amount, 2) }}
                                     </td>
                                     <td class="px-3 py-2 whitespace-nowrap text-xs text-right">
-                                        <span class="text-green-700 font-medium">Rs. {{ number_format($invoice->settled_amount, 2) }}</span>
+                                        @if((float) $invoice->amount < 0.01)
+                                            {{-- Rs 0 free / replacement order, auto-settled at delivery --}}
+                                            <span class="text-gray-500 font-medium" title="Free / replacement order — nothing to collect">Free</span>
+                                        @else
+                                            <span class="text-green-700 font-medium">Rs. {{ number_format($invoice->settled_amount, 2) }}</span>
+                                        @endif
                                         @if(isset($invoice->settlement_breakdown) && $invoice->settlement_breakdown)
                                             <div class="text-xs text-blue-600 mt-1" style="white-space: nowrap;">
                                                 💸 Rs. {{ number_format($invoice->settlement_breakdown['deposit_amount'], 0) }} + 
@@ -1285,6 +1295,9 @@
                             <td class="px-3 py-2 whitespace-nowrap text-xs text-right">
                                 @if($invoice['outstanding_amount'] > 0)
                                     <span class="font-bold text-red-700">Rs. {{ number_format($invoice['outstanding_amount'], 2) }}</span>
+                                @elseif((float) $invoice['amount'] < 0.01)
+                                    {{-- Rs 0 free / replacement order: nothing was ever owed --}}
+                                    <span class="text-gray-500 font-medium" title="Free / replacement order — nothing to collect">Free</span>
                                 @else
                                     <span class="text-green-600 font-medium">✓ Paid</span>
                                 @endif

@@ -435,6 +435,24 @@ class FirebaseService
      *
      * Same 'receive_dispatch_alerts' audience as the other van/dispatch alerts.
      */
+    /**
+     * 🆘 A rider at the van cannot scan a label (Sep-2026). The manager's no-scan
+     * handover is the exit, and it lives on the store Van tab / web van card —
+     * this is what makes the ask reach whoever holds those screens.
+     * Same 'receive_dispatch_alerts' audience as the other van alerts.
+     */
+    public function notifyVanHandoverHelp(int $orderId, string $orderNumber, int $riderId, string $riderName, string $reason): void
+    {
+        $this->sendToPermissionGroup('receive_dispatch_alerts', [
+            'title' => '🆘 Van handover — label scan nahi ho raha',
+            'body'  => "{$riderName} · {$orderNumber}: {$reason}. Van tab se \"Bina scan handover\" record karein.",
+        ], [
+            'type'     => 'van_handover_help',
+            'order_id' => (string) $orderId,
+            'rider_id' => (string) $riderId,
+        ], 'dispatch_alerts', $riderId); // never push it back to the rider himself
+    }
+
     public function notifyVanStopForceClosed(int $driverId, string $driverName, string $awaitingSummary): void
     {
         $this->sendToPermissionGroup('receive_dispatch_alerts', [
@@ -539,7 +557,27 @@ class FirebaseService
             $actor = DB::table('t_sys_user')->where('id', $actorId)->value('fullname') ?: 'Someone';
 
             // The rider side of the conversation: who it was raised for, else who raised it.
-            $riderId = (int) ($t->opened_for_user_id ?: $t->opened_by);
+            /**
+             * ⭐⭐ THE RIDER TO TELL IS WHOEVER HOLDS THE MACHINE NOW (owner ruling 5-Sep-2026).
+             *
+             *    This used to be `opened_for_user_id ?: opened_by` — the man who RAISED it. Since
+             *    tickets follow the machine (`VehicleTicketService::visibilityScope`), the raiser
+             *    may no longer be able to open the thread at all: Waseem reported the chain, the
+             *    bike went to Rajab, Qasim replied — and the push would have gone to Waseem, who
+             *    taps it and is told "You cannot see that ticket", while Rajab, who can, hears
+             *    nothing. The registry already knows the keeper; ask it.
+             *
+             * ⚠ An UNASSIGNED machine has no keeper, so no rider push — managers only, exactly as
+             *   the visibility rule says. Never falls back to the raiser: a push to a thread you
+             *   cannot open is worse than silence.
+             */
+            $riderId = 0;
+            try {
+                $k = (new \App\Services\Riders\VehicleService())->keeperOf((int) $t->vehicle_id);
+                $riderId = $k ? (int) $k->user_id : 0;
+            } catch (\Throwable $e) {
+                $riderId = 0;
+            }
             $data = [
                 'type'      => 'vehicle_ticket',
                 'ticket_id' => (string) $ticketId,
@@ -574,34 +612,75 @@ class FirebaseService
                 return;
             }
 
-            // replied
-            $actorIsRider = $actorId === $riderId;
-            if (!$actorIsRider) {
-                if ($riderId && $riderId !== $actorId) {
-                    $this->notifyUser($riderId, [
-                        'title' => '🛠 Aap ke bike ka jawab aaya',
-                        'body'  => "{$actor}: {$bike} — {$t->title}",
-                    ], $data, 'shift_notifications');
+            /**
+             * ⭐⭐ A REPLY REACHES EVERYONE ALREADY IN THE CONVERSATION (owner, 5-Sep: "there was
+             *    no alert for the subsequent messages").
+             *
+             *    It used to tell exactly ONE person and stop:
+             *      • a manager replied → only the rider;
+             *      • a rider replied   → only the ASSIGNED manager.
+             *    So on a ticket Qasim and Shabib were both working, neither ever heard the other.
+             *    Measured on the replica before this change, over a four-message thread: Qasim was
+             *    told once, Shabib never — and with the bike unassigned, a manager's reply told
+             *    NOBODY at all.
+             *
+             *    A ticket thread is a chat. So the audience is: the machine's CURRENT keeper, the
+             *    manager it is assigned to, and every manager who has already spoken in it —
+             *    minus whoever just spoke.
+             *
+             * ⚠ Only people who can still OPEN the thread. Since tickets follow the machine, a
+             *   PREVIOUS keeper cannot; pushing him would be a notification to something he is
+             *   refused. That is why posters are filtered through `canManage` rather than simply
+             *   included.
+             * ⚠ Deliberately NOT the whole alert group on every message — that is the "opened"
+             *   audience. Being in the conversation is what earns the follow-ups. The group is
+             *   only the fallback when the conversation has nobody else in it yet.
+             */
+            $assigned   = (int) ($t->assigned_to ?: 0);
+            $recipients = [];
+            if ($riderId)  $recipients[$riderId]  = 'rider';
+            if ($assigned) $recipients[$assigned] = 'manager';
+            try {
+                $tickets = new \App\Services\Riders\VehicleTicketService();
+                $posters = DB::table(\App\Services\Riders\VehicleTicketService::T_MESSAGE)
+                    ->where('ticket_id', $ticketId)
+                    ->whereNotNull('user_id')
+                    ->distinct()->pluck('user_id');
+                foreach ($posters as $p) {
+                    $p = (int) $p;
+                    if ($p <= 0 || isset($recipients[$p])) continue;
+                    $u = \App\Models\User::find($p);
+                    if ($u && $tickets->canManage($u, true)) $recipients[$p] = 'manager';
                 }
-                return;
+            } catch (\Throwable $e) {
+                // The keeper and the assignee are already in — a failed thread read must not
+                // cost the notification altogether.
             }
+            unset($recipients[$actorId]);
 
-            $assigned = (int) ($t->assigned_to ?: 0);
-            if ($assigned && $assigned !== $actorId) {
-                $this->notifyUser($assigned, [
-                    'title' => '🛠 Rider replied on a bike ticket',
-                    'body'  => "{$actor}: {$bike} — {$t->title}",
-                ], $data, 'shift_notifications');
+            if (!$recipients) {
+                // Nobody is in the conversation yet (a rider answering an untouched ticket, or a
+                // manager writing on a machine nobody holds): reach the managers' group instead
+                // of silently telling no one.
+                $this->sendToPermissionGroup(
+                    \App\Services\Riders\VehicleTicketService::ALERT_PERMISSION,
+                    [
+                        'title' => '🛠 New reply on a bike ticket',
+                        'body'  => "{$actor}: {$bike} — {$t->title}",
+                    ],
+                    $data, 'shift_notifications', $actorId
+                );
                 return;
             }
-            $this->sendToPermissionGroup(
-                \App\Services\Riders\VehicleTicketService::ALERT_PERMISSION,
-                [
-                    'title' => '🛠 Rider replied on a bike ticket',
-                    'body'  => "{$actor}: {$bike} — {$t->title}",
-                ],
-                $data, 'shift_notifications', $actorId
-            );
+            foreach ($recipients as $uid => $role) {
+                $this->notifyUser((int) $uid, $role === 'rider'
+                    // 🗣 The rider reads Roman Urdu; managers read English (owner ruling, 2-Sep).
+                    ? ['title' => '🛠 Aap ke bike ka jawab aaya',
+                       'body'  => "{$actor}: {$bike} — {$t->title}"]
+                    : ['title' => '🛠 New reply on a bike ticket',
+                       'body'  => "{$actor}: {$bike} — {$t->title}"],
+                    $data, 'shift_notifications');
+            }
         } catch (\Throwable $e) {
             // A ticket that was recorded must never fail because a push did.
             Log::warning('Firebase: vehicle ticket push failed', [

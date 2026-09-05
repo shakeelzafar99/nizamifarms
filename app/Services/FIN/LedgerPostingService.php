@@ -246,6 +246,15 @@ class LedgerPostingService
                 (new BalancePostingService())->apply($ledger);
             }
 
+            // ⭐ Rs 0 CASH invoice (free / replacement order): nothing for the rider to
+            // hand over, so settle it now — see LedgerModel::isSettledNothingToCollect().
+            // Posted (not skipped) so the order keeps its ledger link. Engine apply above
+            // moved 0, so balances are untouched either way.
+            $ledger->refreshNothingToCollectSettlement('posted at delivery');
+            if ($ledger->isDirty()) {
+                $ledger->save();
+            }
+
             // Link ledger to order
             $order->ledger_transaction_id = $ledger->id;
             $order->save();

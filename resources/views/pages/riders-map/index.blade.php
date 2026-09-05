@@ -796,7 +796,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Deep link support: /riders-map#day-review opens straight into Day Review.
     // The orders page's rider popup links here, and the old link said
     // "Dispatch Tracker" — which Day Review now contains.
-    var hash = (window.location.hash || '').replace('#', '').toLowerCase();
+    /* ⭐ DEEP LINK TO ONE MACHINE (Qasim/Shabib, 5-Sep): the service-due / ticket / workshop
+       toasts now link to `#bikes?vehicle=ID[&ticket=ID]`. The part before `?` still picks
+       the tab exactly as before; the part after is parked for the Bikes partial to act on
+       once its list has loaded (see flvLoad → window.flDeepLink). Nothing else on this page
+       reads it, and a hash without `?` behaves exactly as it always did. */
+    var rawHash = (window.location.hash || '').replace('#', '');
+    var qAt = rawHash.indexOf('?');
+    if (qAt >= 0) {
+        try {
+            var dl = new URLSearchParams(rawHash.slice(qAt + 1));
+            window.flDeepLink = {
+                vehicle: parseInt(dl.get('vehicle') || '0', 10) || null,
+                ticket:  parseInt(dl.get('ticket')  || '0', 10) || null
+            };
+        } catch (e) { window.flDeepLink = null; }
+        rawHash = rawHash.slice(0, qAt);
+    }
+    var hash = rawHash.toLowerCase();
     if (hash === 'day-review' || hash === 'dayreview' || hash === 'dispatch') {
         switchView('dayreview');
         return;

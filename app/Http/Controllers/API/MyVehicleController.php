@@ -55,7 +55,27 @@ class MyVehicleController extends Controller
             $today = Carbon::today()->format('Y-m-d');
             $uid   = (int) $user->id;
 
-            $vehicleId = $res->vehicleForDay($uid, $today);
+            /**
+             * ⭐⭐ THE **NOW** QUESTION, SO THE **NOW** RESOLVER (5-Sep-2026).
+             *
+             * This screen answers "what is MY bike, right now" — the card on Attendance, the
+             * odometer he is about to type, the handover request, the ticket he raises. That is
+             * `currentVehicleFor` (OPEN assignment, or a manager's explicit override for today).
+             *
+             * ⚠⚠ IT USED TO ASK `vehicleForDay($uid, $today)`, AND THAT IS A DIFFERENT QUESTION.
+             *    The day rule deliberately keeps a bike released ON a date as that rider's FOR
+             *    that date (`released_on >= $date`) so the kilometres he rode this morning stay
+             *    attributed to him. Asked as "is it mine now", it means a handover does not
+             *    reach the rider's phone **until midnight**. Measured on prod, 5-Sep: the bike
+             *    moved to Rajab at 13:42:14 and Waseem's phone still showed
+             *    "MY VEHICLE DCR-799" at 14:42 — with `my_stint` naming RAJAB underneath it.
+             *    Both riders were told the same machine was theirs for the rest of the day.
+             *
+             * ⚠ The morning's attribution is NOT lost by this — it never lived here. Fuel, km
+             *   and service attribution ask `vehicleForDay` with a real date, in FleetFuelService
+             *   / FuelClaimRules / ServiceRecordService, and are untouched.
+             */
+            $vehicleId = $res->currentVehicleFor($uid);
             if (!$vehicleId) {
                 return response()->json([
                     'success' => true, 'has_vehicle' => false, 'vehicle' => null,
@@ -142,7 +162,13 @@ class MyVehicleController extends Controller
                 // ⭐ HIS stint on this machine — km + Rs/km since HE took it,
                 //    the number that, against last-3, says whether the rider or
                 //    the machine is the variable (owner ruling Aug-4).
-                'my_stint'    => $veh->keeperStintStats($vehicleId),
+                // ⚠⚠ `keeperStintStats` answers "the CURRENT keeper's stint on this machine",
+                //    which is only "yours" while the caller IS that keeper. On 5-Sep it handed
+                //    Waseem a block headed "You on this bike" containing Rajab's name, start
+                //    date and kilometres. The resolver fix above already stops a non-keeper
+                //    reaching this line; this is the second lock, so the label can never lie
+                //    again even if some other path lands here.
+                'my_stint'    => $this->myStintOnly($veh->keeperStintStats($vehicleId), $uid),
                 'months'      => $this->recentMonths(),
             ]);
         } catch (\Throwable $e) {
@@ -269,6 +295,17 @@ class MyVehicleController extends Controller
     }
 
     /** Since when he has had it, and any note the manager left. */
+    /**
+     * The stint block, but only when it is genuinely the caller's.
+     * ⚠ Never "fix" this by relabelling the block — another rider's name, start date and
+     *   kilometres are not this rider's business at all. Null, and the app hides the row.
+     */
+    private function myStintOnly(?array $stint, int $userId): ?array
+    {
+        if (!$stint) return null;
+        return (int) ($stint['user_id'] ?? 0) === $userId ? $stint : null;
+    }
+
     private function assignmentFor(int $vehicleId, int $userId): ?array
     {
         try {

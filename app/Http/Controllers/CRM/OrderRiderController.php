@@ -57,8 +57,9 @@ class OrderRiderController extends Controller
                 $newRiderId = (int)$data['rider_user_id'];
                 
                 if ($oldRiderId && $oldRiderId != $newRiderId) {
-                    // Check if ledger is settled
-                    if ($ledger->settlement_status === 'settled') {
+                    // Check if ledger is settled WITH cash (a free order's auto-settled
+                    // Rs 0 invoice moved no money — it simply reposts on the new rider)
+                    if ($ledger->isSettledWithCash()) {
                         return response()->json([
                             'success' => false,
                             'message' => 'Cannot change rider: Invoice has already been settled.',

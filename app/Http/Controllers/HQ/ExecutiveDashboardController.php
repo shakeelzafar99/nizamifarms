@@ -141,6 +141,19 @@ class ExecutiveDashboardController extends Controller
         return $this->ok($this->svc->salaryByEmployee($unit, $year, $month));
     }
 
+    /** Salaries Level 2 — the individual payments behind one employee's grouped row. */
+    public function salaryDetail(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        // user_id identifies the employee; `employee` is the fallback for a legacy
+        // salary slip that carries no user (Level 1 keys those by name).
+        $userId = $request->filled('user_id') ? (int) $request->get('user_id') : null;
+        return $this->ok($this->svc->salaryEmployeeDetail(
+            $unit, $year, $month, $userId, (string) $request->get('employee', '')
+        ));
+    }
+
     public function customers(Request $request)
     {
         $this->guard();

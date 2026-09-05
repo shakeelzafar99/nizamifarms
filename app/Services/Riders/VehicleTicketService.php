@@ -145,12 +145,43 @@ class VehicleTicketService
      */
     public function mayRead($user, array $ticket, bool $mobile = false): bool
     {
-        if (!$user) return false;
-        $uid = (int) $user->id;
+        $scope = $this->visibilityScope($user, $mobile);
+        if ($scope === true) return true;                      // a manager sees everything
+        return in_array((int) $ticket['vehicle_id'], $scope, true);
+    }
+
+    /**
+     * ⭐⭐ THE ONE ANSWER TO "WHICH TICKETS MAY THIS PERSON SEE" (owner ruling, 5-Sep-2026).
+     *
+     *    "Since the bike moved to someone else, the new owner should be the one seeing this
+     *     ticket until it's moved back."
+     *
+     *    A ticket belongs to the MACHINE. So the question is never "did you raise it" — it is
+     *    **"do you hold that machine now"**, which the registry already answers.
+     *
+     * @return true|int[]  true = sees everything (manager); otherwise the machine ids he holds
+     *
+     * ⚠⚠ EVERY reader must call THIS — `mayRead` (thread, reply, close, reopen) and `listFor`
+     *    (both list boxes, and `summaryFor`/the mobile badge through it). The bug this replaces
+     *    existed because "may see" was a four-way OR written in more than one place: a rider who
+     *    had handed his bike back an hour earlier still saw its ticket, because `opened_by`
+     *    granted it independently of the registry. Writing the new rule twice would re-create
+     *    exactly that.
+     *
+     * ⚠ `opened_by` / `opened_for_user_id` are NO LONGER grants. While the raiser still holds
+     *   the bike, holding it already covers him; the moment it moves, the ticket moves with it.
+     *   Both columns stay on the row — the history never moves and never hides, and a manager
+     *   still sees who reported what.
+     *
+     * ⚠ A rider holding NOTHING sees NOTHING (empty array) — including tickets he raised. That
+     *   is the ruling, and it is also why an UNASSIGNED machine (one taken back and sitting at
+     *   the workshop) is visible to managers only until it is given out again.
+     */
+    public function visibilityScope($user, bool $mobile = false)
+    {
+        if (!$user) return [];
         if ($this->canManage($user, $mobile)) return true;
-        if ((int) $ticket['opened_by'] === $uid) return true;
-        if ((int) ($ticket['opened_for_user_id'] ?? 0) === $uid) return true;
-        return in_array((int) $ticket['vehicle_id'], $this->ownMachineIds($uid), true);
+        return $this->ownMachineIds((int) $user->id);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +505,79 @@ class VehicleTicketService
      * what makes "what happened to this complaint" answerable in one place.
      * Never throws: an audit line must not be able to fail the action it describes.
      */
+    /**
+     * ⭐⭐ THE BIKE CHANGED HANDS — carry its open problems across (owner ruling, 5-Sep-2026).
+     *
+     * `visibilityScope` already means the new holder SEES the machine's tickets the instant the
+     * registry moves. This adds the two things the registry cannot do by itself:
+     *   1. a dated system line in each open thread, so a reader months later knows why the
+     *      voices in it change — "Bike moved from Waseem to Rajab";
+     *   2. a push to the NEW holder, because he has just inherited a fault nobody told him
+     *      about. Rajab got DCR-799 with "Chain lose hogai hai" already open on it.
+     *
+     * ⚠ NO status change and NO re-open — moving a bike is not an opinion about the fault.
+     *   `assigned_to` (the mechanic working it) is deliberately untouched too.
+     * ⚠ Never throws: a handover that is already committed must not be reported as failed
+     *   because a push or a log line did not land. Same rule as the van's cargo move.
+     * ⚠ `last_message_at` is bumped so the inherited problem surfaces at the TOP of his list
+     *   rather than at the age of the original report.
+     *
+     * @return int how many open tickets travelled (0 = nothing to say)
+     */
+    public function onHandover(int $vehicleId, ?int $fromUserId, ?int $toUserId, ?int $actorId = null): int
+    {
+        if (!$this->available()) return 0;
+        try {
+            $open = DB::table(self::T_TICKET)
+                ->where('vehicle_id', $vehicleId)
+                ->whereIn('status', self::OPEN_STATUSES)
+                ->get(['id', 'title']);
+            if ($open->isEmpty()) return 0;
+
+            $name = function (?int $id): ?string {
+                if (!$id) return null;
+                return DB::table('t_sys_user')->where('id', $id)->value('fullname');
+            };
+            $from = $name($fromUserId);
+            $to   = $name($toUserId);
+            $line = $to
+                ? 'Bike moved' . ($from ? " from {$from}" : '') . " to {$to}."
+                : 'Bike taken back' . ($from ? " from {$from}" : '') . ' — with nobody right now.';
+
+            foreach ($open as $t) {
+                $this->system((int) $t->id, $line);
+                DB::table(self::T_TICKET)->where('id', (int) $t->id)
+                    ->update(['last_message_at' => now(), 'updated_at' => now()]);
+            }
+
+            // The man who just inherited the problem hears about it — unless he did it himself.
+            if ($toUserId && $toUserId !== $actorId) {
+                $bike  = (new VehicleResolver())->labelFor($vehicleId) ?: 'Bike';
+                $first = (string) ($open[0]->title ?? '');
+                $more  = $open->count() - 1;
+                try {
+                    app(\App\Services\FirebaseService::class)->notifyUser($toUserId, [
+                        'title' => "🛠 {$bike} ab aap ke paas hai",
+                        'body'  => $open->count() === 1
+                            ? "Ek masla pehle se khula hai: {$first}"
+                            : "{$open->count()} masle pehle se khule hain: {$first}" . ($more > 0 ? " (+{$more})" : ''),
+                    ], ['type' => 'vehicle_ticket', 'vehicle_id' => (string) $vehicleId]);
+                } catch (\Throwable $e) {
+                    Log::warning('Handover ticket push failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+                }
+            }
+
+            Log::info('Tickets travelled with the machine', [
+                'vehicle_id' => $vehicleId, 'from_user' => $fromUserId,
+                'to_user' => $toUserId, 'tickets' => $open->count(),
+            ]);
+            return $open->count();
+        } catch (\Throwable $e) {
+            Log::warning('onHandover failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
     public function system(int $ticketId, string $line): void
     {
         try {
@@ -511,22 +615,24 @@ class VehicleTicketService
     {
         if (!$this->available() || !$user) return [];
         $uid       = (int) $user->id;
-        $isManager = $this->canManage($user, $mobile);
-        $mine      = $isManager ? [] : $this->ownMachineIds($uid);
+        $scope     = $this->visibilityScope($user, $mobile);   // ⚠ the ONE rule — see it there
+        $isManager = ($scope === true);
 
-        // Someone who is neither a manager nor holding a machine may still have opened
-        // one in the past (or had one opened for him), so we never early-return empty —
-        // the WHERE below covers that case.
+        /**
+         * ⚠⚠ A non-manager holding NO machine now sees NOTHING, and we stop before running a
+         *    query that cannot match. This REPLACES the old "he may still have opened one in
+         *    the past" carve-out — which is exactly what kept a handed-back bike's ticket on
+         *    the old rider's phone an hour after the bike was someone else's.
+         */
+        if (!$isManager && !$scope) return [];
         try {
             $q = DB::table(self::T_TICKET . ' as t')
                 ->leftJoin('t_sys_user as ob', 'ob.id', '=', 't.opened_by')
                 ->leftJoin('t_sys_user as fo', 'fo.id', '=', 't.opened_for_user_id');
 
+            // The same predicate as mayRead, expressed in SQL: the machines he holds now.
             if (!$isManager) {
-                $q->where(function ($w) use ($uid, $mine) {
-                    $w->where('t.opened_by', $uid)->orWhere('t.opened_for_user_id', $uid);
-                    if ($mine) $w->orWhereIn('t.vehicle_id', $mine);
-                });
+                $q->whereIn('t.vehicle_id', $scope);
             }
             if (!empty($opts['vehicle_id'])) $q->where('t.vehicle_id', (int) $opts['vehicle_id']);
             // ⭐ "This rider's tickets" — the Bikes drawer knows the man, not the machine.

@@ -50,7 +50,7 @@
       + ((j.count||0) > 1 ? '<br><span style="opacity:.85;">'+(j.count)+' open in total</span>' : '')
       +'</div>'
       +'<span data-dismiss="1" title="Dismiss" style="cursor:pointer;font-size:18px;line-height:1;opacity:.85;">&times;</span></div>'
-      +'<div style="margin-top:8px;"><a href="/riders-map" style="color:#BFDBFE;font-weight:700;text-decoration:underline;">Open Bikes &rarr;</a></div>';
+      +'<div style="margin-top:8px;"><a href="/riders-map#bikes?vehicle='+encodeURIComponent(t.vehicle_id||'')+'&ticket='+encodeURIComponent(t.id||'')+'" style="color:#BFDBFE;font-weight:700;text-decoration:underline;">Open Bikes &rarr;</a></div>';
     box.appendChild(el);
     el.querySelector('[data-dismiss]').addEventListener('click', function(){
       markSeen(latestId);
