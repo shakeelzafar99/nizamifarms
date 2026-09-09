@@ -71,14 +71,19 @@ class RequestApprovalModel extends BaseModel
     }
 
     // Helper methods
+    // ⚠ getAttribute, NOT $this->status — BaseModel declares a real
+    // `protected string $status = "Success"` which shadows the DB column INSIDE this
+    // class, so $this->status would never equal 'approved'. Same reason
+    // RequestModel::isPending() reads the attribute explicitly.
+
     public function isApproved(): bool
     {
-        return $this->status === 'approved';
+        return $this->getAttribute('status') === 'approved';
     }
 
     public function isRejected(): bool
     {
-        return $this->status === 'rejected';
+        return $this->getAttribute('status') === 'rejected';
     }
 }
 

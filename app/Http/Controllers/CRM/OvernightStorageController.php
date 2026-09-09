@@ -81,27 +81,11 @@ class OvernightStorageController extends Controller
      */
     private function decodeWeightBarcode(?string $raw): ?array
     {
-        $code = preg_replace('/\D/', '', (string) $raw);
-        if (strlen($code) !== 13 || $code[0] !== '2') {
-            return null;
-        }
-        $sum = 0;
-        for ($i = 0; $i < 12; $i++) {
-            $n = (int) $code[$i];
-            $sum += ($i % 2 === 0) ? $n : $n * 3;
-        }
-        if (((10 - ($sum % 10)) % 10) !== (int) $code[12]) {
-            return null;
-        }
-        $plu = (int) substr($code, 1, 6);
-        if ($plu < 1) {
-            return null;
-        }
-        return [
-            'plu' => $plu,
-            'weight_kg' => ((int) substr($code, 7, 5)) / 1000,
-            'raw' => $code,
-        ];
+        // Sep-2026: the implementation moved to the shared decoder so Storage/Supplies
+        // could reuse it instead of becoming a third copy. Same rules, same return
+        // shape, byte-for-byte — this stays as a thin delegate so every call site in
+        // this controller is untouched.
+        return app(\App\Services\CRM\WeightBarcodeDecoder::class)->decode($raw);
     }
 
     /**

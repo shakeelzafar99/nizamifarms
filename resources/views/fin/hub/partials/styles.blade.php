@@ -473,6 +473,26 @@
     font-variant-numeric:tabular-nums}
   .nfhub .row-time.late{font-style:italic}
 
+  /* 🏦 statement: the BANK's own date/reference for a row, under the description. Distinct from
+     the row's own date, which is the day we recorded it. `.drift` = the two are different days,
+     which is the only case worth a second look while reconciling against a real statement. */
+  .nfhub .bank-date{margin-top:3px;font-size:10.5px;font-weight:600;color:var(--ink3);
+    white-space:nowrap;font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:5px}
+  .nfhub .bank-date.drift{color:var(--owe)}
+  .nfhub .bd-flag{font-size:9.5px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;
+    padding:0 5px;border-radius:4px;background:var(--owe-soft);color:var(--owe)}
+  /* search found nothing here but did find it on another bank — the jump offer */
+  .nfhub .found-elsewhere{margin-top:14px;text-align:left;display:inline-block;background:var(--surface2);
+    border:1px solid var(--line);border-radius:var(--radius);padding:11px 14px;font-size:12.5px;color:var(--ink2)}
+  .nfhub .fe-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  /* drawer: the bank-date mismatch note */
+  .drawer .d-bank-drift{margin-top:8px;background:var(--owe-soft);color:var(--owe);
+    border-radius:7px;padding:7px 10px;font-size:11.5px;font-weight:600;line-height:1.45}
+  /* statement search box — same visual weight as the period chips it sits beside */
+  .nfhub .stmt-search{border:1px solid var(--line);background:var(--surface);color:var(--ink);
+    border-radius:7px;padding:4px 10px;font-size:12px;min-width:230px;font-family:inherit}
+  .nfhub .stmt-search:focus{outline:none;border-color:var(--accent)}
+
   /* drawer: line items of a weighted purchase + the attached bill photo */
   .drawer .d-item{display:flex;align-items:baseline;gap:8px;padding:6px 0;border-bottom:1px solid var(--line2)}
   .drawer .d-item:last-child{border-bottom:0}

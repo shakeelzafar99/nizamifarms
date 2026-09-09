@@ -67,6 +67,11 @@ class ShiftPlannerController extends Controller
     {
         $svc = new ShiftResolutionService();
 
+        // 🔒 Who is looking, and what the shift rules let them do to each row below.
+        $me = $request->user() ?: auth()->user();
+        $authority = app(\App\Services\Ops\ShiftAuthorityService::class);
+        $openRequests = app(\App\Services\Ops\ShiftChangeRequestService::class)->openByUser();
+
         // Week starts on Monday.
         $startInput = $request->input('start');
         $monday = $startInput
@@ -148,11 +153,22 @@ class ShiftPlannerController extends Controller
          *    shift times. Batched for the whole week in ONE query, like the tags above.
          */
         $workshop = [];
+        $canApproveWorkshop = false;
         try {
             $uids = $users->pluck('user_id')->all();
             if (!empty($uids)) {
-                $workshop = app(\App\Services\Riders\WorkshopVisitService::class)
-                    ->mapForRange($uids, $dateList[0], $dateList[6]);
+                $wvSvc = app(\App\Services\Riders\WorkshopVisitService::class);
+                /**
+                 * ⏳ 6-Sep ruling: a workshop day that has NOT been approved yet is drawn here
+                 *    too — as a REQUEST, never as a plan. This grid is the only screen where
+                 *    the question ("should this rider be at a workshop that day?") and the
+                 *    answer (his shift for that day) sit side by side, so it is where the
+                 *    planner should be able to say yes.
+                 * ⚠ Only for a planner. Anyone else looking at this page sees the same grid
+                 *   it has always shown — a proposal is not yet a fact about the day.
+                 */
+                $canApproveWorkshop = $wvSvc->canApprove(auth()->user(), false);
+                $workshop = $wvSvc->mapForRange($uids, $dateList[0], $dateList[6], $canApproveWorkshop);
             }
         } catch (\Throwable $e) { /* table not deployed → no visits */ }
 
@@ -247,11 +263,28 @@ class ShiftPlannerController extends Controller
                 ? (int) $primaryRow->location_id
                 : $def['location_id'];
 
+            /**
+             * 🔒 SHIFT AUTHORITY (Sep-2026). Three things the grid needs per person:
+             *   can            — may the person looking at this grid change this row at all;
+             *   lock_reason    — what the padlock's tooltip says. ⭐ Owner ruling 6-Sep: a
+             *                    locked row is SHOWN WITH A LOCK, never hidden — hiding
+             *                    people makes a planner think the grid is broken;
+             *   needs_approval — the Save button becomes "Send for approval" for this row.
+             * Plus the allowed-shift list, so the picker offers only what the gate accepts.
+             * ⚠ Advisory only. Every write re-asks ShiftAuthorityService.
+             */
+            $rowState = $authority->rowStateFor($me, $uid);
+
             $riders[] = [
                 'user_id' => $uid,
                 'name' => $u->fullname,
                 'role' => $u->role_name,
                 'has_phone' => (int) ($u->has_phone ?? 0) === 1,
+                'can_change' => $rowState['can'],
+                'lock_reason' => $rowState['reason'],
+                'needs_approval' => $rowState['needs_approval'],
+                'allowed_template_ids' => $authority->allowedTemplateIdsFor($me, $uid),
+                'pending_requests' => $openRequests[$uid] ?? [],
                 'default_location_id' => $def['location_id'],
                 'default_location_name' => $def['location_name'],
                 'usual_location_id' => $usualLocationId,
@@ -266,7 +299,10 @@ class ShiftPlannerController extends Controller
             ];
         }
 
+        // ⏳ A shift type still waiting for approval is never assignable, so it is not
+        //    offered here at all. Schema-guarded — before the SQL every type is approved.
         $templates = ShiftTemplateModel::where('active', 1)
+            ->when($authority->templateApprovalAvailable(), fn ($q) => $q->where('approval_status', 'approved'))
             ->orderBy('shift_name')
             ->get()
             ->map(fn($t) => [
@@ -314,6 +350,21 @@ class ShiftPlannerController extends Controller
             'templates' => $templates,
             'riders' => array_values($riders),
             'locations' => $locations,
+            /**
+             * ⏳ 6-Sep: does the person looking at this grid get to say yes or no to a
+             *   proposed workshop day? The cell renderer uses this to decide whether a
+             *   `proposed` chip carries Approve / Adjust / Decline or is simply drawn.
+             * ⚠ Advisory only — every action re-checks `manage_shifts` server-side.
+             */
+            'can_approve_workshop' => $canApproveWorkshop,
+            /**
+             * ⚙ Shift rules — only the holder of `manage_shift_rules` (Taimur) gets the
+             *   button. Everyone else does not see that the page exists.
+             */
+            'can_manage_rules' => $authority->canManageRules($me),
+            'template_create' => $authority->templateCreateState($me),
+            // The workshops a planner may move a proposal to while approving it.
+            'workshops' => app(\App\Services\Riders\WorkshopVisitService::class)->workshopLocations(),
         ]);
     }
 }

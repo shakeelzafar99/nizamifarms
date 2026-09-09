@@ -60,24 +60,29 @@ class CustomerController extends Controller
         if (in_array($customerType, [CustomerModel::TYPE_REGULAR, CustomerModel::TYPE_SHOP], true)) {
             $query->where('customer_type', $customerType);
         }
-        
+
+        // 💰 Account balance filter — see applyBalanceFilter().
+        $balanceIds = $this->applyBalanceFilter($query, $request->get('balance', ''));
+
         // Sorting: support sort_by (last_order_date, total_spent) and sort_dir (asc, desc)
         $sortBy = $request->get('sort_by', 'last_order_date');
         $sortDir = $request->get('sort_dir', 'desc');
-        
+
         // Validate sort parameters
-        $allowedSortFields = ['last_order_date', 'total_spent', 'created_at'];
+        $allowedSortFields = ['last_order_date', 'total_spent', 'created_at', 'balance'];
         $allowedSortDirs = ['asc', 'desc'];
         if (!in_array($sortBy, $allowedSortFields)) $sortBy = 'last_order_date';
         if (!in_array($sortDir, $allowedSortDirs)) $sortDir = 'desc';
-        
+
         // For total_spent sorting, use a subquery to sort by COMBINED total (production + history)
         // This ensures the sort order matches the displayed combined values
-        if ($sortBy === 'total_spent') {
+        if ($sortBy === 'balance') {
+            $this->applyBalanceSort($query, $sortDir);
+        } elseif ($sortBy === 'total_spent') {
             $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
-            
+
             $prodSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_prod_order WHERE t_crm_prod_order.customer_id = t_crm_prod_customer.id AND (external_source != 'shopify' OR external_source IS NULL) AND order_status IN ('delivered', 'completed'))";
-            
+
             if ($hasHistoryTable) {
                 $histSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_history_order WHERE t_crm_history_order.customer_id = t_crm_prod_customer.id AND order_status = 'delivered')";
                 $query->orderByRaw("($prodSubquery + $histSubquery) $sortDir");
@@ -87,9 +92,14 @@ class CustomerController extends Controller
         } else {
             $query->orderBy($sortBy, $sortDir);
         }
-        
-        $customers = $query->orderBy('created_at', 'desc')
-                          ->paginate(15);
+
+        // ⚠ Sorting by balance already ordered the rows explicitly; a second
+        // orderBy would re-sort them by date and throw that away.
+        if ($sortBy !== 'balance') {
+            $query->orderBy('created_at', 'desc');
+        }
+
+        $customers = $query->paginate(15);
         
         // =========================================
         // HYBRID APPROACH: Add combined stats to paginated results
@@ -141,12 +151,19 @@ class CustomerController extends Controller
         $thirtyDaysAgo = $now->copy()->subDays(30);
         $ninetyDaysAgo = $now->copy()->subDays(90);
         
+        // 💰 What we are holding for customers, across the whole business — the
+        // headline that sends a manager to the Balances page. One grouped query
+        // through the service that owns the formula.
+        $creditBalances = (new \App\Services\CustomerCreditService())->customerBalances();
+
         $stats = [
             'total_customers' => CustomerModel::count(),
             'active_30_days' => CustomerModel::where('last_order_date', '>=', $thirtyDaysAgo)->count(),
-            'active_90_days' => CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)->count()
+            'active_90_days' => CustomerModel::where('last_order_date', '>=', $ninetyDaysAgo)->count(),
+            'balance_total' => round(array_sum($creditBalances), 2),
+            'balance_customers' => count($creditBalances),
         ];
-        
+
         return view('pages.customers.index', compact('customers', 'cities', 'regions', 'stats'));
     }
     
@@ -437,17 +454,24 @@ class CustomerController extends Controller
             if (in_array($customerType, [CustomerModel::TYPE_REGULAR, CustomerModel::TYPE_SHOP], true)) {
                 $query->where('customer_type', $customerType);
             }
-            
+
+            // 💰 Account balance filter — same helper as index(), so the search
+            // path and the paginated path can never disagree about who has money.
+            $this->applyBalanceFilter($query, $request->get('balance', ''));
+
             // Sorting
             $sortBy = $request->get('sort_by', 'last_order_date');
             $sortDir = $request->get('sort_dir', 'desc');
-            $allowedSortFields = ['last_order_date', 'total_spent', 'created_at'];
+            $allowedSortFields = ['last_order_date', 'total_spent', 'created_at', 'balance'];
             $allowedSortDirs = ['asc', 'desc'];
             if (!in_array($sortBy, $allowedSortFields)) $sortBy = 'last_order_date';
             if (!in_array($sortDir, $allowedSortDirs)) $sortDir = 'desc';
-            
+
+            if ($sortBy === 'balance') {
+                $this->applyBalanceSort($query, $sortDir);
+            }
             // For total_spent sorting, use a subquery to sort by COMBINED total (production + history)
-            if ($sortBy === 'total_spent') {
+            elseif ($sortBy === 'total_spent') {
                 $hasHistoryTable = DB::getSchemaBuilder()->hasTable('t_crm_history_order');
                 
                 $prodSubquery = "(SELECT COALESCE(SUM(total_price), 0) FROM t_crm_prod_order WHERE t_crm_prod_order.customer_id = t_crm_prod_customer.id AND (external_source != 'shopify' OR external_source IS NULL) AND order_status IN ('delivered', 'completed'))";
@@ -463,9 +487,12 @@ class CustomerController extends Controller
             }
             
             // Get results (limit to 100 for performance)
-            $customers = $query->orderBy('created_at', 'desc')
-                             ->limit(100)
-                             ->get();
+            // ⚠ Balance sorting already ordered the rows; adding a date order
+            // after it would silently throw that ordering away.
+            if ($sortBy !== 'balance') {
+                $query->orderBy('created_at', 'desc');
+            }
+            $customers = $query->limit(100)->get();
             
             // =========================================
             // HYBRID APPROACH: Fetch combined stats efficiently
@@ -584,6 +611,66 @@ class CustomerController extends Controller
      *
      * @return array<int, array{shop_owed: float, shop_count: int, reg_pending: float, reg_count: int}>
      */
+    /**
+     * 💰 Narrow a customer query to those holding an account balance.
+     *
+     * `$balance` is one of: '' (no filter) · 'any' (anything above zero) ·
+     * a number (that much or more) · 'pending' (has money waiting for approval).
+     *
+     * ⭐ The population comes from CustomerCreditService, which owns the balance
+     * formula and the merge chain — this never sums the credit table itself.
+     * Because the filter runs as a plain whereIn on the SAME query the
+     * paginator uses, paging, search and every other filter keep working
+     * together; a client-side filter would only ever have seen one page.
+     *
+     * @return array<int>|null the matching ids, or null when no filter applied
+     */
+    private function applyBalanceFilter($query, string $balance): ?array
+    {
+        if ($balance === '') {
+            return null;
+        }
+
+        $credit = new \App\Services\CustomerCreditService();
+
+        if ($balance === 'pending') {
+            $ids = array_keys($credit->pendingForMany());
+        } else {
+            $min = ($balance === 'any') ? 0.01 : (float) $balance;
+            $ids = array_keys($credit->customerBalances($min > 0 ? $min : 0.01));
+        }
+
+        // ⚠ An empty id list must match NOTHING. whereIn([]) does that in
+        // Laravel, but the explicit [0] makes the intent unmissable — the bug
+        // this guards against is a filter that silently lists every customer.
+        $query->whereIn('id', $ids ?: [0]);
+
+        return $ids;
+    }
+
+    /**
+     * Order a customer query by account balance, highest (or lowest) first.
+     * Only customers who hold one take part — sorting 7,000 customers by a
+     * number 11 of them have would just be the default order with noise.
+     */
+    private function applyBalanceSort($query, string $sortDir): void
+    {
+        $balances = (new \App\Services\CustomerCreditService())->customerBalances();
+
+        if (empty($balances)) {
+            $query->whereRaw('1 = 0');
+            return;
+        }
+
+        $ids = array_keys($balances);              // already highest-first
+        if ($sortDir === 'asc') {
+            $ids = array_reverse($ids);
+        }
+
+        $query->whereIn('id', $ids)
+              ->orderByRaw('FIELD(t_crm_prod_customer.id, ' . implode(',', array_map('intval', $ids)) . ')');
+    }
+
     private function getCustomerReceivables(array $customerIds): array
     {
         $result = [];

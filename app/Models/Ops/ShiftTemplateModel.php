@@ -20,7 +20,21 @@ class ShiftTemplateModel extends Model
         'description',
         'active',
         'created_by',
-        'updated_by'
+        'updated_by',
+        /**
+         * ⏳ Sep-2026 shift-authority round. A type may now be PROPOSED instead of created
+         * outright, and only an `approved` one may be assigned to anybody.
+         * ⚠ Schema-guarded everywhere they are written — the PHP can be uploaded before
+         *   `shift_authority_sep2026.sql` runs, and mass-assigning a column that does not
+         *   exist yet is the one way this list can break a create.
+         */
+        'approval_status',
+        'proposed_by',
+        'approved_by',
+        'approved_at',
+        'declined_by',
+        'declined_at',
+        'decline_reason',
     ];
 
     protected $casts = [

@@ -102,11 +102,24 @@ ok('opens a ticket for a rider without knowing the bike id', $t['ok'], true);
 $tid = (int) $t['ticket_id'];
 ok('the registry supplied the machine', (int) $vt->find($tid)['vehicle_id'], $vid);
 ok('replies to it', $vt->reply($q, $tid, ['kind' => 'text', 'body' => 'Bringing it in.'])['ok'], true);
+// ⏰ Tomorrow, not today: a same-day proposal is only approvable before the rider's cut-off
+//    (an hour before his shift), and this suite runs at any hour of the day.
 $w = $wv->schedule($q, ['user_id' => (int) $rider->id,
-                        'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'), 'ticket_id' => $tid]);
+                        'visit_date' => \Carbon\Carbon::today()->addDay()->format('Y-m-d'), 'ticket_id' => $tid]);
 ok('schedules a workshop visit off that ticket', $w['ok'], true);
 $wid = (int) $w['visit_id'];
-ok('  …which moves the ticket to "workshop set"', $vt->find($tid)['status'], 'scheduled');
+/**
+ * ⏳ CHANGED 6-Sep BY THE APPROVAL RULING. Qasim holds `schedule_workshop` but NOT
+ *    `manage_shifts`, so his booking is a REQUEST: the rider is told nothing, his day is not
+ *    pinned, and — the part this line used to assert — the ticket he is watching is NOT moved
+ *    to "workshop set", because there is not yet a workshop date to tell him about.
+ */
+ok('  ⏳ …which is a PROPOSAL, so the rider’s ticket is not moved yet', $w['proposed'] ?? null, true);
+ok('  …the thread he reads still says what it said', $vt->find($tid)['status'], 'acknowledged');
+$planner = collect($who)->first(fn ($u) => $wv->canApprove($u, false) || $wv->canApprove($u, true));
+ok('  …and a PLANNER approving it is what moves it to "workshop set"',
+   $planner && $wv->approve($planner, $wid, [], !$wv->canApprove($planner, false))['ok']
+       && $vt->find($tid)['status'] === 'scheduled', true);
 $types = $rec->scheduledTypes();
 $tp = $rec->resolveType($types[0]['id'] ?? null);
 $done = $rec->record(['rider_id' => (int) $rider->id, 'meter' => 90001,
@@ -160,11 +173,29 @@ ok('cannot record a service', $f->hasMobilePermission('manage_bike_service') || 
 ok('but CAN plan shifts — which is why he is told at all', $f->hasMobilePermission('manage_shifts'), true);
 
 // The banner must show him the fleet's visits, not an empty list.
-$wsA = $wv->schedule($who['Qasim'], ['user_id' => (int) $rider->id,
+// ⚠ confirm_replace: fixture only. Since 7-Sep a booking that would change a day the rider
+//   already has is refused until confirmed; this rider may carry one, and the refusal itself
+//   is asserted in test_shift_workshop_seam.php §7b.
+$wsA = $wv->schedule($who['Qasim'], ['user_id' => (int) $rider->id, 'confirm_replace' => 1,
                                      'visit_date' => \Carbon\Carbon::today()->addDays(2)->format('Y-m-d')]);
 flushAll();
 $sumF = $wv->summaryFor($f, true);
-ok('his banner shows the fleet’s visits, not an empty list', $sumF['count'] >= 1, true);
+/**
+ * ⏳ CHANGED 6-Sep. Qasim's booking is now a PROPOSAL, so it is deliberately NOT in the
+ *    "what is happening" banner — it has not happened. Farooq holds `manage_shifts`, so it
+ *    reaches him in the queue that asks him to decide, which is the stronger claim: the man
+ *    who plans the day is the man being asked about it.
+ */
+/**
+ * ⚠ Asserts the PROPOSAL is absent from the banner — not that the banner is empty. Since the
+ *   7-Sep ruling a proposal no longer supersedes an approved day, so this rider may still be
+ *   carrying a live visit, and the banner should show that one. What must never appear there
+ *   is the thing nobody has answered yet.
+ */
+ok('⏳ a proposal is NOT in the "what is happening" banner',
+   in_array((int) $wsA['visit_id'], array_column($sumF['visits'] ?? [], 'id'), true), false);
+ok('  ⭐ …it is in the approval queue addressed to him',
+   in_array((int) $wsA['visit_id'], array_column($wv->pendingApprovals($f, true), 'id'), true), true);
 ok('  …and does NOT offer him scheduling', $sumF['can_schedule'], false);
 $mine = array_filter($sumF['visits'] ?? [], fn ($v) => (int) $v['user_id'] === (int) $f->id);
 ok('  …he is not shown as the rider on any of them', count($mine), 0);
@@ -192,11 +223,17 @@ ok('  …with no fallback that would land him on a screen he cannot open',
 
 // He must also SEE it on the planner grid itself.
 flushAll();
-$cells = app(\App\Services\Riders\WorkshopVisitService::class)
-    ->mapForRange([(int) $rider->id], \Carbon\Carbon::today()->format('Y-m-d'),
-                  \Carbon\Carbon::today()->addDays(7)->format('Y-m-d'));
-ok('the planner grid has the visit on the rider’s day',
-   isset($cells[(int) $rider->id . '|' . \Carbon\Carbon::today()->addDays(2)->format('Y-m-d')]), true);
+$key   = (int) $rider->id . '|' . \Carbon\Carbon::today()->addDays(2)->format('Y-m-d');
+$wvSvc = app(\App\Services\Riders\WorkshopVisitService::class);
+$plain = $wvSvc->mapForRange([(int) $rider->id], \Carbon\Carbon::today()->format('Y-m-d'),
+                             \Carbon\Carbon::today()->addDays(7)->format('Y-m-d'));
+$cells = $wvSvc->mapForRange([(int) $rider->id], \Carbon\Carbon::today()->format('Y-m-d'),
+                             \Carbon\Carbon::today()->addDays(7)->format('Y-m-d'), true);
+// ⏳ 6-Sep: a proposal reaches the PLANNER's grid — and only his. It is a question for him,
+//    not yet a fact about the day, so no other grid draws it.
+ok('an unapproved workshop day is NOT on an ordinary grid', isset($plain[$key]), false);
+ok('the planner grid has it on the rider’s day', isset($cells[$key]), true);
+ok('  …marked as a request, not a plan', $cells[$key]['proposed'] ?? null, true);
 $wv->cancel($who['Qasim'], (int) $wsA['visit_id'], 'persona cleanup');
 
 // ─────────────────────────────────────────────────────────────────────────────

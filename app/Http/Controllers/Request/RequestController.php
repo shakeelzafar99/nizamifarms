@@ -627,32 +627,22 @@ class RequestController extends Controller
             $requiresL1 = $category->requiresLevel1();
             $requiresL2 = $category->requiresLevel2();
             
-            // Auto-approve L1 if user has L1 rights
+            // Auto-approve L1 if user has L1 rights.
+            // (WHO approved is recorded in the t_req_approval rows written after create()
+            //  — t_req_master has no level_*_approved_by/_at columns to hold it.)
             $level1Status = null;
-            $level1ApprovedBy = null;
-            $level1ApprovedAt = null;
             if ($requiresL1) {
-                if ($userHasL1) {
-                    $level1Status = RequestModel::APPROVAL_STATUS_APPROVED;
-                    $level1ApprovedBy = $loggedInUser->id;
-                    $level1ApprovedAt = now();
-                } else {
-                    $level1Status = RequestModel::APPROVAL_STATUS_PENDING;
-                }
+                $level1Status = $userHasL1
+                    ? RequestModel::APPROVAL_STATUS_APPROVED
+                    : RequestModel::APPROVAL_STATUS_PENDING;
             }
-            
+
             // Auto-approve L2 if user has L2 rights (and L1 is approved or not required)
             $level2Status = null;
-            $level2ApprovedBy = null;
-            $level2ApprovedAt = null;
             if ($requiresL2) {
-                if ($userHasL2 && (!$requiresL1 || $level1Status === RequestModel::APPROVAL_STATUS_APPROVED)) {
-                    $level2Status = RequestModel::APPROVAL_STATUS_APPROVED;
-                    $level2ApprovedBy = $loggedInUser->id;
-                    $level2ApprovedAt = now();
-                } else {
-                    $level2Status = RequestModel::APPROVAL_STATUS_PENDING;
-                }
+                $level2Status = ($userHasL2 && (!$requiresL1 || $level1Status === RequestModel::APPROVAL_STATUS_APPROVED))
+                    ? RequestModel::APPROVAL_STATUS_APPROVED
+                    : RequestModel::APPROVAL_STATUS_PENDING;
             }
             
             // Determine overall status
@@ -757,15 +747,37 @@ class RequestController extends Controller
                 'requires_level_2' => $requiresL2,
                 'level_1_status' => $level1Status,
                 'level_1_assigned_to' => $assignedToL1,
-                'level_1_approved_by' => $level1ApprovedBy,
-                'level_1_approved_at' => $level1ApprovedAt,
                 'level_2_status' => $level2Status,
                 'level_2_assigned_to' => $assignedToL2,
-                'level_2_approved_by' => $level2ApprovedBy,
-                'level_2_approved_at' => $level2ApprovedAt,
+                // ⚠ `level_1_approved_by` / `level_1_approved_at` / `level_2_*` used to be
+                // passed here. Those COLUMNS DO NOT EXIST on t_req_master — Eloquent
+                // dropped all four silently, so this path has never recorded who
+                // auto-approved a request. Removed, and replaced by the real
+                // t_req_approval rows written just below, which is where every screen
+                // reads "who approved" from anyway.
                 'submitted_at' => now(),
                 'created_by' => $loggedInUser->id,
             ]);
+
+            // ⭐ A request approved AT CREATION never passes through processApproval(),
+            // so it used to leave NO approval record at all: status said "approved"
+            // while the approvals history was blank. Write the same rows processApproval
+            // writes, so an auto-approved request reads like any other approval.
+            foreach ([1 => $level1Status, 2 => $level2Status] as $lvl => $lvlStatus) {
+                if ($lvlStatus !== RequestModel::APPROVAL_STATUS_APPROVED) {
+                    continue;
+                }
+                \App\Models\Request\RequestApprovalModel::create([
+                    'request_id' => $requestModel->id,
+                    'approval_level' => $lvl,
+                    'approver_user_id' => $loggedInUser->id,
+                    'status' => RequestModel::APPROVAL_STATUS_APPROVED,
+                    'comments' => 'Auto-approved on creation — the creator holds Level '
+                        . $lvl . ' approval rights.',
+                    'action_date' => now(),
+                    'created_by' => $loggedInUser->id,
+                ]);
+            }
 
             // 🧾 Tie the bill to the service that was chosen for it, before anything else
             //    reads the pair — the approval hook below can post to the ledger immediately.
@@ -1086,9 +1098,17 @@ class RequestController extends Controller
                 'updated_by' => $user->id
             ]);
 
+            // ⭐ Storage (Supplies): cancelling a take-out is how a scanner undoes a
+            // wrong scan — the packet goes back on the shelf. No-op otherwise.
+            if ($request->supply_takeout_id) {
+                app(\App\Services\FIN\SupplyStockService::class)->syncWithRequest($request);
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Request cancelled successfully'
+                'message' => $request->supply_takeout_id
+                    ? 'Take-out cancelled — the packet is back in Storage.'
+                    : 'Request cancelled successfully'
             ]);
 
         } catch (\Exception $e) {

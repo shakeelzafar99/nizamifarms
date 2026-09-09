@@ -31,6 +31,12 @@ class SalarySlipModel extends BaseModel
         'gross_salary',
         // Deductions
         'late_minutes',
+        // Sep-2026 — the day-review split. `late_minutes` above is NET of minutes a manager
+        // forgave, and a slip is frozen forever; these two are what let it still account for
+        // a figure smaller than the month's own days. ⚠ Both MUST stay in $fillable or
+        // create() silently drops them and the split is lost with no error.
+        'late_waived_minutes',
+        'late_raw_minutes',
         'late_deduction',
         'absent_days',
         'absent_deduction',

@@ -685,8 +685,20 @@ class AttendanceController extends Controller
             }
         } catch (\Throwable $e) { /* no delivery data → no office-checkout exception flag */ }
         $wjBase = new \App\Services\Riders\WorkJourneyService();
+        // ⭐ Sep-6 2026 — has today's lateness / overtime already been checked? ONE query for
+        // the whole board (this screen lists every rider, so a per-rider lookup here would be
+        // a query each on the busiest page in the app).
+        $dayReviewToday = [];
+        try {
+            $dayReviewToday = app(\App\Services\HR\DayReviewService::class)
+                ->reviewsOn(array_map(fn ($r) => (int) $r->user_id, $rows->all()), $selectedDate);
+        } catch (\Throwable $e) { $dayReviewToday = []; }
         foreach ($rows as $row) {
             $row->company_bike = isset($bikeSet[$row->user_id]) ? 1 : 0;
+            // Additive: the Today row shows a small marker so a manager knows, at a glance,
+            // whether the figure beside it has been looked at.
+            $row->late_review = $dayReviewToday[$row->user_id . '|late'] ?? null;
+            $row->overtime_review = $dayReviewToday[$row->user_id . '|overtime'] ?? null;
 
             // ⭐⭐ "LAST NIGHT'S METER" IS A FACT ABOUT THE MACHINE (Sep-2026).
             //
@@ -944,13 +956,22 @@ class AttendanceController extends Controller
             $ot = (new \App\Services\HR\OvertimeService())->overtimeForRange($userId, $start, min($end, $today), true);
             $otDetails = $ot['details'] ?? [];
             $items = [];
-            foreach ($ot['dates'] as $d => $mins) {
+            // ⚠ Walks `details`, not `dates` (Sep-6 2026). A day a manager judged "not
+            // overtime" has no entry in `dates` any more, and iterating that would erase it
+            // from the very list he uses to review and undo his own decisions. `details`
+            // holds every day that RAW-earned overtime, judged or not.
+            foreach ($otDetails as $d => $meta) {
+                $mins = (int) ($meta['minutes'] ?? 0);
+                $raw  = (int) ($meta['raw_minutes'] ?? $mins);
                 $h = intdiv($mins, 60); $m = $mins % 60;
-                $items[] = [
-                    'date'  => $d,
-                    'label' => ($h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm'),
-                    'meta'  => $otDetails[$d] ?? null,
-                ];
+                $label = $h > 0 ? $h . 'h ' . $m . 'm' : $m . 'm';
+                if ($mins !== $raw) {
+                    $rh = intdiv($raw, 60); $rm = $raw % 60;
+                    $label = $mins > 0
+                        ? $label . ' (was ' . ($rh > 0 ? $rh . 'h ' . $rm . 'm' : $rm . 'm') . ')'
+                        : 'not overtime';
+                }
+                $items[] = ['date' => $d, 'label' => $label, 'meta' => $meta];
             }
         } elseif ($type === 'month_late') {
             // Days the rider clocked in late + by how much (label = "Xh Ym late").
@@ -959,15 +980,32 @@ class AttendanceController extends Controller
             // check-in. Same additive shape as month_overtime, so a manager reading either
             // drill sees how the figure was reached instead of a bare number.
             $lateDays = $shiftService->lateDaysBreakdown($userId, $start, min($end, $today));
-            $items = array_map(function ($d) {
+            $lateReviews = app(\App\Services\HR\DayReviewService::class);
+            $items = array_map(function ($d) use ($lateReviews, $userId) {
                 $m = (int) $d['minutes']; $h = intdiv($m, 60); $mm = $m % 60;
+                $raw = (int) ($d['raw_minutes'] ?? $m);
+                $waived = (int) ($d['waived'] ?? 0);
+                $rh = intdiv($raw, 60); $rmm = $raw % 60;
+                $rawTxt = $rh > 0 ? $rh . 'h ' . $rmm . 'm' : $rmm . 'm';
+                // A waived day says so on its own line — the forgiveness has to be as visible
+                // as the lateness, or the smaller number looks like the engine changed.
+                $label = $waived > 0
+                    ? $rawTxt . ' late · ' . $waived . 'm waived · ' . $m . 'm counts'
+                    : ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late');
+                $rev = $lateReviews->reviewFor($userId, $d['date'], 'late');
                 return [
                     'date'  => $d['date'],
-                    'label' => ($h > 0 ? $h . 'h ' . $mm . 'm late' : $mm . 'm late'),
+                    'label' => $label,
                     'meta'  => [
-                        'login'       => $d['login'] ?? null,
-                        'shift_start' => $d['shift_start'] ?? null,
+                        'login'        => $d['login'] ?? null,
+                        'shift_start'  => $d['shift_start'] ?? null,
                         'late_minutes' => $m,
+                        'raw_minutes'  => $raw,
+                        'waived'       => $waived,
+                        'review'       => $rev === null ? null : [
+                            'verdict' => $rev['verdict'], 'by' => $rev['reviewed_by'],
+                            'at' => $rev['reviewed_at'], 'reason' => $rev['reason'],
+                        ],
                     ],
                 ];
             }, $lateDays);
@@ -1630,10 +1668,44 @@ class AttendanceController extends Controller
                 return response()->json(['success' => false, 'message' => 'Attendance record not found.'], 404);
             }
             if (($validated['action'] ?? 'unlock') === 'clear') {
+                // ⚠⚠ Phase 0 (Sep-6 2026) — clearing DESTROYS the only record that this day was
+                //    ever bypassed: who granted it and why. bypassedCheckout() then reads false
+                //    for a day that WAS bypassed, so its overtime silently stops being re-based
+                //    onto the last delivery. Snapshot the three columns before nulling them.
+                try {
+                    $before = [];
+                    foreach (['checkout_unlock_until', 'checkout_unlock_by', 'checkout_unlock_reason'] as $col) {
+                        if (($att->$col ?? null) !== null) {
+                            $before[$col] = $att->$col;
+                        }
+                    }
+                    if ($before) {
+                        $riderName = DB::table('t_sys_user')->where('id', $att->user_id)->value('fullname');
+                        \App\Services\AuditLogger::log(
+                            'checkout_unlock_cleared',
+                            'attendance',
+                            (int) $att->id,
+                            trim(($riderName ?? 'rider') . ' ' . substr((string) $att->attendance_date, 0, 10)),
+                            $before,
+                            null,
+                            trim($validated['reason'])
+                        );
+                    }
+                } catch (\Throwable $e) { /* auditing must never break the action */ }
+
                 DB::table('t_ops_attendance')->where('id', $att->id)->update([
                     'checkout_unlock_until' => null, 'checkout_unlock_by' => null,
                     'checkout_unlock_reason' => null, 'updated_at' => now(),
                 ]);
+                // Clearing the valve changes how the day's overtime is counted (a bypassed
+                // checkout is re-based to the last delivery; a cleared one is not), so any
+                // review of that day was judged on a figure that no longer exists.
+                try {
+                    app(\App\Services\HR\DayReviewService::class)->supersedeIfChanged(
+                        (int) $att->user_id, (string) $att->attendance_date,
+                        'the checkout bypass was cleared'
+                    );
+                } catch (\Throwable $e) { /* never break the action */ }
                 return response()->json(['success' => true, 'message' => 'Checkout unlock cleared.']);
             }
             if (!empty($att->logout_time)) {
@@ -1840,6 +1912,14 @@ class AttendanceController extends Controller
                     trim($validated['reason'])
                 );
             } catch (\Throwable $e) { /* auditing must never break the action */ }
+
+            // The whole checkout bundle is gone, so the day has no overtime figure left to
+            // stand behind a verdict. Retire the review and put the day back in the queue.
+            try {
+                app(\App\Services\HR\DayReviewService::class)->supersedeIfChanged(
+                    (int) $att->user_id, $date, 'the checkout was undone — he was put back on duty'
+                );
+            } catch (\Throwable $e) { /* never break the action */ }
 
             Log::info('Checkout undone — rider put back on duty', [
                 'attendance_id' => $att->id, 'user_id' => $att->user_id, 'date' => $date,
@@ -2369,7 +2449,11 @@ class AttendanceController extends Controller
                 // Accept H:i:s too — DB rows store seconds (mobile check-in), and the
                 // edit modal echoes the loaded value back, so "12:07:45" must not 422.
                 'login_time' => 'nullable|date_format:H:i,H:i:s',
-                'logout_time' => 'nullable|date_format:H:i,H:i:s'
+                'logout_time' => 'nullable|date_format:H:i,H:i:s',
+                // Phase 0 (Sep-6 2026) — why an ALREADY-RECORDED time is being changed. Only
+                // required when a stored value is actually being overwritten (see below), so a
+                // plain quick-ADD of a missing check-in/out is unchanged.
+                'reason' => 'nullable|string|max:200',
             ]);
 
             $loggedInUserId = auth()->id() ?? 1; // Track who made the change
@@ -2473,6 +2557,45 @@ class AttendanceController extends Controller
                 }
             }
 
+            // ⭐⭐ Phase 0 (Sep-6 2026) — PROVENANCE ON A TIME EDIT.
+            //    A typed check-out is the single field the whole overtime figure hangs off
+            //    (stampAttendanceSnapshot re-freezes late/overtime from it right below), and it
+            //    was the least-audited write in the system: `updated_by` + `updated_at` and
+            //    nothing else, so the previous time was gone after one save and a second edit
+            //    overwrote even that trace. Every OTHER door here (checkoutUnlock, undoCheckout,
+            //    homeMeterManagerEntry) already demands a typed reason; this one now does too.
+            // ⭐ Only an OVERWRITE asks for a reason. Filling a blank field is an ADD — the daily
+            //   "he forgot to press OUT" fix — and stays a two-click operation.
+            $normTime = static fn ($t) => ($t === null || $t === '') ? null : substr((string) $t, 0, 5);
+            $timeChanges = [];
+            if ($existing) {
+                foreach (['login_time', 'logout_time'] as $col) {
+                    if (!$request->filled($col)) {
+                        continue;
+                    }
+                    $old = $existing->$col ?? null;
+                    if ($old === null || $old === '') {
+                        continue; // blank → value = an add, not an edit
+                    }
+                    if ($normTime($old) !== $normTime($validated[$col])) {
+                        $timeChanges[$col] = ['old' => (string) $old, 'new' => (string) $validated[$col]];
+                    }
+                }
+            }
+            if ($timeChanges && !$request->filled('reason')) {
+                $what = implode(' and ', array_map(
+                    static fn ($c) => $c === 'login_time' ? 'check-in' : 'checkout',
+                    array_keys($timeChanges)
+                ));
+                return response()->json([
+                    'success' => false,
+                    'reason_required' => true,
+                    'fields' => array_keys($timeChanges),
+                    'message' => 'Say why the ' . $what . ' is being changed — this time sets his overtime, '
+                        . 'so the reason is kept with the old value.',
+                ], 422);
+            }
+
             if ($existing) {
                 // Update existing - only update fields that were provided
                 $updateData = [];
@@ -2490,6 +2613,23 @@ class AttendanceController extends Controller
                 DB::table('t_ops_attendance')
                     ->where('id', $existing->id)
                     ->update($updateData);
+
+                // The old value, the new value, who and why — the record a later reviewer of this
+                // day's overtime needs in order to trust (or distrust) the figure.
+                if ($timeChanges) {
+                    try {
+                        $riderName = DB::table('t_sys_user')->where('id', $validated['user_id'])->value('fullname');
+                        \App\Services\AuditLogger::log(
+                            'attendance_time_edited',
+                            'attendance',
+                            (int) $existing->id,
+                            trim(($riderName ?? 'rider') . ' ' . substr((string) $validated['attendance_date'], 0, 10)),
+                            $timeChanges,
+                            null,
+                            trim((string) $request->input('reason'))
+                        );
+                    } catch (\Throwable $e) { /* auditing must never break the save */ }
+                }
             } else {
                 // Insert new
                 DB::table('t_ops_attendance')->insert([
@@ -2517,7 +2657,34 @@ class AttendanceController extends Controller
                 ]);
             }
 
-            return response()->json(['success' => true, 'message' => 'Attendance recorded']);
+            // ⭐⭐ A day that was already reviewed and has now been EDITED must not keep its
+            // verdict — the figure the manager judged no longer exists. The review is retired
+            // (it stops affecting every number immediately) and the day returns to the queue
+            // saying what moved. Must run AFTER the snapshot re-stamp, because that is what
+            // rewrites late_minutes / overtime_minutes and therefore the fingerprint.
+            $requeued = false;
+            if ($timeChanges) {
+                try {
+                    $what = [];
+                    foreach ($timeChanges as $col => $c) {
+                        $what[] = ($col === 'login_time' ? 'in ' : 'out ')
+                            . substr((string) $c['old'], 0, 5) . ' → ' . substr((string) $c['new'], 0, 5);
+                    }
+                    $by = trim((string) (auth()->user()->fullname ?? ''));
+                    $requeued = app(\App\Services\HR\DayReviewService::class)->supersedeIfChanged(
+                        (int) $validated['user_id'],
+                        $validated['attendance_date'],
+                        implode(' · ', $what) . ($by !== '' ? ' by ' . $by : '')
+                    );
+                } catch (\Throwable $e) { /* never break the save */ }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Attendance recorded'
+                    . ($requeued ? ' — this day had been reviewed, so it goes back for a fresh look.' : ''),
+                'review_requeued' => $requeued,
+            ]);
         } catch (\Exception $e) {
             \Log::error('Attendance store error: ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
@@ -2813,6 +2980,16 @@ class AttendanceController extends Controller
             $userData['total_overtime_minutes'] = $lateOt['overtime_minutes'];
             $userData['late_days'] = $lateOt['late_days'];
             $userData['overtime_days'] = $lateOt['overtime_days'];
+            // ⭐ Sep-6 2026 — the SAME day-review split and standing the Payroll screen shows.
+            // A manager reading lateness here and lateness there must not be told two different
+            // stories about the same month: `total_late_minutes` is already net of anything
+            // waived, so without these two the smaller number would look like a bug.
+            $userData['late_waived_minutes'] = (int) ($lateOt['late_waived_minutes'] ?? 0);
+            $userData['late_raw_minutes'] = (int) ($lateOt['late_raw_minutes'] ?? $lateOt['late_minutes']);
+            try {
+                $userData['day_review'] = app(\App\Services\HR\DayReviewService::class)
+                    ->summary($userId, substr((string) $startDate, 0, 7));
+            } catch (\Throwable $e) { $userData['day_review'] = null; }
 
             // TARGET-based overtime (worked beyond the configured shift length) — this IS
             // "overtime" on every manager-facing screen (owner ruling Jul-28): it is the work

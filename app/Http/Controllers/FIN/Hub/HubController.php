@@ -139,6 +139,7 @@ class HubController extends Controller
         $transactionTypes = [
             LedgerModel::TYPE_INVOICE => 'Invoice',
             LedgerModel::TYPE_ORDER_PAYMENT => 'Order Payment',
+            LedgerModel::TYPE_SUPPLY_PURCHASE => 'Storage stock purchase',
             LedgerModel::TYPE_EMPLOYEE_DEPOSIT => 'Deposit',
             LedgerModel::TYPE_EXPENSE => 'Expense',
             LedgerModel::TYPE_VENDOR_PURCHASE => 'Vendor Purchase',
@@ -1745,6 +1746,30 @@ class HubController extends Controller
             'entered' => !empty($it['created_at'])
                 ? \Carbon\Carbon::parse($it['created_at'])->format('M d, Y · g:i A') : null,
             'by' => ($it['by'] ?? null) ?: '—',
+            // 🏦 The bank's own timestamp / reference for this row, when a signal backs it. This is
+            // the line to read against a real bank statement — `date` above is when we FILED it.
+            // Absent on every other Hub page, so the drawer just hides the block there.
+            'bankAt' => !empty($it['bank_at'])
+                ? \Carbon\Carbon::parse($it['bank_at'])->format('M d, Y · g:i A') : null,
+            'bankRef' => $it['bank_ref'] ?? null,
+            // Source, and HOW it was tied to this row — a hard link (the assistant's own record)
+            // reads differently from a bank+amount+day pairing, and the reader should know which.
+            'bankSrc' => trim((match ($it['bank_src'] ?? null) {
+                'bank_sms' => 'bank SMS',
+                'email'    => 'bank email',
+                'whatsapp' => 'customer screenshot',
+                default    => '',
+            }) . (match ($it['bank_via'] ?? null) {
+                'order'   => ' · matched to this order',
+                'claimed' => ' · filed against this entry by the assistant',
+                'card'    => ' · this entry was recorded from that SMS',
+                'matched' => ' · paired by bank, amount and day',
+                default   => '',
+            })) ?: null,
+            // −1 / 0 / +1: the bank's day is before / same as / after the day we filed it under.
+            // Only a non-zero value needs a second look while reconciling.
+            'bankDrift' => (!empty($it['bank_at']) && !empty($it['date']))
+                ? (substr((string) $it['bank_at'], 0, 10) <=> (string) $it['date']) : 0,
             'from' => '—', 'fromsub' => '', 'to' => '—', 'tosub' => '',
             'statusLabel' => 'Recorded',
             'url' => null, 'pending' => false,
@@ -1991,10 +2016,266 @@ class HubController extends Controller
     }
 
     /**
+     * 🏦 THE BANK'S OWN DATE AND REFERENCE for a set of ledger rows.
+     *
+     * ⭐ Why this exists (owner ask, Sep-2026 — "let me match this screen against my real bank
+     * statement"). A statement row here is filed under `t_fin_ledger.transaction_date`, which is
+     * the day the payment was RECORDED: staff pick it on the payment form and it defaults to
+     * today, so money that landed on Tuesday evening and was entered on Wednesday morning is filed
+     * under Wednesday. The bank's own timestamp and reference DO exist, in two different places
+     * depending on the direction of the money — and neither was ever copied onto the ledger row:
+     *
+     *   • MONEY IN  → `t_fin_payment_signal` (bank SMS / bank email / customer screenshot the
+     *                 assistant parsed), tied to the ORDER: `ledger.order_id ⇄ matched_order_id`.
+     *   • MONEY OUT → `t_ai_bank_sms` debit alerts read off the manager's phone, tied to the
+     *                 LEDGER ROW by the assistant's money-inbox (`linked_ledger_id`), or to the
+     *                 card that created the row (`linked_draft_id → t_ai_drafts.result_id`).
+     *
+     * ⚠ READ-ONLY DECORATION. It must never influence an amount, a direction, a day total or the
+     * running-balance walk — those all stay keyed on transaction_date exactly as before. This
+     * only adds a line of text to a row and its drawer. Either half failing ⇒ blanks, never an
+     * error: a nicety hanging off a money screen must not be able to take that screen down.
+     *
+     * @param  \Illuminate\Support\Collection  $rows       ledger rows (id, order_id, request_id,
+     *                                                     amount, receiving_account_id, from/to)
+     * @param  int[]                            $onlineIds  the ONLINE pool account ids
+     * @return array<int, array{at:string,ref:?string,source:string,bank_side:bool,via:string}> keyed by ledger id
+     */
+    private function bankSignalsFor($rows, array $onlineIds): array
+    {
+        $credit = $this->creditSignalsFor($rows);
+        // Only rows that money LEFT through are candidates for a debit alert. A row the credit
+        // half already explained is never re-explained.
+        $outRows = $rows->filter(fn ($r) => !isset($credit[(int) $r->id])
+            && in_array((int) $r->from_account_id, $onlineIds, true)
+            && !in_array((int) $r->to_account_id, $onlineIds, true));
+        return $credit + $this->debitSmsFor($outRows);
+    }
+
+    /**
+     * 📤 MONEY OUT — the debit alert (`t_ai_bank_sms`) behind a ledger row.
+     *
+     * Mirrors the assistant's own pairing so this screen never claims MORE than the money-inbox
+     * would (AssistantWorkspaceController::reconcileRecordedDebits is the reference):
+     *   1. a hard link wins: the SMS that CLAIMED the row (`linked_ledger_id`), or the SMS whose
+     *      card CREATED it — vendor payments and transfers post a ledger row (`result_type =
+     *      ledger`), expenses post a REQUEST the ledger row points at via `request_id`
+     *      (`result_type = request`);
+     *   2. otherwise the sweep's exactly-one rule: same bank, amount ±1, day ±1, among alerts not
+     *      already linked to anything and not ignored — and ONLY when exactly one alert fits the
+     *      row AND that alert fits exactly one row. Split transfers (four Rs 150,000 to one
+     *      vendor in two minutes, Aug-10) are genuinely ambiguous, so they show nothing rather
+     *      than a confidently wrong time.
+     * Measured on dev before building: 285 bank debits since SMS reading began (Jul-21), 47
+     * mappable (16%) — but 48% on Meezan, the phone that is actually read, and 124 of the
+     * unmapped rows sit on banks with no debit alert ever. Coverage is a reading problem, not a
+     * matching problem.
+     */
+    private function debitSmsFor($rows): array
+    {
+        if ($rows->isEmpty()) {
+            return [];
+        }
+        try {
+            $ids = $rows->pluck('id')->map(fn ($v) => (int) $v)->all();
+            $requestIds = $rows->pluck('request_id')->filter()->map(fn ($v) => (int) $v)->unique()->values()->all();
+
+            $pack = fn ($s, string $via) => [
+                'at' => substr((string) $s->sms_at, 0, 19),
+                'ref' => ($s->reference !== null && $s->reference !== '') ? (string) $s->reference : null,
+                'source' => 'bank_sms',
+                'bank_side' => true,
+                'via' => $via,
+            ];
+            $out = [];
+
+            // 1a. The alert that claimed the row.
+            $claimed = \Illuminate\Support\Facades\DB::table('t_ai_bank_sms')
+                ->whereIn('linked_ledger_id', $ids)->whereNotNull('sms_at')
+                ->orderBy('id')
+                ->get(['linked_ledger_id', 'sms_at', 'reference']);
+            foreach ($claimed as $s) {
+                $out[(int) $s->linked_ledger_id] = $out[(int) $s->linked_ledger_id] ?? $pack($s, 'claimed');
+            }
+
+            // 1b. The alert whose card created the row (directly, or through its request).
+            $viaCard = \Illuminate\Support\Facades\DB::table('t_ai_bank_sms as b')
+                ->join('t_ai_drafts as d', 'd.id', '=', 'b.linked_draft_id')
+                ->whereNotNull('b.sms_at')
+                ->where(function ($w) use ($ids, $requestIds) {
+                    $w->where(fn ($x) => $x->where('d.result_type', 'ledger')->whereIn('d.result_id', $ids));
+                    if ($requestIds) {
+                        $w->orWhere(fn ($x) => $x->where('d.result_type', 'request')->whereIn('d.result_id', $requestIds));
+                    }
+                })
+                ->orderBy('b.id')
+                ->get(['d.result_type', 'd.result_id', 'b.sms_at', 'b.reference']);
+            if ($viaCard->isNotEmpty()) {
+                $byRequest = [];
+                foreach ($rows as $r) {
+                    if (!empty($r->request_id)) {
+                        $byRequest[(int) $r->request_id][] = (int) $r->id;
+                    }
+                }
+                foreach ($viaCard as $s) {
+                    $targets = $s->result_type === 'ledger'
+                        ? [(int) $s->result_id]
+                        : ($byRequest[(int) $s->result_id] ?? []);
+                    foreach ($targets as $lid) {
+                        $out[$lid] = $out[$lid] ?? $pack($s, 'card');
+                    }
+                }
+            }
+
+            // 2. Exactly-one pairing for what is left.
+            $rest = $rows->filter(fn ($r) => !isset($out[(int) $r->id]) && !empty($r->receiving_account_id)
+                && $r->transaction_date);
+            if ($rest->isEmpty()) {
+                return $out;
+            }
+            $banks = $rest->pluck('receiving_account_id')->map(fn ($v) => (int) $v)->unique()->values()->all();
+            $dates = $rest->map(fn ($r) => $r->transaction_date->toDateString());
+            $free = \Illuminate\Support\Facades\DB::table('t_ai_bank_sms')
+                ->where('direction', 'debit')
+                ->where('status', '<>', 'ignored')
+                ->whereNull('linked_ledger_id')->whereNull('linked_draft_id')
+                ->whereIn('receiving_account_id', $banks)
+                ->where('amount', '>', 0)
+                ->whereBetween(\Illuminate\Support\Facades\DB::raw('DATE(sms_at)'), [
+                    \Carbon\Carbon::parse($dates->min())->subDay()->toDateString(),
+                    \Carbon\Carbon::parse($dates->max())->addDay()->toDateString(),
+                ])
+                ->get(['id', 'receiving_account_id', 'amount', 'sms_at', 'reference']);
+            if ($free->isEmpty()) {
+                return $out;
+            }
+            // Candidate pairs both ways, then keep only the pairs that are unique in BOTH
+            // directions — the same standard the sweep applies, applied symmetrically.
+            $rowCands = [];
+            $smsCands = [];
+            foreach ($rest as $r) {
+                $d = $r->transaction_date->toDateString();
+                foreach ($free as $s) {
+                    if ((int) $s->receiving_account_id !== (int) $r->receiving_account_id) {
+                        continue;
+                    }
+                    if (abs((float) $s->amount - (float) $r->amount) > 1.0) {
+                        continue;
+                    }
+                    $sd = substr((string) $s->sms_at, 0, 10);
+                    if (abs(\Carbon\Carbon::parse($sd)->diffInDays(\Carbon\Carbon::parse($d), false)) > 1) {
+                        continue;
+                    }
+                    $rowCands[(int) $r->id][] = (int) $s->id;
+                    $smsCands[(int) $s->id][] = (int) $r->id;
+                }
+            }
+            $byId = $free->keyBy('id');
+            foreach ($rowCands as $lid => $sids) {
+                if (count($sids) !== 1 || count($smsCands[$sids[0]] ?? []) !== 1) {
+                    continue; // ambiguous either way ⇒ say nothing
+                }
+                $out[$lid] = $pack($byId[$sids[0]], 'matched');
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return []; // assistant tables absent or unreadable ⇒ no debit dates, page unaffected
+        }
+    }
+
+    /**
+     * 📥 MONEY IN — the payment signal behind a customer-payment row.
+     *
+     * Which signal wins, when an order has several:
+     *   1. the amounts must agree (±1 rupee) — one order can hold several part-payments, and the
+     *      only thing tying THIS row to THAT signal is what it was for;
+     *   2. the bank's own word beats the customer's — bank_sms/email before a WhatsApp
+     *      screenshot, whose clock is whatever the payer's phone happened to say;
+     *   3. among bank-side signals, one carrying a reference beats one without;
+     *   4. then newest.
+     * Measured on dev before building: of 626 rows matching more than one signal, 625 agreed on
+     * the date — so the pick is nearly always between duplicates of one true transfer.
+     *
+     * @param  \Illuminate\Support\Collection  $rows  ledger rows (need id, order_id, amount)
+     * @return array<int, array{at:string,ref:?string,source:string,bank_side:bool,via:string}> keyed by ledger id
+     */
+    private function creditSignalsFor($rows): array
+    {
+        $orderIds = $rows->pluck('order_id')->filter()->unique()->values();
+        if ($orderIds->isEmpty()) {
+            return [];
+        }
+        try {
+            $sigs = \App\Models\FIN\PaymentSignal::whereIn('matched_order_id', $orderIds->all())
+                ->whereNotNull('extracted_txn_datetime')
+                ->get(['id', 'matched_order_id', 'source', 'extracted_amount', 'extracted_ref', 'extracted_txn_datetime']);
+        } catch (\Throwable $e) {
+            // Signals table absent or unreadable ⇒ the screen simply shows no bank dates. This is
+            // a nicety hanging off a money screen; it must never be able to take that screen down.
+            return [];
+        }
+        if ($sigs->isEmpty()) {
+            return [];
+        }
+
+        $byOrder = $sigs->groupBy('matched_order_id');
+        $rank = function ($s) {
+            $bankSide = in_array((string) $s->source, \App\Models\FIN\PaymentSignal::BANK_SIDE_SOURCES, true);
+            if (!$bankSide) {
+                return 1;
+            }
+            return ($s->extracted_ref !== null && $s->extracted_ref !== '') ? 3 : 2;
+        };
+
+        $out = [];
+        foreach ($rows as $r) {
+            $oid = (int) ($r->order_id ?? 0);
+            if (!$oid) {
+                continue;
+            }
+            $cands = $byOrder->get($oid);
+            if (!$cands) {
+                continue;
+            }
+            $amount = (float) $r->amount;
+            $best = null;
+            $bestRank = 0;
+            foreach ($cands as $s) {
+                if (abs((float) $s->extracted_amount - $amount) > 1.0) {
+                    continue;
+                }
+                $thisRank = $rank($s);
+                $wins = $best === null
+                    || $thisRank > $bestRank
+                    || ($thisRank === $bestRank && $s->extracted_txn_datetime > $best->extracted_txn_datetime);
+                if ($wins) {
+                    $best = $s;
+                    $bestRank = $thisRank;
+                }
+            }
+            if ($best === null) {
+                continue;
+            }
+            $out[(int) $r->id] = [
+                'at' => $best->extracted_txn_datetime->format('Y-m-d H:i:s'),
+                'ref' => ($best->extracted_ref !== null && $best->extracted_ref !== '') ? (string) $best->extracted_ref : null,
+                'source' => (string) $best->source,
+                'bank_side' => in_array((string) $best->source, \App\Models\FIN\PaymentSignal::BANK_SIDE_SOURCES, true),
+                'via' => 'order',
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * Bank detail — the bank's statement as an INLINE day-grouped table (consistent with the
      * Account/Vendor detail pages, not a modal). {id} = a bank id, or 'unassigned' for the No-bank
      * bucket. Running balance is derived BACKWARD from the known current balance (BankBalanceService),
      * so it never needs a pre-window seed.
+     *
+     * Two read-only layers sit on top of that, added Sep-2026 so the screen can be reconciled
+     * against a real bank statement: the 🏦 bank date/reference per row (bankSignalsFor), and 🔍
+     * search (?q=), which switches the page into a flat all-history result list with no walk.
      */
     public function bankDetail(Request $request, $id, \App\Services\FIN\BankBalanceService $balances)
     {
@@ -2010,6 +2291,96 @@ class HubController extends Controller
         // filters them out), so showing them with a running balance would be a lie. They are hidden
         // by default and revealed read-only via ?history=1 — nothing is ever actually lost.
         $showHistory = $request->boolean('history');
+
+        // 🔍 SEARCH (Sep-2026 — owner ask: "I can see a line on my real bank statement and I cannot
+        // find it here"). Search is a MODE, not a filter on the current view:
+        //   • it ignores the period chips and the reset baseline and looks at ALL history — the
+        //     whole point is finding a row you could not find, and a hit hidden by the 30-day
+        //     window would read as "not in the ledger", which is the exact wrong answer;
+        //   • it draws NO running balance. The walk below is only true over a complete, unbroken
+        //     set of rows; run it over a filtered subset and every Balance cell states a figure the
+        //     account never held. Better a blank column than a confident lie.
+        // With an empty box every line below behaves exactly as it did before.
+        $search = trim((string) $request->get('q', ''));
+        if (mb_strlen($search) > 60) {
+            $search = mb_substr($search, 0, 60);
+        }
+        $isSearch = $search !== '';
+        // "12,000" / "Rs. 12000" / "12000.50" all mean the amount. Kept separate from the text
+        // match rather than replacing it: a bare number is also a plausible order number.
+        $searchNum = null;
+        if ($isSearch) {
+            $bare = str_replace([',', ' ', "\u{a0}"], '', preg_replace('/rs\.?/i', '', $search));
+            if ($bare !== '' && is_numeric($bare)) {
+                $searchNum = (float) $bare;
+            }
+        }
+        if ($isSearch) {
+            $since = null;          // all history, whatever the period chips say
+            $showHistory = true;    // and across the reset baseline too
+        }
+        // LIKE needs its own wildcards escaped or a customer note containing % matches everything.
+        $searchLike = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $search) . '%';
+
+        // Ledger side of the search. Description covers the customer name (invoice rows carry it)
+        // and the "· via MBL-4237" token; the two subqueries reach the things that are NOT on the
+        // ledger row at all — the bank's own reference and the payer name (payment signals), and
+        // the counterparty's name (vendor / employee accounts).
+        // The assistant's tables are live on prod, but a search must not 500 if they are ever not
+        // there — the ledger-side matches still stand on their own.
+        $smsTablesOk = $isSearch
+            && \Illuminate\Support\Facades\Schema::hasTable('t_ai_bank_sms')
+            && \Illuminate\Support\Facades\Schema::hasTable('t_ai_drafts');
+        $applyLedgerSearch = function ($lq) use ($isSearch, $searchLike, $searchNum, $smsTablesOk) {
+            if (!$isSearch) {
+                return $lq;
+            }
+            return $lq->where(function ($w) use ($searchLike, $searchNum, $smsTablesOk) {
+                $w->where('description', 'LIKE', $searchLike)
+                  ->orWhereIn('to_account_id', function ($sub) use ($searchLike) {
+                      $sub->select('id')->from('t_fin_accounts')->where('account_name', 'LIKE', $searchLike);
+                  })
+                  ->orWhereIn('order_id', function ($sub) use ($searchLike) {
+                      $sub->select('matched_order_id')->from('t_fin_payment_signal')
+                          ->whereNotNull('matched_order_id')
+                          ->where(function ($s) use ($searchLike) {
+                              $s->where('extracted_ref', 'LIKE', $searchLike)
+                                ->orWhere('extracted_sender_name', 'LIKE', $searchLike);
+                          });
+                  });
+                // Money OUT: the debit alert's reference / counterparty, reached through the
+                // assistant's hard links only (the row it claimed, or the card that created
+                // the row — directly or via its expense request). No fuzzy pairing in a search.
+                if ($smsTablesOk) {
+                  $w->orWhereIn('id', function ($sub) use ($searchLike) {
+                      $sub->select('linked_ledger_id')->from('t_ai_bank_sms')
+                          ->whereNotNull('linked_ledger_id')
+                          ->where(fn ($s) => $s->where('reference', 'LIKE', $searchLike)
+                                               ->orWhere('counterparty', 'LIKE', $searchLike));
+                  })
+                  ->orWhereIn('id', function ($sub) use ($searchLike) {
+                      $sub->select('d.result_id')->from('t_ai_drafts as d')
+                          ->join('t_ai_bank_sms as b', 'b.linked_draft_id', '=', 'd.id')
+                          ->where('d.result_type', 'ledger')->whereNotNull('d.result_id')
+                          ->where(fn ($s) => $s->where('b.reference', 'LIKE', $searchLike)
+                                               ->orWhere('b.counterparty', 'LIKE', $searchLike));
+                  })
+                  ->orWhereIn('request_id', function ($sub) use ($searchLike) {
+                      $sub->select('d.result_id')->from('t_ai_drafts as d')
+                          ->join('t_ai_bank_sms as b', 'b.linked_draft_id', '=', 'd.id')
+                          ->where('d.result_type', 'request')->whereNotNull('d.result_id')
+                          ->where(fn ($s) => $s->where('b.reference', 'LIKE', $searchLike)
+                                               ->orWhere('b.counterparty', 'LIKE', $searchLike));
+                  });
+                }
+                if ($searchNum !== null) {
+                    // ±1 rupee: the owner reads the figure off a statement, and rounding in either
+                    // direction should still find it.
+                    $w->orWhereBetween('amount', [$searchNum - 1, $searchNum + 1])
+                      ->orWhere('order_id', (int) $searchNum);
+                }
+            });
+        };
 
         // Set for a real bank whose baseline came from a rebalance: the exact moment it was declared,
         // and the figure that was typed. Rows already on the books at that moment are baked INTO the
@@ -2041,6 +2412,7 @@ class HubController extends Controller
             $q = $baseUntagged();
             if ($resetDate && !$showHistory) $q->whereDate('transaction_date', '>=', $resetDate);
             if ($since) $q->whereDate('transaction_date', '>=', $since);
+            $applyLedgerSearch($q);
             $rows = $q->orderByDesc('transaction_date')->orderByDesc('id')->limit(1000)->get();
             $adjRows = collect();
             $preCount = ($resetDate && !$showHistory)
@@ -2075,6 +2447,7 @@ class HubController extends Controller
                 ->whereIn('approval_status', [LedgerModel::STATUS_APPROVED, LedgerModel::STATUS_PENDING_L2]);
             if ($resetDate && !$showHistory) $q->whereDate('transaction_date', '>=', $resetDate);
             if ($since) $q->whereDate('transaction_date', '>=', $since);
+            $applyLedgerSearch($q);
             $rows = $q->orderByDesc('transaction_date')->orderByDesc('id')->limit(1000)->get();
             $adjRows = collect();
             $preCount = 0;
@@ -2087,6 +2460,16 @@ class HubController extends Controller
                 $aq = \App\Models\FIN\BankBalanceAdjustmentModel::where('receiving_account_id', $model->id);
                 if ($resetDate && !$showHistory) $aq->whereDate('adjustment_date', '>=', $resetDate);
                 if ($since) $aq->whereDate('adjustment_date', '>=', $since);
+                // ⚖ fixes and ⇄ transfer legs are searchable too — they are real lines on the
+                // statement, and a fix is often exactly what the owner is hunting for.
+                if ($isSearch) {
+                    $aq->where(function ($w) use ($searchLike, $searchNum) {
+                        $w->where('note', 'LIKE', $searchLike);
+                        if ($searchNum !== null) {
+                            $w->orWhereRaw('ABS(ABS(amount) - ?) <= 1', [$searchNum]);
+                        }
+                    });
+                }
                 $adjRows = $aq->orderByDesc('adjustment_date')->limit(200)->get();
                 if ($resetDate && !$showHistory) {
                     $preCount += \App\Models\FIN\BankBalanceAdjustmentModel::where('receiving_account_id', $model->id)
@@ -2100,12 +2483,22 @@ class HubController extends Controller
         $cpIds = $rows->filter(fn ($r) => in_array($r->transaction_type, $cpTypes, true))->pluck('to_account_id')->filter()->unique();
         $cpNames = $cpIds->isNotEmpty() ? AccountModel::whereIn('id', $cpIds->all())->pluck('account_name', 'id') : collect();
 
-        $items = $rows->map(function ($r) use ($onlineIds, $cpTypes, $cpNames) {
+        // 🏦 The bank's OWN date and reference for each row, joined in at read time. Decoration
+        // only — see bankSignalsFor(). Rows with no signal behind them simply carry nulls.
+        $bankSigs = $this->bankSignalsFor($rows, $onlineIds);
+
+        $items = $rows->map(function ($r) use ($onlineIds, $cpTypes, $cpNames, $bankSigs) {
             $toOnline = in_array((int) $r->to_account_id, $onlineIds, true);
             $fromOnline = in_array((int) $r->from_account_id, $onlineIds, true);
             $dir = ($toOnline && !$fromOnline) ? 'in' : (($fromOnline && !$toOnline) ? 'out' : 'neutral');
+            $sig = $bankSigs[(int) $r->id] ?? null;
             return [
                 'id' => $r->id, 'date' => optional($r->transaction_date)->toDateString(),
+                'bank_at' => $sig['at'] ?? null,
+                'bank_ref' => $sig['ref'] ?? null,
+                'bank_src' => $sig['source'] ?? null,
+                'bank_side' => $sig['bank_side'] ?? false,
+                'bank_via' => $sig['via'] ?? null,
                 'type' => $r->transaction_type, 'description' => $r->description,
                 'counterparty' => in_array($r->transaction_type, $cpTypes, true) ? ($cpNames[(int) $r->to_account_id] ?? null) : null,
                 'amount' => (float) $r->amount, 'direction' => $dir, 'is_adjustment' => false, 'is_reset' => false,
@@ -2150,6 +2543,8 @@ class HubController extends Controller
             'id' => $a->id, 'date' => optional($a->adjustment_date)->toDateString(),
             'type' => ($a->transfer_group ?? null) ? 'bank_transfer' : 'adjustment',
             'description' => $a->note ?: 'Manual balance fix', 'counterparty' => null,
+            // Attribution rows are ours, not the bank's — they never carry a bank timestamp.
+            'bank_at' => null, 'bank_ref' => null, 'bank_src' => null, 'bank_side' => false, 'bank_via' => null,
             'amount' => abs((float) $a->amount), 'direction' => (float) $a->amount >= 0 ? 'in' : 'out',
             'is_adjustment' => true, 'is_reset' => false,
             'created_at' => optional($a->created_at)->format('Y-m-d H:i:s'),
@@ -2169,6 +2564,24 @@ class HubController extends Controller
             }
             return strcmp((string) ($b['created_at'] ?? ''), (string) ($a['created_at'] ?? ''));
         })->values();
+
+        // ── Search mode: a flat list of hits, and nothing else. ────────────────────────────────
+        // No baseline split, no walk, no ⟲ reset row: every one of those states something about a
+        // CONTINUOUS run of rows, and a search result is by definition a subset. Rows keep their
+        // real dates and amounts; only the Balance column goes blank (the blade drops it).
+        if ($isSearch) {
+            $post = [];
+            foreach ($all as $it) {
+                $it['is_pre'] = false;
+                $it['pre_same_day'] = false;
+                $it['running'] = null;
+                $it['running_before'] = null;
+                $post[] = $it;
+            }
+            $withRun = $post;
+            $pre = [];
+            $preCount = 0;
+        } else {
 
         // Split at the reset baseline. Only post-reset rows build the balance the bank actually
         // shows; pre-reset rows (visible only with ?history=1) are context, never arithmetic.
@@ -2239,6 +2652,8 @@ class HubController extends Controller
             $withRun[] = $it;
         }
 
+        } // end of the non-search (balance-walk) path
+
         // Every row gets an openable record. Attribution rows have no ledger entry behind them, so
         // this IS their audit trail: what happened, which banks, who recorded it, and the balance
         // either side of it.
@@ -2269,6 +2684,47 @@ class HubController extends Controller
             $groups[$d]['items'][] = $it;
         }
 
+        // 🔍 "It's on my statement but not on this page." The commonest reason is that the payment
+        // was tagged to a DIFFERENT bank, or to none at all — and the owner has no way to know
+        // which without opening all fourteen. So when a search finds nothing here, ask the same
+        // question of every other bank and say plainly where it did turn up. Only runs on an empty
+        // result, so it costs nothing in the normal case.
+        $elsewhere = [];
+        if ($isSearch && count($post) === 0) {
+            try {
+                $eq = LedgerModel::whereIn('approval_status', [LedgerModel::STATUS_APPROVED, LedgerModel::STATUS_PENDING_L2])
+                    ->where(fn ($w) => $w->whereIn('to_account_id', $onlineIds)->orWhereIn('from_account_id', $onlineIds));
+                $applyLedgerSearch($eq);
+                if ($isUnassigned) {
+                    $eq->whereNotNull('receiving_account_id');
+                } else {
+                    $eq->where(fn ($w) => $w->whereNull('receiving_account_id')
+                                            ->orWhere('receiving_account_id', '<>', (int) $bank['id']));
+                }
+                $hits = $eq->selectRaw('receiving_account_id, COUNT(*) c, MAX(transaction_date) last_d')
+                    ->groupBy('receiving_account_id')->orderByDesc('c')->limit(8)->get();
+                if ($hits->isNotEmpty()) {
+                    $names = \App\Models\FIN\OnlineReceivingAccountModel::whereIn(
+                        'id', $hits->pluck('receiving_account_id')->filter()->all()
+                    )->pluck('short_code', 'id');
+                    $fullNames = \App\Models\FIN\OnlineReceivingAccountModel::whereIn(
+                        'id', $hits->pluck('receiving_account_id')->filter()->all()
+                    )->pluck('name', 'id');
+                    foreach ($hits as $hit) {
+                        $rid = $hit->receiving_account_id;
+                        $elsewhere[] = [
+                            'id' => $rid ? (int) $rid : 'unassigned',
+                            'label' => $rid ? ($names[(int) $rid] ?? $fullNames[(int) $rid] ?? ('Bank #' . $rid)) : 'No bank',
+                            'count' => (int) $hit->c,
+                            'last' => $hit->last_d ? \Carbon\Carbon::parse($hit->last_d)->format('M d, Y') : null,
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) {
+                $elsewhere = []; // a helper hint, never a reason to fail the page
+            }
+        }
+
         $assignBanks = $isUnassigned && $isTaimur
             ? \App\Models\FIN\OnlineReceivingAccountModel::active()->ordered()->get(['id', 'name', 'short_code'])
             : collect();
@@ -2295,6 +2751,13 @@ class HubController extends Controller
             // not part of the "earlier rows, folded away" count.
             'showHistory' => $showHistory, 'preCount' => $preCount,
             'preShown' => count(array_filter($pre, fn ($p) => empty($p['pre_same_day']))),
+            'search' => $search, 'isSearch' => $isSearch, 'elsewhere' => $elsewhere,
+            // The ledger query is capped at 1000 rows. A search on a common amount across all
+            // history can hit that — say so rather than let "N matches" read as the whole truth.
+            'searchCapped' => $isSearch && $rows->count() >= 1000,
+            // How many rows on screen could be checked against the bank's own date — the honest
+            // answer to "why does this row have a bank date and that one doesn't".
+            'bankDated' => count(array_filter($withRun, fn ($p) => !empty($p['bank_at']))),
         ]);
     }
 

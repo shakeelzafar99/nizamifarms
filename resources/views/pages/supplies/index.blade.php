@@ -1,0 +1,1113 @@
+@extends('layouts.app')
+
+@section('title', '📦 Storage')
+
+@php
+    // Trim trailing zeros: 5.970 -> 5.97, 3.000 -> 3
+    $supFmtQty = function ($qty) {
+        $s = number_format((float) $qty, 3, '.', '');
+        return rtrim(rtrim($s, '0'), '.');
+    };
+@endphp
+
+@push('custom_css')
+<style>
+/* ⚠ Every class here is prefixed sup- on purpose. A bare name like .card/.fixed/.active
+   collides with the global Metronic/Tailwind sheet, which is loaded BEFORE this block —
+   an unprefixed rule inherits whatever that sheet declares (position, display, colour)
+   and the page breaks in ways that look unrelated. Verified: 0 matches for ".sup-". */
+.sup-wrap { padding: 24px; }
+.sup-head { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:18px; }
+.sup-h1 { font-size:22px; font-weight:700; color:#111827; margin:0; }
+.sup-sub { font-size:13px; color:#6B7280; margin-top:2px; }
+.sup-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.sup-btn { padding:9px 16px; font-size:13px; font-weight:600; border-radius:10px; border:1px solid #D1D5DB;
+           background:#fff; color:#374151; cursor:pointer; transition:background .15s; }
+.sup-btn:hover { background:#F9FAFB; }
+.sup-btn-main { background:#0EA5E9; border-color:#0EA5E9; color:#fff; }
+.sup-btn-main:hover { background:#0284C7; }
+.sup-btn-danger { color:#B91C1C; border-color:#FCA5A5; }
+.sup-btn-danger:hover { background:#FEF2F2; }
+.sup-btn:disabled { opacity:.5; cursor:not-allowed; }
+
+.sup-tabs { display:flex; gap:4px; border-bottom:1px solid #E5E7EB; margin-bottom:18px; }
+.sup-tab { padding:9px 16px; font-size:13px; font-weight:600; color:#6B7280; cursor:pointer;
+           border:0; background:none; border-bottom:2px solid transparent; }
+.sup-tab-on { color:#0369A1; border-bottom-color:#0EA5E9; }
+
+.sup-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+.sup-card { border:1px solid #E5E7EB; border-radius:14px; padding:16px; background:#fff; }
+.sup-card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.sup-pname { font-size:15px; font-weight:700; color:#111827; }
+.sup-pmeta { font-size:11px; color:#6B7280; margin-top:2px; }
+.sup-qty { font-size:26px; font-weight:700; color:#0F172A; margin:10px 0 2px; }
+.sup-val { font-size:13px; color:#6B7280; }
+.sup-chip { display:inline-block; padding:2px 8px; font-size:11px; font-weight:600; border-radius:999px; }
+.sup-chip-low { background:#FEF3C7; color:#92400E; }
+.sup-chip-mode { background:#F1F5F9; color:#475569; }
+.sup-chip-warn { background:#FEE2E2; color:#991B1B; }
+.sup-card-btns { display:flex; gap:8px; margin-top:12px; }
+.sup-card-btns .sup-btn { flex:1; text-align:center; }
+
+.sup-tablewrap { overflow-x:auto; border:1px solid #E5E7EB; border-radius:12px; background:#fff; }
+.sup-table { width:100%; border-collapse:collapse; font-size:13px; min-width:640px; }
+.sup-table th { text-align:left; padding:10px 12px; background:#F9FAFB; color:#6B7280;
+                font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.03em;
+                border-bottom:1px solid #E5E7EB; white-space:nowrap; }
+.sup-table td { padding:10px 12px; border-bottom:1px solid #F3F4F6; color:#374151; vertical-align:top; }
+.sup-table tr:last-child td { border-bottom:0; }
+.sup-money { font-variant-numeric:tabular-nums; white-space:nowrap; }
+
+.sup-empty { padding:36px; text-align:center; color:#6B7280; font-size:13px;
+             border:1px dashed #E5E7EB; border-radius:12px; background:#fff; }
+
+.sup-modal { position:fixed; inset:0; background:rgba(15,23,42,.45); display:none;
+             align-items:flex-start; justify-content:center; z-index:1080; padding:24px 16px; overflow-y:auto; }
+.sup-modal-on { display:flex; }
+.sup-box { background:#fff; border-radius:16px; width:100%; max-width:560px; padding:22px;
+           box-shadow:0 20px 45px rgba(0,0,0,.22); }
+.sup-box-title { font-size:17px; font-weight:700; color:#111827; margin-bottom:14px; }
+.sup-field { margin-bottom:12px; }
+.sup-label { display:block; font-size:12px; font-weight:600; color:#374151; margin-bottom:5px; }
+.sup-hint { font-size:11px; color:#6B7280; margin-top:4px; }
+.sup-input, .sup-select { width:100%; padding:9px 11px; font-size:14px; border:1px solid #D1D5DB;
+                          border-radius:9px; color:#111827; background:#fff; }
+.sup-input:focus, .sup-select:focus { outline:2px solid #BAE6FD; border-color:#0EA5E9; }
+.sup-two { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.sup-staged { border:1px solid #E5E7EB; border-radius:10px; max-height:190px; overflow-y:auto; }
+.sup-staged-row { display:flex; align-items:center; justify-content:space-between; gap:8px;
+                  padding:7px 11px; font-size:13px; border-bottom:1px solid #F3F4F6; }
+.sup-staged-row:last-child { border-bottom:0; }
+.sup-x { border:0; background:none; color:#B91C1C; cursor:pointer; font-size:15px; line-height:1; padding:0 4px; }
+.sup-total { display:flex; justify-content:space-between; font-size:13px; font-weight:700;
+             color:#0F172A; padding:9px 11px; background:#F8FAFC; border-radius:9px; margin-top:8px; }
+.sup-msg { font-size:12.5px; padding:9px 11px; border-radius:9px; margin-bottom:12px; display:none; }
+.sup-msg-err { background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; }
+.sup-msg-ok { background:#F0FDF4; color:#166534; border:1px solid #BBF7D0; }
+.sup-modal-btns { display:flex; gap:9px; justify-content:flex-end; margin-top:16px; }
+.sup-none { display:none !important; }
+.sup-switch { display:flex; align-items:center; gap:7px; font-size:12px; color:#374151;
+              padding:7px 12px; border:1px solid #E5E7EB; border-radius:10px; background:#fff; }
+</style>
+@endpush
+
+@section('content')
+<div class="sup-wrap"
+     id="supRoot"
+     data-can-manage="{{ $canManage ? '1' : '0' }}"
+     data-needs-approval="{{ $needsApproval ? '1' : '0' }}">
+
+    <div class="sup-head">
+        <div>
+            <h1 class="sup-h1">📦 Storage</h1>
+            <p class="sup-sub">
+                Packaging bought in bulk. The cost is charged to expenses one packet at a time,
+                on the day it is used — not all at once when it is bought.
+            </p>
+        </div>
+        <div class="sup-actions">
+            @if($pendingCount > 0)
+                <span class="sup-chip sup-chip-warn">{{ $pendingCount }} take-out(s) awaiting approval</span>
+            @endif
+            @if($canManage)
+                <label class="sup-switch" title="When off, a take-out is booked to expenses immediately with no approval step.">
+                    <input type="checkbox" id="supApprovalSwitch" {{ $needsApproval ? 'checked' : '' }}>
+                    Take-outs need approval
+                </label>
+                <button class="sup-btn" onclick="supOpenProduct()">＋ Product</button>
+                <button class="sup-btn sup-btn-main" onclick="supOpenBookIn()">＋ Add stock</button>
+            @endif
+        </div>
+    </div>
+
+    <div class="sup-tabs">
+        <button class="sup-tab sup-tab-on" id="supTabStock" onclick="supShowTab('stock')">Stock</button>
+        <button class="sup-tab" id="supTabBatches" onclick="supShowTab('batches')">Purchases</button>
+        <button class="sup-tab" id="supTabHistory" onclick="supShowTab('history')">History</button>
+    </div>
+
+    {{-- STOCK --}}
+    <div id="supPaneStock">
+        @if(count($stock) === 0)
+            <div class="sup-empty">
+                No storage products yet.
+                @if($canManage) Use <strong>＋ Product</strong> to add one (e.g. Packaging - Bags). @else Ask Taimur or Shabib to add one. @endif
+            </div>
+        @else
+            <div class="sup-cards">
+                @foreach($stock as $row)
+                    @php $p = $row['product']; @endphp
+                    <div class="sup-card">
+                        <div class="sup-card-top">
+                            <div>
+                                <div class="sup-pname">{{ $p->name }}</div>
+                                <div class="sup-pmeta">
+                                    charged to {{ $p->expense_category_name }}
+                                </div>
+                            </div>
+                            <span class="sup-chip sup-chip-mode">
+                                {{ $p->mode === 'weight' ? 'by weight' : ($p->mode === 'scan' ? 'by packet' : 'by piece') }}
+                            </span>
+                        </div>
+
+                        <div class="sup-qty">
+                            {{ $supFmtQty($row['qty_remaining']) }}
+                            <span style="font-size:14px;font-weight:600;color:#6B7280;">
+                                {{ $p->mode === 'weight' ? 'kg' : ($p->mode === 'scan' ? 'packets' : 'pcs') }}
+                            </span>
+                        </div>
+                        <div class="sup-val">
+                            Rs {{ number_format((float) $row['value_remaining'], 0) }} still on the shelf
+                            @if($row['packets_in_stock'] !== null)
+                                · {{ $row['packets_in_stock'] }} packet(s)
+                            @endif
+                        </div>
+                        @if($row['low_stock'])
+                            <div style="margin-top:8px;"><span class="sup-chip sup-chip-low">Running low</span></div>
+                        @endif
+
+                        <div class="sup-card-btns">
+                            <button class="sup-btn sup-btn-main" onclick="supOpenTakeOut({{ $p->id }})">Take out</button>
+                            <button class="sup-btn" onclick="supShowBatches({{ $p->id }})">Purchases</button>
+                            @if($canManage)
+                                <button class="sup-btn" onclick="supOpenCount({{ $p->id }})">Count</button>
+                                <button class="sup-btn" onclick="supOpenProduct({{ $p->id }})">Edit</button>
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        @endif
+    </div>
+
+    {{-- PURCHASES --}}
+    <div id="supPaneBatches" class="sup-none">
+        <div class="sup-field" style="max-width:320px;">
+            <label class="sup-label">Product</label>
+            <select class="sup-select" id="supBatchProduct" onchange="supLoadBatches()">
+                @foreach($stock as $row)
+                    <option value="{{ $row['product']->id }}">{{ $row['product']->name }}</option>
+                @endforeach
+            </select>
+        </div>
+        <div id="supBatchList"></div>
+    </div>
+
+    {{-- HISTORY --}}
+    <div id="supPaneHistory" class="sup-none">
+        <div id="supHistoryList"></div>
+    </div>
+</div>
+@endsection
+
+@push('modals')
+{{-- Manager-only forms. Gated here as well as on the buttons, the JS (CAN_MANAGE) and the
+     server (403) — a staff user should not carry a form in their DOM that they could open
+     from the console only to be refused. Take-out below is for everyone. --}}
+@if($canManage)
+{{-- BOOK IN --}}
+<div class="sup-modal" id="supBookInModal">
+    <div class="sup-box">
+        <div class="sup-box-title">Add stock</div>
+        <div class="sup-msg sup-msg-err" id="supBookInMsg"></div>
+
+        <div class="sup-field">
+            <label class="sup-label">Product</label>
+            <select class="sup-select" id="supBiProduct" onchange="supBiProductChanged()"></select>
+        </div>
+
+        {{-- weight / scan: staged packets --}}
+        <div class="sup-field" id="supBiScanBlock">
+            <label class="sup-label" id="supBiScanLabel">Scan each packet</label>
+            <input type="text" class="sup-input" id="supBiScanInput"
+                   placeholder="Scan a label, or type it and press Enter"
+                   onkeydown="supBiScanKey(event)" autocomplete="off">
+            <div class="sup-hint" id="supBiScanHint"></div>
+            <div class="sup-staged" id="supBiStaged" style="margin-top:8px;"></div>
+            <div class="sup-total"><span id="supBiCountLabel">0 packets</span><span id="supBiQtyLabel">0</span></div>
+            <button class="sup-btn" style="margin-top:8px;" onclick="supBiAddManual()" id="supBiManualBtn">＋ Add without scanning</button>
+        </div>
+
+        {{-- pieces --}}
+        <div class="sup-field sup-none" id="supBiPiecesBlock">
+            <label class="sup-label">How many pieces?</label>
+            <input type="number" class="sup-input" id="supBiPieces" min="1" step="1" placeholder="e.g. 500">
+        </div>
+
+        <div class="sup-two">
+            <div class="sup-field">
+                <label class="sup-label">Total paid (Rs)</label>
+                <input type="number" class="sup-input" id="supBiCost" min="0" step="0.01" placeholder="e.g. 20000">
+            </div>
+            <div class="sup-field">
+                <label class="sup-label">Purchase date</label>
+                <input type="date" class="sup-input" id="supBiDate">
+            </div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Paid from</label>
+            <select class="sup-select" id="supBiSource" onchange="supBiSourceChanged()"></select>
+        </div>
+
+        <div class="sup-field sup-none" id="supBiBankField">
+            <label class="sup-label">Which bank did it leave from?</label>
+            <select class="sup-select" id="supBiBank"></select>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label" style="font-weight:500;">
+                <input type="checkbox" id="supBiStockOnly" onchange="supBiStockOnlyChanged()">
+                Already expensed — track the stock only
+            </label>
+            <div class="sup-hint">
+                For packaging you already booked as an expense in an earlier month. It goes on the
+                shelf, but taking it out will not charge anything.
+            </div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Note (optional)</label>
+            <input type="text" class="sup-input" id="supBiNote" maxlength="255">
+        </div>
+
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supBookInModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main" id="supBiSave" onclick="supBookIn()">Save</button>
+        </div>
+    </div>
+</div>
+@endif
+
+{{-- TAKE OUT --}}
+<div class="sup-modal" id="supTakeOutModal">
+    <div class="sup-box" style="max-width:480px;">
+        <div class="sup-box-title" id="supToTitle">Take out</div>
+        <div class="sup-msg sup-msg-err" id="supToMsg"></div>
+        <div id="supToBody"></div>
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supTakeOutModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main" id="supToConfirm" onclick="supTakeOut()">Take out</button>
+        </div>
+    </div>
+</div>
+
+{{-- FIX PRICE (managers only) --}}
+@if($canManage)
+<div class="sup-modal" id="supCorrectModal">
+    <div class="sup-box" style="max-width:560px;">
+        <div class="sup-box-title">Correct the price</div>
+        <div class="sup-msg sup-msg-err" id="supCoMsg"></div>
+
+        <div class="sup-field">
+            <label class="sup-label">What was actually paid (Rs)</label>
+            <input type="number" class="sup-input" id="supCoAmount" min="0.01" step="0.01">
+            <div class="sup-hint" id="supCoWas"></div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Why (optional)</label>
+            <input type="text" class="sup-input" id="supCoReason" maxlength="255" placeholder="e.g. invoice said 45,000">
+        </div>
+
+        <button class="sup-btn" onclick="supPreviewCorrect()">Show me what changes</button>
+
+        <div id="supCoPreview" class="sup-none" style="margin-top:14px;"></div>
+
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supCorrectModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main sup-none" id="supCoApply" onclick="supApplyCorrect()">Apply the correction</button>
+        </div>
+    </div>
+</div>
+@endif
+
+{{-- STOCK COUNT (managers only) --}}
+@if($canManage)
+<div class="sup-modal" id="supCountModal">
+    <div class="sup-box" style="max-width:480px;">
+        <div class="sup-box-title" id="supCnTitle">Count the shelf</div>
+        <div class="sup-msg sup-msg-err" id="supCnMsg"></div>
+
+        <div class="sup-field">
+            <div class="sup-hint" id="supCnExpected"></div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">How many are actually there?</label>
+            <input type="number" class="sup-input" id="supCnCounted" min="0" step="0.001">
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label" style="font-weight:500;">
+                <input type="checkbox" id="supCnWriteOff" checked>
+                If any are missing, book them as used
+            </label>
+            <div class="sup-hint">
+                A packet that is gone was used — someone just didn't scan it. Ticking this charges
+                it to expenses so the shelf and the books agree. Leave it unticked to record the
+                count without charging anything.
+            </div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Note (optional)</label>
+            <input type="text" class="sup-input" id="supCnNote" maxlength="255">
+        </div>
+
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supCountModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main" id="supCnSave" onclick="supSaveCount()">Record the count</button>
+        </div>
+    </div>
+</div>
+@endif
+
+{{-- PRODUCT (managers only — see the note above) --}}
+@if($canManage)
+<div class="sup-modal" id="supProductModal">
+    <div class="sup-box" style="max-width:520px;">
+        <div class="sup-box-title" id="supPrTitle">New storage product</div>
+        <div class="sup-msg sup-msg-err" id="supPrMsg"></div>
+
+        <div class="sup-field">
+            <label class="sup-label">Name</label>
+            <input type="text" class="sup-input" id="supPrName" maxlength="150" placeholder="e.g. Packaging - Bags">
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">How is one packet counted?</label>
+            <select class="sup-select" id="supPrMode" onchange="supPrModeChanged()">
+                <option value="weight">By weight — scan the scale label (kg)</option>
+                <option value="scan">By packet — scan a fixed barcode, 1 scan = 1 packet</option>
+                <option value="pieces">By piece — no scanning, type the count</option>
+            </select>
+        </div>
+
+        <div class="sup-field sup-none" id="supPrPluField">
+            <label class="sup-label">Scale PLU</label>
+            <input type="number" class="sup-input" id="supPrPlu" min="1" max="999999" placeholder="e.g. 190">
+            <div class="sup-hint">The product number programmed on the Czerlop scale. Highest one in shop use today is 189.</div>
+        </div>
+
+        <div class="sup-field sup-none" id="supPrBarcodeField">
+            <label class="sup-label">Product barcode</label>
+            <input type="text" class="sup-input" id="supPrBarcode" maxlength="40" placeholder="Scan it, or type it">
+        </div>
+
+        <div class="sup-field sup-none" id="supPrPiecesField">
+            <label class="sup-label">Pieces per packet (optional)</label>
+            <input type="number" class="sup-input" id="supPrPiecesPer" min="1" step="1" placeholder="e.g. 50">
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Charge its use to</label>
+            <select class="sup-select" id="supPrCategory"></select>
+            <div class="sup-hint">The expense category each take-out is booked against. You can change it later — entries already made keep the category they were booked under.</div>
+        </div>
+
+        <div class="sup-two">
+            <div class="sup-field">
+                <label class="sup-label">Warn when below (optional)</label>
+                <input type="number" class="sup-input" id="supPrLow" min="0" step="0.001">
+            </div>
+            <div class="sup-field">
+                <label class="sup-label">Active</label>
+                <select class="sup-select" id="supPrActive">
+                    <option value="1">Yes</option>
+                    <option value="0">No</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supProductModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main" id="supPrSave" onclick="supSaveProduct()">Save</button>
+        </div>
+    </div>
+</div>
+@endif
+@endpush
+
+@push('custom_js')
+<script>
+/* Storage (Supplies).
+   NOTE: no Blade echo of any kind inside this block. Script content is raw text, so an
+   escaped echo renders HTML entities and kills the whole block silently. Everything the
+   page needs comes from data- attributes or the JSON endpoints. */
+(function () {
+    'use strict';
+
+    var root = document.getElementById('supRoot');
+    if (!root) { return; }
+
+    var CAN_MANAGE = root.dataset.canManage === '1';
+    var CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+
+    var products = [];      // catalogue for the forms
+    var categories = [];
+    var paySources = [];
+    var banks = [];
+    var staged = [];        // packets being entered
+    var editingProductId = null;
+    var takeOut = { productId: null, mode: null, packets: [], chosen: null };
+
+    // ---------- helpers ----------
+    function post(url, body) {
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json' },
+            body: JSON.stringify(body || {})
+        }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
+    }
+    function get(url) {
+        return fetch(url, { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
+    }
+    function esc(s) {
+        return String(s === null || s === undefined ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function money(n) { return Number(n || 0).toLocaleString('en-PK', { maximumFractionDigits: 0 }); }
+    function trimQty(n) {
+        var s = Number(n || 0).toFixed(3);
+        return s.replace(/0+$/, '').replace(/\.$/, '');
+    }
+    function show(id, on) {
+        var el = document.getElementById(id);
+        if (el) { el.classList.toggle('sup-none', !on); }
+    }
+    function msg(id, text, kind) {
+        var el = document.getElementById(id);
+        if (!el) { return; }
+        el.textContent = text || '';
+        el.style.display = text ? 'block' : 'none';
+        el.className = 'sup-msg ' + (kind === 'ok' ? 'sup-msg-ok' : 'sup-msg-err');
+    }
+    window.supClose = function (id) {
+        var el = document.getElementById(id);
+        if (el) { el.classList.remove('sup-modal-on'); }
+    };
+    function open(id) {
+        var el = document.getElementById(id);
+        if (el) { el.classList.add('sup-modal-on'); }
+    }
+    function productById(id) {
+        for (var i = 0; i < products.length; i++) {
+            if (Number(products[i].id) === Number(id)) { return products[i]; }
+        }
+        return null;
+    }
+
+    // ---------- tabs ----------
+    window.supShowTab = function (tab) {
+        ['stock', 'batches', 'history'].forEach(function (t) {
+            show('supPane' + t.charAt(0).toUpperCase() + t.slice(1), t === tab);
+            var btn = document.getElementById('supTab' + t.charAt(0).toUpperCase() + t.slice(1));
+            if (btn) { btn.classList.toggle('sup-tab-on', t === tab); }
+        });
+        if (tab === 'batches') { supLoadBatches(); }
+        if (tab === 'history') { supLoadHistory(); }
+    };
+
+    // ---------- catalogue ----------
+    function loadCatalogue() {
+        return get('/supplies/products').then(function (r) {
+            if (!r.ok || !r.data.success) { return; }
+            products = r.data.products || [];
+            categories = r.data.expense_categories || [];
+            paySources = r.data.payment_sources || [];
+            banks = r.data.banks || [];
+        });
+    }
+
+    // ---------- purchases ----------
+    window.supShowBatches = function (productId) {
+        supShowTab('batches');
+        var sel = document.getElementById('supBatchProduct');
+        if (sel) { sel.value = String(productId); }
+        supLoadBatches();
+    };
+
+    window.supLoadBatches = function () {
+        var sel = document.getElementById('supBatchProduct');
+        var box = document.getElementById('supBatchList');
+        if (!sel || !sel.value || !box) { return; }
+        box.innerHTML = '<div class="sup-empty">Loading…</div>';
+
+        get('/supplies/' + encodeURIComponent(sel.value) + '/batches').then(function (r) {
+            if (!r.ok || !r.data.success) { box.innerHTML = '<div class="sup-empty">Could not load.</div>'; return; }
+            var rows = r.data.batches || [];
+            if (!rows.length) { box.innerHTML = '<div class="sup-empty">No purchases recorded yet.</div>'; return; }
+
+            var html = '<div class="sup-tablewrap"><table class="sup-table"><thead><tr>' +
+                '<th>Date</th><th>Bought</th><th>Used</th><th>Left</th><th>Cost</th><th>Paid from</th><th>Status</th><th></th>' +
+                '</tr></thead><tbody>';
+
+            rows.forEach(function (b) {
+                var status = b.status === 'stock_only' ? 'no charge'
+                           : (b.status === 'voided' ? 'voided' : 'ok');
+                html += '<tr>' +
+                    '<td>' + esc(b.purchase_date || '') + '</td>' +
+                    '<td>' + esc(trimQty(b.qty_total)) + (b.packet_count ? ' · ' + b.packet_count + ' packet(s)' : '') + '</td>' +
+                    '<td>' + esc(trimQty(b.qty_used)) +
+                        (Number(b.cost_used) > 0 ? '<div class="sup-pmeta">Rs ' + money(b.cost_used) + '</div>' : '') + '</td>' +
+                    '<td>' + esc(b.qty_label || trimQty(b.qty_remaining)) +
+                        (Number(b.cost_remaining) > 0 ? '<div class="sup-pmeta">Rs ' + money(b.cost_remaining) + '</div>' : '') + '</td>' +
+                    '<td class="sup-money">Rs ' + money(b.total_cost) + '</td>' +
+                    '<td>' + esc(b.paid_from || '—') + '</td>' +
+                    '<td>' + esc(status) + '</td>' +
+                    '<td style="white-space:nowrap;">' +
+                        (b.can_correct ? '<button class="sup-btn" onclick="supOpenCorrect(' + Number(b.id) + ',' + Number(b.total_cost) + ')">Fix price</button> ' : '') +
+                        (b.can_void ? '<button class="sup-btn sup-btn-danger" onclick="supVoidBatch(' + Number(b.id) + ')">Void</button>' : '') +
+                    '</td>' +
+                    '</tr>';
+            });
+            box.innerHTML = html + '</tbody></table></div>';
+        });
+    };
+
+    window.supVoidBatch = function (batchId) {
+        if (!window.confirm('Void this purchase? The payment is reversed and the packets are removed. Only possible while none of it has been used.')) { return; }
+        post('/supplies/batches/' + batchId + '/void', {}).then(function (r) {
+            window.alert((r.data && r.data.message) || (r.ok ? 'Voided.' : 'Could not void.'));
+            if (r.ok && r.data.success) { window.location.reload(); }
+        });
+    };
+
+    // ---------- history ----------
+    window.supLoadHistory = function () {
+        var box = document.getElementById('supHistoryList');
+        if (!box) { return; }
+        box.innerHTML = '<div class="sup-empty">Loading…</div>';
+
+        get('/supplies/history?limit=150').then(function (r) {
+            if (!r.ok || !r.data.success) { box.innerHTML = '<div class="sup-empty">Could not load.</div>'; return; }
+            var rows = r.data.history || [];
+            if (!rows.length) { box.innerHTML = '<div class="sup-empty">Nothing yet.</div>'; return; }
+
+            var label = { 'in': 'added', 'out': 'taken out', 'undo': 'put back', 'void': 'voided' };
+            var html = '<div class="sup-tablewrap"><table class="sup-table"><thead><tr>' +
+                '<th>When</th><th>What</th><th>Item</th><th>Qty</th><th>Value</th><th>By</th>' +
+                '</tr></thead><tbody>';
+            rows.forEach(function (h) {
+                html += '<tr>' +
+                    '<td>' + esc(h.at || '') + '</td>' +
+                    '<td>' + esc(label[h.action] || h.action) + '</td>' +
+                    '<td>' + esc(h.product_name || '') + '</td>' +
+                    '<td>' + esc(trimQty(h.qty)) + ' ' + esc(h.unit || '') + '</td>' +
+                    '<td class="sup-money">' + (Number(h.cost) > 0 ? 'Rs ' + money(h.cost) : '—') + '</td>' +
+                    '<td>' + esc(h.by || '') + '</td>' +
+                    '</tr>';
+            });
+            box.innerHTML = html + '</tbody></table></div>';
+        });
+    };
+
+    // ---------- book in ----------
+    window.supOpenBookIn = function () {
+        if (!CAN_MANAGE) { return; }
+        staged = [];
+        msg('supBookInMsg', '');
+        loadCatalogue().then(function () {
+            var sel = document.getElementById('supBiProduct');
+            sel.innerHTML = products.filter(function (p) { return Number(p.is_active) === 1 || p.is_active === true; })
+                .map(function (p) { return '<option value="' + p.id + '">' + esc(p.name) + '</option>'; }).join('');
+
+            // ⚠ Read `is_online` / `display_name` / `is_default` / `preferred_bank_id` —
+            // the fields PaymentSourceService actually returns and every other picker in
+            // the app already uses. (It does NOT return account_category; keying off that
+            // silently left the bank field hidden, so an online purchase could never be
+            // completed — the server would keep asking which bank it left from.)
+            var src = document.getElementById('supBiSource');
+            src.innerHTML = paySources.map(function (a) {
+                return '<option value="' + a.id +
+                    '" data-online="' + (a.is_online ? '1' : '0') +
+                    '" data-bank="' + esc(a.preferred_bank_id || '') + '"' +
+                    (a.is_default ? ' selected' : '') + '>' +
+                    esc(a.display_name || a.account_name) + '</option>';
+            }).join('');
+
+            var bank = document.getElementById('supBiBank');
+            bank.innerHTML = '<option value="">— choose —</option>' + banks.map(function (b) {
+                return '<option value="' + b.id + '">' + esc(b.short_code || b.bank_name || b.name || ('#' + b.id)) + '</option>';
+            }).join('');
+
+            document.getElementById('supBiDate').value = new Date().toISOString().slice(0, 10);
+            document.getElementById('supBiCost').value = '';
+            document.getElementById('supBiPieces').value = '';
+            document.getElementById('supBiNote').value = '';
+            document.getElementById('supBiStockOnly').checked = false;
+
+            supBiProductChanged();
+            supBiSourceChanged();
+            supBiStockOnlyChanged();
+            renderStaged();
+            open('supBookInModal');
+            setTimeout(function () {
+                var i = document.getElementById('supBiScanInput');
+                if (i && !i.closest('.sup-none')) { i.focus(); }
+            }, 120);
+        });
+    };
+
+    window.supBiProductChanged = function () {
+        var p = productById(document.getElementById('supBiProduct').value);
+        staged = [];
+        renderStaged();
+        if (!p) { return; }
+        var isPieces = p.mode === 'pieces';
+        show('supBiScanBlock', !isPieces);
+        show('supBiPiecesBlock', isPieces);
+
+        var label = document.getElementById('supBiScanLabel');
+        var hint = document.getElementById('supBiScanHint');
+        var manual = document.getElementById('supBiManualBtn');
+        if (p.mode === 'weight') {
+            label.textContent = 'Scan each packet';
+            hint.textContent = 'Every scale label is one packet. Two packets of the same weight print the same label — that is fine, scan both.';
+            manual.textContent = '＋ Add without scanning';
+        } else if (p.mode === 'scan') {
+            label.textContent = 'Scan each packet';
+            hint.textContent = 'One scan = one packet.';
+            manual.textContent = '＋ Add one packet';
+        }
+    };
+
+    window.supBiSourceChanged = function () {
+        var sel = document.getElementById('supBiSource');
+        var opt = sel.options[sel.selectedIndex];
+        var isBank = !!(opt && opt.dataset.online === '1');
+        show('supBiBankField', isBank && !document.getElementById('supBiStockOnly').checked);
+
+        // Preselect the bank this account normally pays from, the same courtesy the
+        // other pickers give — the person can still change it.
+        if (isBank && opt.dataset.bank) {
+            var bank = document.getElementById('supBiBank');
+            if (bank && !bank.value) { bank.value = opt.dataset.bank; }
+        }
+    };
+
+    window.supBiStockOnlyChanged = function () {
+        var on = document.getElementById('supBiStockOnly').checked;
+        document.getElementById('supBiCost').disabled = on;
+        document.getElementById('supBiSource').disabled = on;
+        if (on) { document.getElementById('supBiCost').value = ''; }
+        supBiSourceChanged();
+    };
+
+    window.supBiScanKey = function (ev) {
+        if (ev.key !== 'Enter') { return; }
+        ev.preventDefault();
+        var input = ev.target;
+        var raw = (input.value || '').trim();
+        input.value = '';
+        if (!raw) { return; }
+
+        var p = productById(document.getElementById('supBiProduct').value);
+        if (!p) { return; }
+
+        if (p.mode === 'scan') {
+            if (p.barcode && raw !== String(p.barcode)) {
+                msg('supBookInMsg', 'That barcode is not ' + p.name + '.');
+                return;
+            }
+            msg('supBookInMsg', '');
+            staged.push({ qty: 1, barcode: p.barcode, source: 'scan' });
+            renderStaged();
+            return;
+        }
+
+        // weight: the SERVER decodes, so the page never re-implements the EAN maths
+        post('/supplies/decode', { barcode: raw }).then(function (r) {
+            if (!r.ok || !r.data.success) {
+                msg('supBookInMsg', (r.data && r.data.message) || 'Could not read that label.');
+                return;
+            }
+            if (Number(r.data.plu) !== Number(p.plu)) {
+                msg('supBookInMsg', 'That label is PLU ' + r.data.plu + ', not ' + p.name + '.');
+                return;
+            }
+            msg('supBookInMsg', '');
+            staged.push({ qty: r.data.weight_kg, barcode: r.data.barcode, source: 'scan' });
+            renderStaged();
+        });
+    };
+
+    window.supBiAddManual = function () {
+        var p = productById(document.getElementById('supBiProduct').value);
+        if (!p) { return; }
+        if (p.mode === 'scan') {
+            staged.push({ qty: 1, barcode: p.barcode, source: 'manual' });
+            renderStaged();
+            return;
+        }
+        var kg = window.prompt('Weight of this packet in kg (e.g. 1.25)');
+        if (kg === null) { return; }
+        var n = parseFloat(kg);
+        if (!(n > 0)) { msg('supBookInMsg', 'Enter a weight greater than zero.'); return; }
+        staged.push({ qty: n, source: 'manual' });
+        renderStaged();
+    };
+
+    window.supBiRemove = function (i) { staged.splice(i, 1); renderStaged(); };
+
+    function renderStaged() {
+        var box = document.getElementById('supBiStaged');
+        var p = productById((document.getElementById('supBiProduct') || {}).value);
+        if (!box) { return; }
+        if (!staged.length) {
+            box.innerHTML = '<div class="sup-staged-row" style="color:#9CA3AF;">Nothing scanned yet.</div>';
+        } else {
+            box.innerHTML = staged.map(function (s, i) {
+                var q = (p && p.mode === 'weight') ? trimQty(s.qty) + ' kg' : '1 packet';
+                return '<div class="sup-staged-row"><span>' + (i + 1) + '. ' + esc(q) +
+                    (s.source === 'manual' ? ' <span class="sup-pmeta">(typed)</span>' : '') +
+                    '</span><button class="sup-x" onclick="supBiRemove(' + i + ')">✕</button></div>';
+            }).join('');
+        }
+        var total = staged.reduce(function (a, s) { return a + Number(s.qty || 0); }, 0);
+        document.getElementById('supBiCountLabel').textContent = staged.length + ' packet(s)';
+        document.getElementById('supBiQtyLabel').textContent =
+            (p && p.mode === 'weight') ? trimQty(total) + ' kg' : staged.length + ' packet(s)';
+    }
+
+    window.supBookIn = function () {
+        var p = productById(document.getElementById('supBiProduct').value);
+        if (!p) { return; }
+        var stockOnly = document.getElementById('supBiStockOnly').checked;
+        var body = {
+            product_id: p.id,
+            purchase_date: document.getElementById('supBiDate').value || null,
+            total_cost: stockOnly ? 0 : parseFloat(document.getElementById('supBiCost').value || '0'),
+            stock_only: stockOnly,
+            note: document.getElementById('supBiNote').value || null,
+            // a retried Save must never book the purchase twice
+            client_uuid: 'web-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10)
+        };
+
+        if (p.mode === 'pieces') {
+            body.pieces_qty = parseFloat(document.getElementById('supBiPieces').value || '0');
+            if (!(body.pieces_qty > 0)) { msg('supBookInMsg', 'How many pieces are you adding?'); return; }
+        } else {
+            if (!staged.length) { msg('supBookInMsg', 'Scan at least one packet.'); return; }
+            body.packets = staged;
+        }
+
+        if (!stockOnly) {
+            if (!(body.total_cost > 0)) { msg('supBookInMsg', 'Enter what was paid for this stock.'); return; }
+            body.payment_source_account_id = parseInt(document.getElementById('supBiSource').value, 10) || null;
+            if (!body.payment_source_account_id) { msg('supBookInMsg', 'Choose which account paid.'); return; }
+            var bankField = document.getElementById('supBiBankField');
+            if (!bankField.classList.contains('sup-none')) {
+                body.receiving_account_id = parseInt(document.getElementById('supBiBank').value, 10) || null;
+                if (!body.receiving_account_id) { msg('supBookInMsg', 'Select which bank this payment came from.'); return; }
+            }
+        }
+
+        var btn = document.getElementById('supBiSave');
+        btn.disabled = true;
+        post('/supplies/batches', body).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) {
+                msg('supBookInMsg', (r.data && r.data.message) || 'Could not save. Nothing was recorded.');
+                return;
+            }
+            window.location.reload();
+        }).catch(function () {
+            btn.disabled = false;
+            msg('supBookInMsg', 'Could not reach the server. Nothing was recorded.');
+        });
+    };
+
+    // ---------- take out ----------
+    window.supOpenTakeOut = function (productId) {
+        msg('supToMsg', '');
+        takeOut = { productId: productId, mode: null, packets: [], chosen: null };
+        var body = document.getElementById('supToBody');
+        body.innerHTML = '<div class="sup-empty">Loading…</div>';
+        open('supTakeOutModal');
+
+        loadCatalogue().then(function () {
+            var p = productById(productId);
+            if (!p) { body.innerHTML = '<div class="sup-empty">Product not found.</div>'; return; }
+            takeOut.mode = p.mode;
+            document.getElementById('supToTitle').textContent = 'Take out — ' + p.name;
+
+            if (p.mode === 'pieces') {
+                body.innerHTML =
+                    '<div class="sup-field"><label class="sup-label">How many?</label>' +
+                    '<input type="number" class="sup-input" id="supToQty" min="1" step="1" value="1"></div>' +
+                    '<div class="sup-hint">It comes off the oldest purchase first, so the cost is what was actually paid for it.</div>';
+                return;
+            }
+
+            get('/supplies/' + encodeURIComponent(productId) + '/packets').then(function (r) {
+                var packets = (r.data && r.data.packets) || [];
+                takeOut.packets = packets;
+                if (!packets.length) {
+                    body.innerHTML = '<div class="sup-empty">Nothing left in Storage. Ask Taimur or Shabib to book the new stock.</div>';
+                    document.getElementById('supToConfirm').disabled = true;
+                    return;
+                }
+                document.getElementById('supToConfirm').disabled = false;
+                body.innerHTML =
+                    '<div class="sup-field"><label class="sup-label">Which packet?</label>' +
+                    '<select class="sup-select" id="supToPacket">' +
+                    packets.map(function (pk, i) {
+                        return '<option value="' + pk.id + '">' + esc(pk.qty_label) +
+                            ' — Rs ' + money(pk.cost) + (pk.batch_date ? ' (bought ' + esc(pk.batch_date) + ')' : '') +
+                            (i === 0 ? ' · oldest' : '') + '</option>';
+                    }).join('') +
+                    '</select>' +
+                    '<div class="sup-hint">The oldest packet is picked first. Scanning on the phone chooses it for you.</div></div>';
+            });
+        });
+    };
+
+    window.supTakeOut = function () {
+        var body = { product_id: takeOut.productId, source: 'manual' };
+        if (takeOut.mode === 'pieces') {
+            body.qty = parseFloat((document.getElementById('supToQty') || {}).value || '0');
+            if (!(body.qty > 0)) { msg('supToMsg', 'How many are you taking out?'); return; }
+        } else {
+            var sel = document.getElementById('supToPacket');
+            if (!sel || !sel.value) { msg('supToMsg', 'Nothing to take out.'); return; }
+            body.packet_id = parseInt(sel.value, 10);
+        }
+
+        var btn = document.getElementById('supToConfirm');
+        btn.disabled = true;
+        post('/supplies/take-out', body).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) {
+                msg('supToMsg', (r.data && r.data.message) || 'Could not take it out.');
+                return;
+            }
+            window.alert(r.data.message || 'Taken out.');
+            window.location.reload();
+        }).catch(function () {
+            btn.disabled = false;
+            msg('supToMsg', 'Could not reach the server. Nothing was recorded.');
+        });
+    };
+
+    // ---------- product form ----------
+    window.supOpenProduct = function (id) {
+        if (!CAN_MANAGE) { return; }
+        msg('supPrMsg', '');
+        editingProductId = id || null;
+        loadCatalogue().then(function () {
+            var cat = document.getElementById('supPrCategory');
+            cat.innerHTML = categories.map(function (c) {
+                return '<option value="' + c.id + '">' + esc(c.name) + '</option>';
+            }).join('');
+
+            var p = id ? productById(id) : null;
+            document.getElementById('supPrTitle').textContent = p ? ('Edit ' + p.name) : 'New storage product';
+            document.getElementById('supPrName').value = p ? p.name : '';
+            document.getElementById('supPrMode').value = p ? p.mode : 'weight';
+            document.getElementById('supPrPlu').value = p && p.plu ? p.plu : '';
+            document.getElementById('supPrBarcode').value = p && p.barcode ? p.barcode : '';
+            document.getElementById('supPrPiecesPer').value = p && p.pieces_per_packet ? p.pieces_per_packet : '';
+            document.getElementById('supPrLow').value = p && p.low_stock_qty ? p.low_stock_qty : '';
+            document.getElementById('supPrActive').value = (p && !(Number(p.is_active) === 1 || p.is_active === true)) ? '0' : '1';
+            if (p && p.expense_config_id) { cat.value = String(p.expense_config_id); }
+
+            // Mode is fixed once stock exists — changing how a packet is counted would
+            // make the packets already on the shelf unreadable.
+            document.getElementById('supPrMode').disabled = false;
+
+            supPrModeChanged();
+            open('supProductModal');
+        });
+    };
+
+    window.supPrModeChanged = function () {
+        var m = document.getElementById('supPrMode').value;
+        show('supPrPluField', m === 'weight');
+        show('supPrBarcodeField', m === 'scan');
+        show('supPrPiecesField', m === 'pieces');
+    };
+
+    window.supSaveProduct = function () {
+        var body = {
+            name: document.getElementById('supPrName').value.trim(),
+            mode: document.getElementById('supPrMode').value,
+            plu: parseInt(document.getElementById('supPrPlu').value, 10) || null,
+            barcode: document.getElementById('supPrBarcode').value.trim() || null,
+            pieces_per_packet: parseInt(document.getElementById('supPrPiecesPer').value, 10) || null,
+            expense_config_id: parseInt(document.getElementById('supPrCategory').value, 10) || null,
+            low_stock_qty: parseFloat(document.getElementById('supPrLow').value) || null,
+            is_active: document.getElementById('supPrActive').value === '1'
+        };
+        if (!body.name) { msg('supPrMsg', 'Give it a name.'); return; }
+        if (!body.expense_config_id) { msg('supPrMsg', 'Choose which expense category its use is charged to.'); return; }
+
+        var btn = document.getElementById('supPrSave');
+        btn.disabled = true;
+        post('/supplies/products' + (editingProductId ? '/' + editingProductId : ''), body).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) {
+                msg('supPrMsg', (r.data && r.data.message) || 'Could not save.');
+                return;
+            }
+            if (r.data.warning) { window.alert(r.data.warning); }
+            window.location.reload();
+        }).catch(function () {
+            btn.disabled = false;
+            msg('supPrMsg', 'Could not reach the server.');
+        });
+    };
+
+    // ---------- fix price ----------
+    var correcting = null;
+
+    window.supOpenCorrect = function (batchId, oldTotal) {
+        if (!CAN_MANAGE) { return; }
+        correcting = {batchId: batchId, oldTotal: oldTotal};
+        msg('supCoMsg', '');
+        document.getElementById('supCoAmount').value = '';
+        document.getElementById('supCoReason').value = '';
+        document.getElementById('supCoWas').textContent = 'Currently recorded as Rs ' + money(oldTotal) + '.';
+        document.getElementById('supCoPreview').innerHTML = '';
+        show('supCoPreview', false);
+        show('supCoApply', false);
+        open('supCorrectModal');
+    };
+
+    window.supPreviewCorrect = function () {
+        var amount = parseFloat(document.getElementById('supCoAmount').value);
+        if (!(amount > 0)) { msg('supCoMsg', 'Enter what was actually paid.'); return; }
+        msg('supCoMsg', '');
+
+        post('/supplies/batches/' + correcting.batchId + '/preview-correction', {total_cost: amount})
+            .then(function (r) {
+                if (!r.ok || !r.data.success) {
+                    msg('supCoMsg', (r.data && r.data.message) || 'Could not work that out.');
+                    return;
+                }
+                var p = r.data.preview;
+                var diff = Number(p.difference);
+                var html = '<div class="sup-total"><span>' +
+                    (diff < 0 ? 'Comes back to ' : 'Comes out of ') + esc(p.paid_from || 'the account') +
+                    '</span><span>Rs ' + money(Math.abs(diff)) + '</span></div>';
+
+                if (!p.expenses.length) {
+                    html += '<div class="sup-hint" style="margin-top:8px;">' +
+                        'Nothing has been taken out of this purchase yet, so no expense entries change.</div>';
+                } else {
+                    html += '<div class="sup-hint" style="margin-top:10px;"><strong>' + p.expenses.length +
+                        ' expense entr' + (p.expenses.length === 1 ? 'y' : 'ies') +
+                        '</strong> already posted will be corrected, on their original dates:</div>' +
+                        '<div class="sup-staged" style="margin-top:6px;">' +
+                        p.expenses.map(function (e) {
+                            return '<div class="sup-staged-row"><span>' + esc(e.request_number || '') +
+                                ' <span class="sup-pmeta">' + esc(e.month || '') + '</span></span>' +
+                                '<span>Rs ' + money(e.was) + ' → <strong>Rs ' + money(e.now) + '</strong></span></div>';
+                        }).join('') + '</div>';
+
+                    if (p.months_affected.length) {
+                        html += '<div class="sup-msg sup-msg-err" style="display:block;margin-top:10px;">' +
+                            '⚠ This changes the packaging figure for ' + esc(p.months_affected.join(', ')) +
+                            '. If you have already reported that month, it will move.</div>';
+                    }
+                }
+                document.getElementById('supCoPreview').innerHTML = html;
+                show('supCoPreview', true);
+                show('supCoApply', true);
+            });
+    };
+
+    window.supApplyCorrect = function () {
+        var amount = parseFloat(document.getElementById('supCoAmount').value);
+        if (!(amount > 0)) { return; }
+        var btn = document.getElementById('supCoApply');
+        btn.disabled = true;
+        post('/supplies/batches/' + correcting.batchId + '/correct-price', {
+            total_cost: amount,
+            reason: document.getElementById('supCoReason').value || null
+        }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) {
+                msg('supCoMsg', (r.data && r.data.message) || 'Could not correct it.');
+                return;
+            }
+            window.alert(r.data.message);
+            window.location.reload();
+        }).catch(function () {
+            btn.disabled = false;
+            msg('supCoMsg', 'Could not reach the server. Nothing was changed.');
+        });
+    };
+
+    // ---------- stock count ----------
+    var counting = null;
+
+    window.supOpenCount = function (productId) {
+        if (!CAN_MANAGE) { return; }
+        msg('supCnMsg', '');
+        document.getElementById('supCnCounted').value = '';
+        document.getElementById('supCnNote').value = '';
+        document.getElementById('supCnWriteOff').checked = true;
+
+        get('/supplies/stock').then(function (r) {
+            var row = ((r.data && r.data.products) || []).filter(function (x) {
+                return Number(x.id) === Number(productId);
+            })[0];
+            counting = {productId: productId, expected: row ? row.qty_remaining : 0};
+            document.getElementById('supCnTitle').textContent =
+                'Count the shelf — ' + ((row && row.name) || '');
+            document.getElementById('supCnExpected').textContent = row
+                ? ('The system thinks there ' + (row.packets_in_stock === 1 ? 'is' : 'are') + ' ' +
+                   (row.packets_in_stock != null
+                        ? row.packets_in_stock + ' packet(s)'
+                        : trimQty(row.qty_remaining) + ' ' + row.unit) + ' on the shelf.')
+                : '';
+            open('supCountModal');
+        });
+    };
+
+    window.supSaveCount = function () {
+        var counted = parseFloat(document.getElementById('supCnCounted').value);
+        if (!(counted >= 0)) { msg('supCnMsg', 'Enter how many are actually there.'); return; }
+        var btn = document.getElementById('supCnSave');
+        btn.disabled = true;
+        post('/supplies/' + counting.productId + '/count', {
+            counted: counted,
+            write_off: document.getElementById('supCnWriteOff').checked,
+            note: document.getElementById('supCnNote').value || null
+        }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) {
+                msg('supCnMsg', (r.data && r.data.message) || 'Could not record the count.');
+                return;
+            }
+            window.alert(r.data.message);
+            window.location.reload();
+        }).catch(function () {
+            btn.disabled = false;
+            msg('supCnMsg', 'Could not reach the server. Nothing was recorded.');
+        });
+    };
+
+    // ---------- approval switch ----------
+    var sw = document.getElementById('supApprovalSwitch');
+    if (sw) {
+        sw.addEventListener('change', function () {
+            var want = sw.checked;
+            sw.disabled = true;
+            post('/admin/operations/supply-approval', { required: want }).then(function (r) {
+                sw.disabled = false;
+                if (!r.ok || !r.data.success) { sw.checked = !want; window.alert('Could not change that.'); return; }
+                window.alert(r.data.message);
+            }).catch(function () { sw.disabled = false; sw.checked = !want; });
+        });
+    }
+
+    // preload so the first modal opens instantly
+    loadCatalogue();
+})();
+</script>
+@endpush

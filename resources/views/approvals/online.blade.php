@@ -471,6 +471,19 @@
             <div class="count" id="count-shop">{{ $summaries['shop']['count'] ?? 0 }}</div>
             <div class="amount" id="amount-shop">Rs. {{ number_format($summaries['shop']['amount'] ?? 0, 0) }}</div>
         </div>
+
+        {{-- 💰 Customer balances. Deliberately NOT a tab: the tabs are lists of
+             ledger items sharing one set of filters, bank chips and bulk
+             actions, and a list of customers would share none of them. It is a
+             signpost to the audit screen, and it turns red when something
+             banked here looks wrong. --}}
+        <a href="/customers/balances" id="nfBalSummaryCard"
+           style="display:none; text-decoration:none; border-left:4px solid #059669;"
+           class="tab-card" title="Open the Customer Balances audit screen">
+            <div class="title">💰 Balances held</div>
+            <div class="count" id="nfBalSummaryAmount" style="font-size:18px;">—</div>
+            <div class="amount" id="nfBalSummaryNote"></div>
+        </a>
     </div>
 
     <!-- Search and Sort Row -->
@@ -779,6 +792,12 @@
 
 @push('demo1_js')
 <script>
+{{-- 💰 The shared customer-balance actions (approve / reject / remove one
+     entry / clear to zero). Included so this screen posts through the SAME
+     functions as the customer panel and the Balances page instead of
+     keeping its own copy of the fetch. Raw JS — no <script> tags inside. --}}
+@include('partials.customer-credit-panel')
+
 // State
 let currentTab = 'l1';
 let currentProof = 'all'; // 'all', 'pending', 'received', 'verified', 'mismatch'
@@ -825,6 +844,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 💰 Pending balance requests. Its own fetch so a slow/failed call can never
     // hold up or blank the approvals list itself.
     try { nfLoadBalanceRequests(); } catch (e) { /* non-essential panel */ }
+    try { nfLoadBalanceSummary(); } catch (e) { /* non-essential card */ }
 });
 
 // Tab selection
@@ -2220,8 +2240,8 @@ async function nfLoadBalanceRequests() {
             const why = r.reason ? ` · ${escapeHtml(r.reason)}` : '';
             const actions = json.can_approve
                 ? `<span style="display:flex; gap:6px;">
-                     <button onclick="nfBrAct(${r.id}, 'approve')" style="padding:4px 11px; background:#059669; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Approve</button>
-                     <button onclick="nfBrAct(${r.id}, 'reject')" style="padding:4px 11px; background:#fff; color:#B91C1C; border:1px solid #FCA5A5; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Reject</button>
+                     <button onclick="nfBrAct(${r.id}, 'approve', ${r.customer_id})" style="padding:4px 11px; background:#059669; color:#fff; border:0; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Approve</button>
+                     <button onclick="nfBrAct(${r.id}, 'reject', ${r.customer_id})" style="padding:4px 11px; background:#fff; color:#B91C1C; border:1px solid #FCA5A5; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Reject</button>
                    </span>`
                 : '<span style="font-size:11.5px; color:#9CA3AF;">awaiting L2</span>';
             return `<div style="display:flex; justify-content:space-between; align-items:center; gap:12px;
@@ -2242,30 +2262,56 @@ async function nfLoadBalanceRequests() {
     }
 }
 
-async function nfBrAct(creditId, action) {
-    let body = {};
+/**
+ * Approve or reject a pending balance request.
+ *
+ * ⭐ Delegates to the SHARED nfApproveCredit / nfRejectCredit so the wording,
+ * the confirmation and the request are identical to the customer panel and
+ * the Balances page. This used to be its own copy of the fetch.
+ */
+function nfBrAct(creditId, action, customerId) {
     if (action === 'approve') {
-        if (!confirm('Approve this amount and add it to the customer\'s balance?')) return;
-        body = { mode: 'online' };
+        nfApproveCredit(customerId, creditId);
     } else {
-        const reason = prompt('Reject this request? No balance will be added.\n\nReason (optional):');
-        if (reason === null) return;
-        body = { reason: reason };
+        nfRejectCredit(customerId, creditId);
     }
+}
+
+// After any shared balance action, refresh the strip this page shows.
+window.nfCreditOnChange = function () { nfLoadBalanceRequests(); nfLoadBalanceSummary(); };
+
+/**
+ * The balances signpost card. Read-only and best-effort: if it cannot load, it
+ * simply stays hidden rather than putting an error on the approvals screen.
+ */
+async function nfLoadBalanceSummary() {
+    const card = document.getElementById('nfBalSummaryCard');
+    if (!card) return;
     try {
-        const res = await fetch(`/customer-credit/${creditId}/${action}`, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json', 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCsrf(),
-            },
-            body: JSON.stringify(body)
+        const res = await fetch('/customers/balances/overview', {
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
         });
         const json = await res.json();
-        showToast(json.message || (json.success ? 'Done.' : 'Could not do that.'), json.success ? 'success' : 'error');
-        nfLoadBalanceRequests();
+        if (!json || !json.success || !json.data) { card.style.display = 'none'; return; }
+        const d = json.data;
+        if (!d.held && !d.flagged_count) { card.style.display = 'none'; return; }
+
+        document.getElementById('nfBalSummaryAmount').textContent = 'Rs. ' + numberFormat(d.held);
+
+        const bits = [d.held_customers + ' customer' + (d.held_customers === 1 ? '' : 's')];
+        if (Number(d.added) > 0) bits.push('+' + numberFormat(d.added) + ' this month');
+        const note = document.getElementById('nfBalSummaryNote');
+        note.textContent = bits.join(' · ');
+
+        if (d.flagged_count > 0) {
+            card.style.borderLeftColor = '#DC2626';
+            note.innerHTML = bits.join(' · ') +
+                '<br><b style="color:#B91C1C;">⚠ ' + d.flagged_count + ' to review</b>';
+        }
+        card.style.display = '';
     } catch (e) {
-        showToast('Failed: ' + e.message, 'error');
+        card.style.display = 'none';
     }
 }
 

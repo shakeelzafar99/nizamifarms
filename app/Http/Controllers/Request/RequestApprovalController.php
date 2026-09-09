@@ -59,6 +59,26 @@ class RequestApprovalController extends Controller
             ], 400);
         }
 
+        // ⭐⭐ STORAGE (SUPPLIES) — the one case where the approver does NOT choose.
+        // A take-out is funded from the SUPPLIES_STOCK asset account because the cash
+        // already left the real account when the stock was bought. The Fleet approve
+        // strip and the mobile Daily Closing both PRESELECT NF Cash and send it on
+        // every approval, so without this an approver who never touched the dropdown
+        // would silently move the payment to NF Cash and take the money a SECOND time.
+        // Dropped and logged rather than rejected: the approval itself is legitimate.
+        if ($requestModel->supply_takeout_id && isset($validated['payment_source_account_id'])) {
+            if ((int) $validated['payment_source_account_id'] !== (int) $requestModel->payment_source_account_id) {
+                \Log::info('Storage take-out: ignored an approver payment-source override', [
+                    'request_id' => $requestModel->id,
+                    'takeout_id' => $requestModel->supply_takeout_id,
+                    'sent' => $validated['payment_source_account_id'],
+                    'kept' => $requestModel->payment_source_account_id,
+                    'approver' => $user->id,
+                ]);
+            }
+            unset($validated['payment_source_account_id'], $validated['receiving_account_id']);
+        }
+
         // ── The account this money comes out of ────────────────────────────────
         // Owner ruling (Aug-2026): the APPROVER's pick outranks the filer's — a
         // rider cannot know which account his claim should be deducted from. So

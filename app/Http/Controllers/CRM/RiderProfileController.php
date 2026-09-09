@@ -300,72 +300,21 @@ class RiderProfileController extends Controller
         $profile = DB::table('t_ops_rider_profile')->where('user_id', $userId)->first();
         return response()->json(['success' => true, 'profile' => $profile]);
     }
-
-    public function updateShift(Request $request)
-    {
-        // Convert 12-hour format to 24-hour if needed
-        $shiftStart = $request->shift_start;
-        $shiftEnd = $request->shift_end;
-        
-        // Check if it's in 12-hour format and convert
-        if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $shiftStart, $matches)) {
-            $hour = (int)$matches[1];
-            $minute = $matches[2];
-            $period = strtoupper($matches[3]);
-            
-            if ($period === 'PM' && $hour !== 12) {
-                $hour += 12;
-            } elseif ($period === 'AM' && $hour === 12) {
-                $hour = 0;
-            }
-            $shiftStart = sprintf('%02d:%s', $hour, $minute);
-        }
-        
-        if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $shiftEnd, $matches)) {
-            $hour = (int)$matches[1];
-            $minute = $matches[2];
-            $period = strtoupper($matches[3]);
-            
-            if ($period === 'PM' && $hour !== 12) {
-                $hour += 12;
-            } elseif ($period === 'AM' && $hour === 12) {
-                $hour = 0;
-            }
-            $shiftEnd = sprintf('%02d:%s', $hour, $minute);
-        }
-        
-        $request->validate([
-            'user_id' => 'required|exists:t_sys_user,id'
-        ]);
-
-        try {
-            // Check if profile exists
-            $exists = DB::table('t_ops_rider_profile')->where('user_id', $request->user_id)->exists();
-
-            if ($exists) {
-                // Update existing profile
-                DB::table('t_ops_rider_profile')
-                    ->where('user_id', $request->user_id)
-                    ->update([
-                        'shift_start' => $shiftStart,
-                        'shift_end' => $shiftEnd,
-                        'updated_at' => now()
-                    ]);
-            } else {
-                // Create new profile with shift times
-                DB::table('t_ops_rider_profile')->insert([
-                    'user_id' => $request->user_id,
-                    'shift_start' => $shiftStart,
-                    'shift_end' => $shiftEnd,
-                    'active' => 1,
-                    'created_at' => now(),
-                    'updated_at' => now()
-                ]);
-            }
-
-            return response()->json(['success' => true, 'message' => 'Shift times updated successfully']);
-        } catch (\Exception $e) {
-            return response()->json(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
-        }
-    }
+    /**
+     * ⚰ RETIRED 7-Sep-2026 — `updateShift()` and its route `POST /riders/shift` are gone.
+     *
+     * It was the LEGACY door: it wrote raw `t_ops_rider_profile.shift_start/shift_end`, the
+     * pre-shift-system times, and it had no permission check of any kind — any logged-in
+     * user, a rider included, could rewrite anyone's hours. Its only caller was a "Manage
+     * Employee Shifts" modal on the attendance page that nothing ever opened.
+     *
+     * ⭐ ONE ENGINE (owner ruling 7-Sep). Every shift change now goes through
+     *   `Ops\ShiftController` — which is where the ladder, the own-shift rule, the
+     *   allowed-shift lists and the approval queue live. A second door meant a second set of
+     *   rules to keep in step, and this one had none.
+     *
+     * ⚠ The two COLUMNS stay: they are still read as the resolution fallback for anyone who
+     *   was never migrated (`AttendanceController`, `SysAdmin\UserController`). Nothing
+     *   writes them any more, so they are frozen history — do not add a new writer.
+     */
 }

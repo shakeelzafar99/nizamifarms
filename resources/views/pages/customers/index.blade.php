@@ -899,6 +899,8 @@ function fetchFilteredCustomers() {
     if (regionFilter) params.append('region', regionFilter);
     if (activityFilter) params.append('activity', activityFilter);
     if (customerTypeFilter) params.append('customer_type', customerTypeFilter);
+    const balanceFilter = document.getElementById('customerBalanceFilter')?.value || '';
+    if (balanceFilter) params.append('balance', balanceFilter);
     if (sortBy) params.append('sort_by', sortBy);
     if (sortDir) params.append('sort_dir', sortDir);
     
@@ -1247,6 +1249,15 @@ document.addEventListener('DOMContentLoaded', function() {
         navigateWithFilters();
     });
 
+    // 💰 Account balance filter - navigate with URL params (server-side,
+    // so pagination reflects the filtered population)
+    const balanceFilterEl = document.getElementById('customerBalanceFilter');
+    if (balanceFilterEl) {
+        balanceFilterEl.addEventListener('change', function() {
+            navigateWithFilters();
+        });
+    }
+
     // Customer type filter (regular / shop) - navigate with URL params
     const typeFilter = document.getElementById('customerTypeFilter');
     if (typeFilter) {
@@ -1265,12 +1276,15 @@ function navigateWithFilters() {
     const activity = document.getElementById('customerActivityFilter').value;
     const typeEl = document.getElementById('customerTypeFilter');
     const customerType = typeEl ? typeEl.value : '';
+    const balEl = document.getElementById('customerBalanceFilter');
+    const balance = balEl ? balEl.value : '';
     const { sortBy, sortDir } = parseSortValue(document.getElementById('customerSortFilter').value);
     
     if (search) params.set('search', search);
     if (region) params.set('region', region);
     if (activity) params.set('activity', activity);
     if (customerType) params.set('customer_type', customerType);
+    if (balance) params.set('balance', balance);
     
     // Only add sort params if not the default
     if (sortBy !== 'last_order_date' || sortDir !== 'desc') {
@@ -1564,288 +1578,10 @@ window.viewCustomerOrders = function(customerId, customerName) {
         });
 };
 
-// =====================================================================
-// 💰 Customer account balance ("bucket")
-//
-// Money a customer has paid us beyond their invoices, held for their next
-// order. Everything here is server-decided — this only paints the answer and
-// posts the manager's intent. Shop customers are excluded by the server, and
-// the panel simply does not appear for them.
-// =====================================================================
-
-function nfCredCsrf() {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-}
-// Shabib/Taimur's own grants are approved on the spot (server rule in
-// CustomerCreditService::userCanAutoApproveGrant) — the form's wording and
-// button label follow, so the screen never promises a queue that won't happen.
-const NF_CREDIT_AUTO_APPROVES = {{ app(\App\Services\CustomerCreditService::class)->userCanAutoApproveGrant(auth()->user()) ? 'true' : 'false' }};
-function nfCredEsc(s) {
-    return String(s ?? '').replace(/[&<>"']/g, c =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-async function nfRenderCustomerCredit(customerId, content) {
-    let d;
-    try {
-        const res = await fetch(`/customer-credit/${customerId}/summary?limit=15`, {
-            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            credentials: 'same-origin'
-        });
-        const json = await res.json();
-        if (!json || !json.success) return;
-        d = json.data;
-    } catch (e) { return; }
-
-    // Shop customers (and unknown customers) get no panel at all.
-    if (!d.eligible) return;
-
-    const box = document.createElement('div');
-    box.id = 'nfCustomerCreditPanel';
-    box.style.cssText = 'margin:14px 0 18px;padding:14px 16px;border:1px solid #e5e7eb;border-radius:10px;background:#fafbfa;';
-    box.innerHTML = nfCreditPanelMarkup(customerId, d);
-
-    const ordersWrap = content.querySelector('#customerOrdersInlineWrap');
-    if (ordersWrap && ordersWrap.parentNode) {
-        ordersWrap.parentNode.insertBefore(box, ordersWrap);
-    } else {
-        content.appendChild(box);
-    }
-}
-
-function nfCreditPanelMarkup(customerId, d) {
-    const bal = parseFloat(d.balance || 0);
-    const hasBal = bal >= 0.01;
-
-    const history = (d.history || []).map(h => {
-        const sign = h.is_credit ? '+' : '−';
-        const colour = h.is_credit ? '#059669' : '#b45309';
-        const struck = h.counts ? '' : 'text-decoration:line-through;opacity:.55;';
-        const where = h.order_number ? ` · order ${nfCredEsc(h.order_number)}` : '';
-        const why = h.reason ? ` · ${nfCredEsc(h.reason)}` : '';
-        const state = h.status === 'pending' ? ' <em style="color:#b45309;">(awaiting approval)</em>'
-                    : h.status === 'reserved' ? ' <em style="color:#2563eb;">(held for an order)</em>'
-                    : h.status === 'voided'   ? ' <em style="color:#6b7280;">(cancelled)</em>' : '';
-
-        // A pending entry is only real money once someone with Level 2 rights
-        // approves it, so the buttons appear for them and nobody else.
-        //
-        // An entry that is ALREADY counting gets "Remove" instead — one wrong
-        // entry can be undone on its own, without wiping the customer's real
-        // money the way Clear-to-zero does. Only grants: taking credit back off
-        // an ORDER has to move that order's totals, which is a different job.
-        let actions = '';
-        if (h.status === 'pending' && d.can_approve) {
-            actions = `<div style="margin-top:3px;display:flex;gap:6px;">
-                 <button type="button" onclick="nfApproveCredit(${customerId}, ${h.id})"
-                   style="padding:3px 9px;background:#059669;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Approve</button>
-                 <button type="button" onclick="nfRejectCredit(${customerId}, ${h.id})"
-                   style="padding:3px 9px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">Reject</button>
-               </div>`;
-        } else if (d.can_approve && h.counts && h.entry_type === 'grant') {
-            actions = `<div style="margin-top:3px;">
-                 <button type="button" onclick="nfVoidCredit(${customerId}, ${h.id}, '${nfCredEsc(h.amount_abs)}')"
-                   style="padding:3px 9px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;"
-                   title="Undo just this entry — the rest of the balance is untouched">Remove this entry</button>
-               </div>`;
-        }
-        const voidedNote = (h.status === 'voided' && h.voided_reason)
-            ? `<div style="margin-top:2px;font-size:11px;color:#6b7280;">Removed${h.voided_by_name ? ' by ' + nfCredEsc(h.voided_by_name) : ''} — ${nfCredEsc(h.voided_reason)}</div>`
-            : '';
-
-        return `<tr>
-            <td style="padding:5px 8px 5px 0;white-space:nowrap;color:#6b7280;font-size:12px;vertical-align:top;">${nfCredEsc(h.date || '')}</td>
-            <td style="padding:5px 8px 5px 0;font-size:12px;"><span style="${struck}">${nfCredEsc(h.type_label)}${where}${why}</span>${state}${voidedNote}${actions}</td>
-            <td style="padding:5px 0;text-align:right;white-space:nowrap;font-weight:600;font-size:12px;color:${colour};${struck}vertical-align:top;">
-                ${sign} Rs. ${nfCredEsc(h.amount_abs)}
-            </td>
-        </tr>`;
-    }).join('');
-
-    const pending = d.pending_count > 0
-        ? `<div style="margin-top:6px;font-size:12px;color:#b45309;">
-             ${d.pending_count} entr${d.pending_count === 1 ? 'y' : 'ies'} worth
-             Rs. ${parseFloat(d.pending_total).toFixed(2)} waiting for approval —
-             <strong>not</strong> included in the balance above.
-           </div>`
-        : '';
-
-    return `
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
-            <div>
-                <div style="font-weight:700;color:#111827;font-size:14px;">💰 Account balance</div>
-                <div style="font-size:26px;font-weight:800;color:${hasBal ? '#059669' : '#9ca3af'};line-height:1.3;">
-                    Rs. ${nfCredEsc(d.balance_display)}
-                </div>
-                <div style="font-size:12px;color:#6b7280;">
-                    ${hasBal ? 'Available to use on their next order.' : 'Nothing held for this customer.'}
-                </div>
-                ${pending}
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <button type="button" onclick="nfOpenGrantForm(${customerId})"
-                        style="padding:8px 14px;background:#059669;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
-                    + Received extra
-                </button>
-                ${hasBal ? `<button type="button" onclick="nfZeroOutCredit(${customerId})"
-                        style="padding:8px 14px;background:#fff;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
-                    Clear to zero
-                </button>` : ''}
-            </div>
-        </div>
-
-        <div id="nfGrantForm" style="display:none;margin-top:12px;padding:12px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;">
-            <div style="font-size:12px;color:#065f46;margin-bottom:8px;">
-                Record money received from this customer beyond their invoices.
-                ${NF_CREDIT_AUTO_APPROVES
-                    ? 'It becomes usable balance immediately.'
-                    : 'It goes for approval first, then becomes usable balance.'}
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <input type="number" step="0.01" min="1" id="nfGrantAmount" placeholder="Amount"
-                       style="width:130px;padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:14px;font-weight:600;">
-                <select id="nfGrantMode" style="padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:13px;">
-                    <option value="online">Online / bank</option>
-                    <option value="cash">Cash</option>
-                </select>
-                <input type="text" id="nfGrantReason" placeholder="Note (e.g. paid extra on NF-19304)"
-                       style="flex:1;min-width:200px;padding:8px 10px;border:1px solid #6ee7b7;border-radius:6px;font-size:13px;">
-                <button type="button" onclick="nfSubmitGrant(${customerId})"
-                        style="padding:8px 14px;background:#059669;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">
-                    ${NF_CREDIT_AUTO_APPROVES ? 'Add to balance' : 'Send for approval'}
-                </button>
-                <button type="button" onclick="document.getElementById('nfGrantForm').style.display='none'"
-                        style="padding:8px 12px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:13px;">
-                    Cancel
-                </button>
-            </div>
-        </div>
-
-        ${history ? `
-        <details style="margin-top:12px;" ${hasBal ? 'open' : ''}>
-            <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#374151;">History</summary>
-            <table style="width:100%;border-collapse:collapse;margin-top:6px;">${history}</table>
-        </details>` : ''}
-    `;
-}
-
-function nfOpenGrantForm(customerId) {
-    const f = document.getElementById('nfGrantForm');
-    if (f) { f.style.display = f.style.display === 'none' ? 'block' : 'none'; }
-}
-
-async function nfSubmitGrant(customerId) {
-    const amount = parseFloat(document.getElementById('nfGrantAmount')?.value || 0);
-    const mode   = document.getElementById('nfGrantMode')?.value || 'online';
-    const reason = document.getElementById('nfGrantReason')?.value || '';
-
-    if (!(amount > 0)) { alert('Enter the amount received.'); return; }
-
-    try {
-        const res = await fetch(`/customer-credit/${customerId}/grant`, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json', 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({ amount, mode, reason })
-        });
-        const json = await res.json();
-        alert(json.message || (json.success ? 'Recorded.' : 'Could not record it.'));
-        if (json.success) { nfRefreshCreditPanel(customerId); }
-    } catch (e) {
-        alert('Could not record it: ' + e.message);
-    }
-}
-
-async function nfZeroOutCredit(customerId) {
-    const reason = prompt(
-        'Clear this customer\'s balance to zero.\n\n' +
-        'No money leaves the business — the balance is written off and this note is kept ' +
-        'in the history.\n\nWhy are you clearing it?'
-    );
-    if (reason === null) return;
-    if (!reason || reason.trim().length < 3) { alert('Please give a short reason.'); return; }
-
-    try {
-        const res = await fetch(`/customer-credit/${customerId}/zero-out`, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json', 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({ reason: reason.trim() })
-        });
-        const json = await res.json();
-        alert(json.message || (json.success ? 'Cleared.' : 'Could not clear it.'));
-        if (json.success) { nfRefreshCreditPanel(customerId); }
-    } catch (e) {
-        alert('Could not clear it: ' + e.message);
-    }
-}
-
-async function nfCreditAction(customerId, creditId, action, body) {
-    try {
-        const res = await fetch(`/customer-credit/${creditId}/${action}`, {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json', 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-TOKEN': nfCredCsrf()
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify(body || {})
-        });
-        const json = await res.json();
-        alert(json.message || (json.success ? 'Done.' : 'Could not do that.'));
-        if (json.success) { nfRefreshCreditPanel(customerId); }
-    } catch (e) {
-        alert('Failed: ' + e.message);
-    }
-}
-
-function nfApproveCredit(customerId, creditId) {
-    if (!confirm('Approve this amount and add it to the customer\'s balance?')) return;
-    nfCreditAction(customerId, creditId, 'approve', { mode: 'online' });
-}
-
-function nfRejectCredit(customerId, creditId) {
-    const reason = prompt('Reject this entry? No balance will be added.\n\nReason (optional):');
-    if (reason === null) return;
-    nfCreditAction(customerId, creditId, 'reject', { reason });
-}
-
-/**
- * Undo ONE wrong entry. Unlike "Clear to zero" this leaves the rest of the
- * customer's balance alone, and it is refused outright if the money has
- * already been used on an order (the server checks — take it off that order
- * first, or the balance would go negative).
- */
-function nfVoidCredit(customerId, creditId, amountText) {
-    const reason = prompt(
-        `Remove this Rs. ${amountText} entry from the customer's balance?\n\n` +
-        `Use this when the entry itself was wrong — a typo, or a payment that turned out ` +
-        `to be someone else's. The rest of the balance is not affected.\n\n` +
-        `Why are you removing it?`
-    );
-    if (reason === null) return;
-    if (!reason || reason.trim().length < 3) { alert('Please give a short reason.'); return; }
-    nfCreditAction(customerId, creditId, 'void', { reason: reason.trim() });
-}
-
-async function nfRefreshCreditPanel(customerId) {
-    const panel = document.getElementById('nfCustomerCreditPanel');
-    if (!panel) return;
-    try {
-        const res = await fetch(`/customer-credit/${customerId}/summary?limit=15`, {
-            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            credentials: 'same-origin'
-        });
-        const json = await res.json();
-        if (json && json.success) { panel.innerHTML = nfCreditPanelMarkup(customerId, json.data); }
-    } catch (e) { /* leave the old panel rather than blanking it */ }
-}
+{{-- 💰 Account balance panel + every balance action (grant / approve / reject /
+     remove one entry / clear to zero). Shared verbatim with the Customer
+     Balances page so both screens use ONE implementation. --}}
+@include('partials.customer-credit-panel')
 
 // ===== Unified customer modal — inline orders section (tiles + filter chips + invoice table) =====
 // Rendered inside the Customer Details modal by loadCustomerOrdersInline().
@@ -3610,6 +3346,25 @@ function removePromoImage() {
                             <span class="text-base font-bold text-orange-700 ml-1">{{ number_format($stats['active_90_days']) }}</span>
                         </div>
                     </a>
+                    {{-- 💰 What we are holding for customers. Clicking it filters
+                         this list; the arrow opens the full audit screen. --}}
+                    @if(($stats['balance_customers'] ?? 0) > 0)
+                    <div class="flex items-center gap-2">
+                        <a href="{{ route('customers.index', array_merge(request()->except(['balance', 'page']), ['balance' => 'any'])) }}"
+                           class="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1 transition-all {{ request('balance') ? 'bg-emerald-50 ring-1 ring-emerald-300' : 'hover:bg-emerald-50' }}"
+                           title="Customers who have paid us more than their invoices">
+                            <div class="w-7 h-7 bg-emerald-100 rounded-lg flex items-center justify-center">
+                                <i class="ki-filled ki-wallet text-emerald-600 text-sm"></i>
+                            </div>
+                            <div>
+                                <span class="text-xs text-gray-500">Balance held</span>
+                                <span class="text-base font-bold text-emerald-700 ml-1">Rs {{ number_format($stats['balance_total'] ?? 0) }}</span>
+                                <span class="text-xs text-gray-400 ml-1">({{ $stats['balance_customers'] }})</span>
+                            </div>
+                        </a>
+                        <a href="/customers/balances" class="text-xs text-emerald-700 underline" title="Open the Customer Balances audit screen">audit →</a>
+                    </div>
+                    @endif
                 </div>
                 <div class="text-xs text-gray-400">
                     {{ now()->format('M d, H:i') }}
@@ -3668,12 +3423,26 @@ function removePromoImage() {
                         <option value="regular" {{ request('customer_type') == 'regular' ? 'selected' : '' }}>Regular</option>
                         <option value="shop" {{ request('customer_type') == 'shop' ? 'selected' : '' }}>🏪 Shop</option>
                     </select>
-                    
+
+                    {{-- 💰 Account balance. A URL param, not a client-side cut,
+                         so it narrows the SAME query the paginator runs and the
+                         page count stays honest. --}}
+                    <select name="balance" class="select select-sm w-40 text-xs" id="customerBalanceFilter">
+                        <option value="" {{ !request('balance') ? 'selected' : '' }}>Any balance</option>
+                        <option value="any" {{ request('balance') == 'any' ? 'selected' : '' }}>💰 Has a balance</option>
+                        <option value="1000" {{ request('balance') == '1000' ? 'selected' : '' }}>Rs 1,000+</option>
+                        <option value="5000" {{ request('balance') == '5000' ? 'selected' : '' }}>Rs 5,000+</option>
+                        <option value="20000" {{ request('balance') == '20000' ? 'selected' : '' }}>Rs 20,000+</option>
+                        <option value="pending" {{ request('balance') == 'pending' ? 'selected' : '' }}>Awaiting approval</option>
+                    </select>
+
                     <select name="sort" class="select select-sm w-44 text-xs" id="customerSortFilter">
                         <option value="last_order_date_desc" {{ (request('sort_by', 'last_order_date') == 'last_order_date' && request('sort_dir', 'desc') == 'desc') ? 'selected' : '' }}>Last Order ↓ Newest</option>
                         <option value="last_order_date_asc" {{ (request('sort_by') == 'last_order_date' && request('sort_dir') == 'asc') ? 'selected' : '' }}>Last Order ↑ Oldest</option>
                         <option value="total_spent_desc" {{ (request('sort_by') == 'total_spent' && request('sort_dir', 'desc') == 'desc') ? 'selected' : '' }}>Spent ↓ Highest</option>
                         <option value="total_spent_asc" {{ (request('sort_by') == 'total_spent' && request('sort_dir') == 'asc') ? 'selected' : '' }}>Spent ↑ Lowest</option>
+                        <option value="balance_desc" {{ (request('sort_by') == 'balance' && request('sort_dir', 'desc') == 'desc') ? 'selected' : '' }}>💰 Balance ↓ Highest</option>
+                        <option value="balance_asc" {{ (request('sort_by') == 'balance' && request('sort_dir') == 'asc') ? 'selected' : '' }}>💰 Balance ↑ Lowest</option>
                     </select>
                     
                     <button type="button" onclick="clearCustomerFilters()" class="kt-btn kt-btn-sm kt-btn-outline text-xs px-3" title="Clear all filters">

@@ -2621,7 +2621,7 @@ function rrRenderIssues(){
                     <div style="font-weight:650;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sev==='r'?'#B3362B':'#A8730F'};"></span>
                         ${rrEsc(r.rider_name)}
-                        ${r.lateness ? rrChip('late '+r.lateness.today_min+' min today · '+r.lateness.month_min+' min this month','warn') : ''}
+                        ${r.lateness ? rrChip('late '+r.lateness.today_min+' min today · '+r.lateness.month_min+' min this month'+((r.lateness.month_waived_min||0)>0?' · '+r.lateness.month_waived_min+' min waived':''),'warn') : ''}
                         <span style="margin-left:auto; display:flex; gap:6px;">
                             <a href="#" onclick="rrOpenTimeline(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">📋 timeline</a>
                             <a href="#" onclick="openDispatchDetail(${r.user_id});return false;" style="font-size:12px;color:#2E64A6;text-decoration:none;border:1px solid #C4D3E2;border-radius:4px;padding:1px 8px;background:#EEF4FA;">🚀 dispatch detail</a>
@@ -2795,4 +2795,5 @@ function openDispatchDetail(userId){
 @include('partials.service-alerts')
 @include('partials.vehicle-ticket-alerts')
 @include('partials.workshop-alerts')
+@include('partials.shift-approval-alerts')
 @endsection

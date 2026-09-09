@@ -205,16 +205,122 @@ class CustomerCreditService
             return [];
         }
 
-        $sums = DB::table('t_crm_customer_credit')
+        $sums = $this->spendableSumQuery()
             ->whereIn('customer_id', array_values(array_unique($resolved)))
-            ->whereIn('status', CustomerCreditModel::SPENDABLE_STATUSES)
-            ->groupBy('customer_id')
             ->pluck(DB::raw('COALESCE(SUM(amount), 0)'), 'customer_id')
             ->all();
 
         $out = [];
         foreach ($resolved as $askedFor => $realId) {
             $out[$askedFor] = round((float) ($sums[$realId] ?? 0), 2);
+        }
+
+        return $out;
+    }
+
+    /**
+     * ⭐⭐ THE balance formula, as a query builder, in ONE place.
+     *
+     * Every read of "what does a customer hold" — one customer, a page of
+     * customers, or every customer in the business — starts here, so the
+     * counting-status list can never be spelled differently on two screens.
+     * That has already gone wrong once (the customers list hand-rolled the sum
+     * and disagreed with the customer panel for merged customers), which is why
+     * there is now nowhere else to write it.
+     */
+    private function spendableSumQuery()
+    {
+        return DB::table('t_crm_customer_credit')
+            ->whereIn('status', CustomerCreditModel::SPENDABLE_STATUSES)
+            ->groupBy('customer_id');
+    }
+
+    /**
+     * Every customer who holds a balance, as [customer_id => balance].
+     *
+     * For the Balances page and the customers-list "has a balance" filter —
+     * both need the whole population, not a page of it, because a filter that
+     * only knew about the 15 rows already on screen would be a lie.
+     *
+     * The min/max cut is applied AFTER merge resolution (two merged records can
+     * both carry rows that belong to one surviving customer, and the customer
+     * is over the threshold only once their money is added together).
+     *
+     * @return array<int, float>  customer_id => balance, highest first
+     */
+    public function customerBalances(?float $min = 0.01, ?float $max = null): array
+    {
+        if (!$this->tableReady()) {
+            return [];
+        }
+
+        $raw = $this->spendableSumQuery()
+            ->pluck(DB::raw('COALESCE(SUM(amount), 0)'), 'customer_id')
+            ->all();
+
+        // Fold merged-away records onto the customer that survives them.
+        $out = [];
+        foreach ($raw as $customerId => $sum) {
+            $realId = $this->resolveCustomerId((int) $customerId);
+            if (!$realId) {
+                continue;
+            }
+            $out[$realId] = ($out[$realId] ?? 0.0) + (float) $sum;
+        }
+
+        foreach ($out as $id => $sum) {
+            $sum = round($sum, 2);
+            if (($min !== null && $sum < $min) || ($max !== null && $sum > $max)) {
+                unset($out[$id]);
+                continue;
+            }
+            $out[$id] = $sum;
+        }
+
+        arsort($out);
+
+        return $out;
+    }
+
+    /**
+     * Grants still waiting for approval, as [customer_id => ['total'=>, 'count'=>]].
+     * The batched form of what summaryFor() reports for one customer — pending
+     * money is shown beside a balance everywhere, and it must never be added
+     * into one.
+     *
+     * @param  array<int>|null  $customerIds  null = every customer
+     * @return array<int, array{total: float, count: int}>
+     */
+    public function pendingForMany(?array $customerIds = null): array
+    {
+        if (!$this->tableReady()) {
+            return [];
+        }
+
+        $q = DB::table('t_crm_customer_credit')
+            ->where('status', CustomerCreditModel::STATUS_PENDING)
+            ->groupBy('customer_id');
+
+        if ($customerIds !== null) {
+            $ids = array_values(array_unique(array_filter(array_map('intval', $customerIds))));
+            if (empty($ids)) {
+                return [];
+            }
+            $q->whereIn('customer_id', $ids);
+        }
+
+        $out = [];
+        foreach ($q->get([
+            'customer_id',
+            DB::raw('COALESCE(SUM(amount), 0) AS total'),
+            DB::raw('COUNT(*) AS cnt'),
+        ]) as $row) {
+            $realId = $this->resolveCustomerId((int) $row->customer_id);
+            if (!$realId) {
+                continue;
+            }
+            $out[$realId]['total'] = round(($out[$realId]['total'] ?? 0) + (float) $row->total, 2);
+            $out[$realId]['count'] = ($out[$realId]['count'] ?? 0) + (int) $row->cnt;
         }
 
         return $out;
@@ -289,13 +395,18 @@ class CustomerCreditService
             ->limit(max(1, $limit))
             ->get();
 
+        // ⭐ The invoice total travels with the order number: "added Rs 8,260"
+        // reads as normal until you can see the invoice was Rs 2,589. One
+        // batched query, same shape as the Balances screen shows.
         $orderNumbers = [];
+        $orderTotals  = [];
         $orderIds     = $rows->pluck('order_id')->filter()->unique()->values()->all();
         if (!empty($orderIds)) {
-            $orderNumbers = DB::table('t_crm_prod_order')
-                ->whereIn('id', $orderIds)
-                ->pluck('order_number', 'id')
-                ->all();
+            foreach (DB::table('t_crm_prod_order')->whereIn('id', $orderIds)
+                ->get(['id', 'order_number', 'total_price']) as $o) {
+                $orderNumbers[$o->id] = $o->order_number;
+                $orderTotals[$o->id]  = $o->total_price === null ? null : round((float) $o->total_price, 2);
+            }
         }
 
         // Who did what. A money history that cannot name its actors is not an
@@ -308,7 +419,7 @@ class CustomerCreditService
             ->whereIn('id', $userIds)->pluck('fullname', 'id')->all();
         $nameOf = fn ($id) => $id ? ($names[$id] ?? ('User #' . $id)) : null;
 
-        return $rows->map(function (CustomerCreditModel $r) use ($orderNumbers, $nameOf) {
+        return $rows->map(function (CustomerCreditModel $r) use ($orderNumbers, $orderTotals, $nameOf) {
             $amount = (float) $r->amount;
 
             return [
@@ -327,6 +438,7 @@ class CustomerCreditService
                 'source'       => $r->source,
                 'order_id'     => $r->order_id,
                 'order_number' => $r->order_id ? ($orderNumbers[$r->order_id] ?? null) : null,
+                'order_total'  => $r->order_id ? ($orderTotals[$r->order_id] ?? null) : null,
                 'reason'       => $r->reason,
                 'date'         => optional($r->created_at)->format('d-M-Y'),
                 'date_full'    => optional($r->created_at)->format('d M Y, g:i A'),

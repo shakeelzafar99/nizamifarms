@@ -631,13 +631,22 @@ class LedgerPostingService
      */
     private function markSettlementStatus($request, $fundingAccount): void
     {
+        // ⭐ Storage (Supplies): a take-out is funded from the SUPPLIES_STOCK asset
+        // account, so nobody is out of pocket — the cash left when the stock was
+        // bought. Without this it would be flagged "pending settlement" and sit in
+        // the settle queue forever with no one to reimburse.
+        if ($fundingAccount->account_category === 'supplies_stock') {
+            $request->settlement_status = 'not_required';
+            return;
+        }
+
         // Get Expense Fund account
         $expenseFund = ConfigModel::getExpenseFundingAccount();
-        
+
         if (!$expenseFund) {
             $expenseFund = AccountModel::where('account_code', 'EXP_FUND')->first();
         }
-        
+
         // If paid from Expense Fund, no settlement needed
         if ($expenseFund && $fundingAccount->id == $expenseFund->id) {
             $request->settlement_status = 'not_required';

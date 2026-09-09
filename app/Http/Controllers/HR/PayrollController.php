@@ -7,6 +7,7 @@ use App\Services\HR\PayrollService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class PayrollController extends Controller
 {
@@ -741,10 +742,14 @@ class PayrollController extends Controller
             'items.*.skip_overtime' => 'nullable|boolean',
             'items.*.skip_late_leave' => 'nullable|boolean',
             'items.*.defer_leave_actions' => 'nullable|boolean',
-            // What to do when deductions exceed the salary: 'carry' recovers only what
-            // this month can absorb and leaves the rest open (default), 'writeoff' forgives
-            // it. The manager answers this on the pay dialog; it is never assumed silently.
-            'items.*.shortfall' => 'nullable|in:carry,writeoff',
+            // What to do when deductions exceed the salary. The manager answers this on the
+            // pay dialog; it is never assumed silently.
+            //
+            // ⚠⚠ This list is the SERVICE's, not a hand-typed copy. It used to read
+            // `in:carry,writeoff` — neither of which the dialog has ever sent — so picking
+            // "don't apply this month's absent/late deductions" 422'd and failed the whole
+            // batch. `carry` was a name from the design that was never built.
+            'items.*.shortfall' => ['nullable', Rule::in(PayrollService::SHORTFALL_MODES)],
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);

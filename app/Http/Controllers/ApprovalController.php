@@ -17,6 +17,12 @@ class ApprovalController extends Controller
     const AREA_EXP_FUND = 'exp_fund';
     const AREA_NF_CASH = 'nf_cash';
     const AREA_ONLINE = 'online';
+    /**
+     * Storage (Supplies) take-outs. Their own area because they move no cash at all —
+     * the money left when the stock was bought; this only books the cost to the month
+     * the packet was used.
+     */
+    const AREA_SUPPLIES = 'supplies';
     const AREA_OTHERS = 'others';
 
     /**
@@ -506,6 +512,13 @@ class ApprovalController extends Controller
      */
     private function determineRequestArea($request, $expFundAccount, $nfCashAccount, $onlineAccount)
     {
+        // ⭐ Storage (Supplies) take-outs come out of the stock account, not out of any
+        // till — putting them in their own area keeps them from being read as Expense
+        // Fund money, and gives the approver a column that says what they really are.
+        if ($request->supply_takeout_id) {
+            return self::AREA_SUPPLIES;
+        }
+
         // Check payment source account FIRST (most accurate)
         if ($request->payment_source_account_id) {
             if ($expFundAccount && $request->payment_source_account_id == $expFundAccount->id) {

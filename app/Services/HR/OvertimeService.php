@@ -247,8 +247,29 @@ class OvertimeService
      * (see countedCheckout), and the worked/target minutes the OT figure came from.
      * Additive: existing callers read only 'total'/'dates' and are unaffected.
      */
+    /**
+     * (user|start|end|deliveries) => result. Per-request only.
+     *
+     * ⚠⚠ Sep-6 2026 — added because the payroll grid now walks this range TWICE per employee
+     * (once for the month's minutes, once for the review standing), and the loop inside issues
+     * a last-delivery query for every bypassed day. Unmemoised that doubled the page's query
+     * count. It is a pure read of frozen attendance, so caching it for one request is safe —
+     * `forgetRanges()` drops it whenever something that feeds it is written.
+     */
+    private static array $rangeMemo = [];
+
+    /** Drop the per-request range cache (a review or an attendance edit changed an input). */
+    public static function forgetRanges(): void
+    {
+        self::$rangeMemo = [];
+    }
+
     public function overtimeForRange(int $userId, string $start, string $end, bool $withDeliveries = false): array
     {
+        $memoKey = $userId . '|' . $start . '|' . $end . '|' . ($withDeliveries ? 'd' : '');
+        if (isset(self::$rangeMemo[$memoKey])) {
+            return self::$rangeMemo[$memoKey];
+        }
         $total = 0;
         $dates = [];
         $details = [];
@@ -266,6 +287,13 @@ class OvertimeService
             // sumLateOvertimeMinutes so target-OT (and its bonus-leave accrual) can't reward
             // a day the rider only half-worked.
             $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $start, $end);
+            // Resolved once for the whole range. Its own per-user cache means the per-day
+            // lookups below cost no queries; null when the feature is not installed yet.
+            $reviewSvc = null;
+            try {
+                $svc = app(DayReviewService::class);
+                if ($svc->enabled()) { $reviewSvc = $svc; }
+            } catch (\Throwable $e) { $reviewSvc = null; }
             foreach ($rows as $r) {
                 $date = substr((string) $r->attendance_date, 0, 10);
                 if (isset($halfDays[$date])) { continue; }
@@ -281,18 +309,37 @@ class OvertimeService
                 $targetMin = $this->targetHours() * 60;
                 $ot = $workedMin > $targetMin ? (int) round($workedMin - $targetMin) : 0;
                 if ($ot > 0) {
-                    $total += $ot;
-                    $dates[$date] = $ot;
-                    // The evidence behind this number, for the drill-downs. `counted` is null
-                    // for a normal checkout (incl. one made after the unlock expired, which
-                    // keeps its real time) — the tight bypassedCheckout test decides.
+                    // ⭐⭐ THE DAY REVIEW HOOK (Sep-6 2026). A manager can verify this figure,
+                    // adjust it, or say the day was not overtime at all. With no review — the
+                    // normal case, and the only case before the feature is switched on —
+                    // `effective` IS `$ot`, so every number downstream is untouched. That is
+                    // the owner's rule: an unreviewed day counts in full.
+                    $review = $reviewSvc ? $reviewSvc->reviewFor($userId, $date, 'overtime') : null;
+                    $effective = $review === null ? $ot : max(0, (int) $review['effective_minutes']);
+
+                    if ($effective > 0) {
+                        $total += $effective;
+                        $dates[$date] = $effective;
+                    }
+                    // ⚠ The evidence is kept whenever the day RAW-earned overtime, even when a
+                    // verdict took it to zero — otherwise a day a manager judged disappears from
+                    // the drill entirely and he cannot see (or undo) what he decided.
+                    // `counted` is null for a normal checkout (incl. one made after the unlock
+                    // expired, which keeps its real time) — the tight bypassedCheckout test decides.
                     $details[$date] = [
-                        'minutes'        => $ot,
+                        'minutes'        => $effective,
+                        'raw_minutes'    => $ot,
                         'login'          => $this->hm($r->login_time),
                         'logout'         => $this->hm($r->logout_time),
                         'counted'        => $this->countedCheckout($userId, $date, $r->login_time, $r->logout_time, $unlock),
                         'worked_minutes' => (int) round($workedMin),
                         'target_minutes' => (int) round($targetMin),
+                        'review'         => $review === null ? null : [
+                            'verdict' => $review['verdict'],
+                            'by'      => $review['reviewed_by'],
+                            'at'      => $review['reviewed_at'],
+                            'reason'  => $review['reason'],
+                        ],
                     ];
                 }
             }
@@ -312,7 +359,7 @@ class OvertimeService
                 }
             }
         } catch (\Throwable $e) { /* no data → zero */ }
-        return ['total' => $total, 'dates' => $dates, 'details' => $details];
+        return self::$rangeMemo[$memoKey] = ['total' => $total, 'dates' => $dates, 'details' => $details];
     }
 
     /** Just the total minutes across [$start,$end]. */

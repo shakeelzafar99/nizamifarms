@@ -33,6 +33,19 @@
                 <div><span>After</span><b class="num" id="nfhubDAfter">—</b></div>
             </div>
         </div>
+        {{-- 🏦 What the BANK says about this payment: its own timestamp and reference, read off the
+             bank SMS / bank email / customer screenshot behind the row. This is the line to check
+             against a real bank statement — the "Date" in Details below is the day WE filed it.
+             Only bank-statement rows carry it; every other Hub surface leaves it hidden. --}}
+        <div class="d-section" id="nfhubDBankWrap" style="display:none">
+            <h4>On the bank's statement</h4>
+            <dl class="d-kv">
+                <dt>Bank date</dt><dd id="nfhubDBankAt">—</dd>
+                <dt id="nfhubDBankRefT" style="display:none">Reference</dt><dd id="nfhubDBankRef" style="display:none">—</dd>
+                <dt id="nfhubDBankSrcT" style="display:none">Read from</dt><dd id="nfhubDBankSrc" style="display:none">—</dd>
+            </dl>
+            <div id="nfhubDBankDrift" class="d-bank-drift" style="display:none"></div>
+        </div>
         {{-- What was actually bought. Loaded on demand for ledger rows that have line items
              (weighted vendor purchases) — the peek used to stop at the total. --}}
         <div class="d-section" id="nfhubDItemsWrap" style="display:none">
@@ -350,6 +363,28 @@
             entD.textContent = d.entered || '—';
         }
         set('nfhubDBy', d.by || '—');
+        // 🏦 The bank's own date / reference. Only bank-statement rows send bankAt; on every other
+        // Hub page the block stays hidden, exactly as before this existed.
+        var bankWrap = document.getElementById('nfhubDBankWrap');
+        if (bankWrap) {
+            bankWrap.style.display = d.bankAt ? '' : 'none';
+            if (d.bankAt) {
+                set('nfhubDBankAt', d.bankAt);
+                pair('nfhubDBankRefT', 'nfhubDBankRef', d.bankRef || null);
+                pair('nfhubDBankSrcT', 'nfhubDBankSrc', d.bankSrc || null);
+                // bankDrift: −1 = the money moved BEFORE the day this entry is filed under (entered
+                // late, the common case); +1 = it moved AFTER (the entry was dated early). Either
+                // way the balance is untouched — only the day it appears under differs.
+                var drift = Number(d.bankDrift) || 0;
+                var driftEl = document.getElementById('nfhubDBankDrift');
+                if (driftEl) {
+                    driftEl.textContent = drift < 0
+                        ? "The bank moved this money the day before this entry's date — it was recorded the next day. The balance is unaffected; only the day it appears under differs."
+                        : "The bank moved this money after this entry's date — the entry was dated earlier than the transfer. The balance is unaffected; only the day it appears under differs.";
+                }
+                show('nfhubDBankDrift', drift !== 0);
+            }
+        }
         // Balance before → after (bank statements only).
         var balWrap = document.getElementById('nfhubDBalWrap');
         if (balWrap) {

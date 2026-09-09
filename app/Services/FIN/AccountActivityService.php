@@ -45,6 +45,7 @@ class AccountActivityService
         'salary_payment'   => 'Salary Payment',
         'salary_advance'   => 'Salary Advance',
         'asset_purchase'   => 'Asset Purchase',
+        'supply_purchase'  => 'Storage stock purchase',
         'invoice'          => 'Invoice',
         'order_payment'    => 'Order Payment',
     ];

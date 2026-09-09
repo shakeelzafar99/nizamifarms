@@ -837,6 +837,24 @@ class WhatsAppService
                     $mediaMimeType = $msg['document']['mime_type'] ?? 'application/pdf';
                     break;
 
+                case 'sticker':
+                    // Sep-2026 — stickers used to fall through to `default`,
+                    // which stored the literal string "[Unsupported message
+                    // type: sticker]" and threw the image away (26 such rows on
+                    // prod). A thumbs-up STICKER is an ordinary customer reply,
+                    // so it is now downloaded and shown like any other image.
+                    // image/webp is already in the mime→extension map, and
+                    // maybeQueuePaymentSignal() only fires on type=image, so a
+                    // sticker can never be read as a payment proof (no Gemini
+                    // spend). Guarded: a payload with no media id keeps the
+                    // label and simply has no picture.
+                    $stickerId = $msg['sticker']['id'] ?? null;
+                    $mediaPath = $stickerId ? $this->downloadMedia($stickerId) : null;
+                    $mediaUrl = $mediaPath;
+                    $mediaMimeType = $msg['sticker']['mime_type'] ?? 'image/webp';
+                    $content = '[Sticker]';
+                    break;
+
                 case 'location':
                     $lat = $msg['location']['latitude'] ?? 0;
                     $lng = $msg['location']['longitude'] ?? 0;
@@ -1104,7 +1122,12 @@ class WhatsAppService
             if (!$systemAnswered) {
                 try {
                     $senderName = $contactName ?? $conversation->display_name ?? $from;
-                    $preview = mb_substr($content ?? '[Media]', 0, 200);
+                    // Sep-2026 — a reaction push used to be the bare emoji ("👍")
+                    // with nothing to say what was reacted to, and an EMPTY body
+                    // when the customer removed their reaction. Say what happened.
+                    $preview = $type === 'reaction'
+                        ? $this->reactionPushPreview($savedMessage, (int) $conversation->id, (string) $content)
+                        : mb_substr($content ?? '[Media]', 0, 200);
                     app(FirebaseService::class)->notifyNewWhatsAppMessage($senderName, $preview, $conversation->id);
                 } catch (\Exception $pushErr) {
                     Log::debug('WhatsApp: Push notification failed (non-fatal)', ['error' => $pushErr->getMessage()]);
@@ -1141,6 +1164,129 @@ class WhatsAppService
                 'message_data' => $msg,
             ]);
         }
+    }
+
+    /**
+     * Sep-2026 — Resolve what each inbound REACTION was reacting to.
+     *
+     * A reaction row stores only the emoji (as `content`) plus the reacted-to
+     * WhatsApp id in `metadata.reacted_message_id`. On its own that renders as
+     * a bare bubble, so a customer thumbs-upping an invoice looked exactly like
+     * them sending "👍" as a brand-new message. This turns the stored id into a
+     * short quote of the ORIGINAL message so both surfaces can show
+     * "Reacted to our message · Invoice #NF-1234".
+     *
+     * ONE implementation for both surfaces — the web and the mobile controllers
+     * both call this — and ONE extra query per page load (a single whereIn,
+     * skipped entirely when the page holds no reactions). The lookup is scoped
+     * to the SAME conversation, so a stale or foreign id can never pull another
+     * customer's message into this thread.
+     *
+     * @param  iterable $messages        rows already fetched for this page
+     * @param  int      $conversationId  the thread they belong to
+     * @return array<int, array>         reaction row id => quote payload
+     */
+    public function reactionContextFor($messages, int $conversationId): array
+    {
+        $wanted = []; // reacted-to wa_message_id => [ids of the reaction rows quoting it]
+
+        foreach ($messages as $m) {
+            if (($m->type ?? null) !== 'reaction') {
+                continue;
+            }
+            $meta = is_string($m->metadata ?? null) ? json_decode($m->metadata, true) : ($m->metadata ?? null);
+            $targetWaId = is_array($meta) ? ($meta['reacted_message_id'] ?? null) : null;
+            if ($targetWaId) {
+                $wanted[$targetWaId][] = $m->id;
+            }
+        }
+
+        if (!$wanted) {
+            return [];
+        }
+
+        try {
+            $out = [];
+            $targets = MessageModel::where('conversation_id', $conversationId)
+                ->whereIn('wa_message_id', array_keys($wanted))
+                ->get(['id', 'wa_message_id', 'direction', 'type', 'content', 'template_name']);
+
+            foreach ($targets as $t) {
+                $payload = [
+                    'id'        => $t->id,
+                    'direction' => $t->direction,
+                    'type'      => $t->type,
+                    'snippet'   => $this->messageSnippet($t),
+                ];
+                foreach ($wanted[$t->wa_message_id] ?? [] as $reactionRowId) {
+                    $out[$reactionRowId] = $payload;
+                }
+            }
+
+            return $out;
+        } catch (\Throwable $e) {
+            // A decoration must never be able to break the chat payload.
+            Log::debug('WhatsApp: reaction context skipped (non-fatal)', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * One-line description of a message, used to quote it under a reaction.
+     * Media rows get their own label because their `content` is either a
+     * caption or a placeholder like "[Voice Note]".
+     */
+    public function messageSnippet($msg): string
+    {
+        $text = $this->clipSnippet((string) ($msg->content ?? ''));
+
+        switch ($msg->type ?? '') {
+            case 'image':    return $text !== '' ? '📷 ' . $text : '📷 Photo';
+            case 'audio':    return '🎤 Voice note';
+            case 'sticker':  return '💬 Sticker';
+            case 'video':    return ($text !== '' && $text !== '[Video]') ? '🎬 ' . $text : '🎬 Video';
+            case 'document': return ($text !== '' && $text !== '[Document]') ? '📄 ' . $text : '📄 Document';
+            case 'location': return $text !== '' ? '📍 ' . $text : '📍 Location';
+        }
+
+        if ($text !== '') {
+            return $text;
+        }
+
+        return $msg->template_name ? ('Template: ' . $msg->template_name) : 'Message';
+    }
+
+    /**
+     * Collapse whitespace and cut to a quotable length. `\s` is ASCII-only
+     * without the /u flag, so it can never land inside a multi-byte sequence;
+     * the cut itself uses mb_substr so an emoji is never sliced in half.
+     */
+    protected function clipSnippet(string $s, int $len = 70): string
+    {
+        $s = trim(preg_replace('/\s+/', ' ', $s));
+
+        return mb_strlen($s) > $len ? (mb_substr($s, 0, $len) . '…') : $s;
+    }
+
+    /**
+     * Push-notification body for an inbound reaction. Meta sends an EMPTY
+     * emoji when the customer REMOVES their reaction — that used to produce a
+     * notification with no body at all.
+     */
+    protected function reactionPushPreview($savedMessage, int $conversationId, string $content): string
+    {
+        $emoji = trim($content);
+
+        if ($emoji === '') {
+            return 'Removed a reaction';
+        }
+
+        $ctx = $savedMessage ? $this->reactionContextFor([$savedMessage], $conversationId) : [];
+        $snippet = $ctx[$savedMessage->id ?? 0]['snippet'] ?? null;
+
+        return $snippet
+            ? mb_substr('Reacted ' . $emoji . ' to: ' . $snippet, 0, 200)
+            : ('Reacted ' . $emoji);
     }
 
     /**

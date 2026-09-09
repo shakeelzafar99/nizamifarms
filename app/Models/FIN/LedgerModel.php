@@ -101,6 +101,14 @@ class LedgerModel extends BaseModel
     const TYPE_OPENING_BALANCE = 'opening_balance';
     const TYPE_SETTLEMENT = 'expense_settlement';
     const TYPE_ORDER_PAYMENT = 'order_payment';
+    /**
+     * Storage (Supplies): buying packaging stock in bulk.
+     * ⭐ Deliberately NOT 'expense'. The cash leaves now, but the COST is booked one
+     * packet at a time as the stock is used, so this row must stay invisible to every
+     * expense/P&L query (they all filter transaction_type = 'expense'). Reports and HQ
+     * show it on their own "Supplies bought" line so the money-out is still visible.
+     */
+    const TYPE_SUPPLY_PURCHASE = 'supply_purchase';
 
     // Tips Fund (Sep-2026). A tip rides inside the invoice, so the invoice row
     // books it as revenue; TYPE_TIP_COLLECTED immediately moves it back out of
@@ -139,6 +147,7 @@ class LedgerModel extends BaseModel
     const TYPE_LABELS = [
         self::TYPE_INVOICE          => 'Invoice',
         self::TYPE_ORDER_PAYMENT    => 'Order Payment',
+        self::TYPE_SUPPLY_PURCHASE  => 'Storage stock purchase',
         self::TYPE_EMPLOYEE_DEPOSIT => 'Deposit',
         self::TYPE_EXPENSE          => 'Expense',
         self::TYPE_VENDOR_PURCHASE  => 'Vendor Purchase',

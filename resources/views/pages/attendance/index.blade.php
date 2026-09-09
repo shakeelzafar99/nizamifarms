@@ -848,15 +848,32 @@
       </div>
     </div>
 
+    {{-- Phase 0 (Sep-6 2026) — a typed time sets the day's overtime, so OVERWRITING a recorded
+         one asks why. Appears only when a stored value is actually being changed; adding a
+         missing check-in/out stays a two-click fix. The server enforces the same rule. --}}
+    <div id="quickEditReasonBox" style="display:none;margin:-8px 0 20px;">
+      <label class="block text-sm font-medium text-gray-700 mb-2">
+        Why is this being changed? <span style="color:#b91c1c;">*</span>
+      </label>
+      <input
+        id="quickEditReason"
+        type="text"
+        maxlength="200"
+        placeholder="e.g. forgot to press OUT, meter photo shows 21:30"
+        class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+      >
+      <p id="quickEditReasonWhy" style="font-size:11px;color:#6b7280;margin-top:6px;"></p>
+    </div>
+
     <div class="flex gap-2">
-      <button 
-        onclick="closeQuickEdit()" 
+      <button
+        onclick="closeQuickEdit()"
         class="flex-1 px-4 py-3 bg-gray-100 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 transition font-medium"
       >
         Cancel
       </button>
-      <button 
-        onclick="saveQuickEdit()" 
+      <button
+        onclick="saveQuickEdit()"
         class="flex-1 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
       >
         💾 Save
@@ -1186,6 +1203,10 @@
     width: 16px;
   }
 </style>
+
+{{-- THE leave-actions row renderer, shared with the Payroll screen. Included before this
+     page's script so NFLeaveActions exists by the time the panel is opened. --}}
+@include('partials.leave-actions-panel')
 
 <script>
 let allUsers = [];
@@ -1804,6 +1825,19 @@ function attInlineContext(r) {
     // reserved for things that need attention now (leave state, a year-absence threshold below).
     bits.push(`<span title="Total late so far this month" style="font-size:11px;color:#9CA3AF;">⏰ ${txt} late this mo</span>`);
   }
+  // ⭐ Sep-6 2026 — has TODAY's lateness / overtime already been looked at? A quiet marker,
+  // not an alarm: the bulb is what asks for the work, this only says where it stands so the
+  // Today board tells the same story as Payroll. Only ever shown once a verdict exists.
+  ['late', 'overtime'].forEach((kind) => {
+    const rv = kind === 'late' ? r.late_review : r.overtime_review;
+    if (!rv) return;
+    const label = rv.verdict === 'verified'
+      ? (kind === 'late' ? 'late checked' : 'overtime checked')
+      : (kind === 'late' ? `${rv.waived}m waived` : (rv.verdict === 'waived' ? 'not overtime' : 'overtime adjusted'));
+    const who = rv.by ? ` by ${String(rv.by).replace(/</g, '&lt;')}` : '';
+    const why = rv.reason ? ` — “${String(rv.reason).replace(/</g, '&lt;')}”` : '';
+    bits.push(`<span title="Checked${who}${why}" style="font-size:11px;color:#047857;font-weight:600;">✔ ${label}</span>`);
+  });
   const ya = r.year_absent_days;
   if (ya != null && Number(ya) > 0) {
     const n = Number(ya);
@@ -2017,53 +2051,41 @@ function openPayrollLeaveActions() {
 }
 function closePayrollLeaveActions() { document.getElementById('leaveActModal').style.display = 'none'; }
 
+// ⭐⭐ Sep-6 2026 — this used to be a HAND-COPIED clone of the payroll panel and it had
+//   drifted badly: no absence branch at all, so an absence rendered as "Deduct 2 days
+//   absent / Keep leave", posted decision:'apply', and the service refused it every time
+//   ("Choose deduct, park or excuse") — there was no way to succeed from this screen. A
+//   parked month rendered as "✓ −2 leaves deducted", the opposite of what happened.
+//   It now draws the SAME rows as payroll, from partials/leave-actions-panel.
 function renderPayrollLeaveActions() {
   const j = PAYROLL_LEAVE_ACT, s = j.summary || {}, open = !j.closed;
-  const rows = (j.rows || []).map(r => r.actions.map(a => {
-    const col = a.kind === 'overtime' ? '#047857' : '#B45309';
-    const payload = `${r.user_id},'${String(r.fullname).replace(/'/g, "\\'")}','${a.kind}'`;
-    let acts;
-    if (a.status === 'pending') {
-      const dis = open ? 'disabled style="opacity:.5;cursor:not-allowed;" title="Wait until the month ends"' : '';
-      acts = `<button type="button" onclick="decidePayrollLeaveAction(${payload},'apply')" ${dis}
-          style="background:${a.kind === 'overtime' ? '#ECFDF5' : '#FFFBEB'};border:1px solid ${a.kind === 'overtime' ? '#A7F3D0' : '#FCD34D'};color:${col};border-radius:6px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;">${a.kind === 'overtime' ? 'Give' : 'Deduct'} ${a.headline}</button>
-        <button type="button" onclick="decidePayrollLeaveAction(${payload},'waive')" ${dis}
-          style="background:#F3F4F6;border:1px solid #E5E7EB;color:#6B7280;border-radius:6px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;">${a.kind === 'overtime' ? 'Skip' : 'Keep leave'}</button>`;
-    } else {
-      const applied = Number(a.applied_days || 0);
-      const txt = a.status === 'waived'
-        ? (a.kind === 'overtime' ? '✕ bonus skipped' : '✕ leave kept (waived)')
-        : `✓ ${applied > 0 ? '+' + applied : applied} leave${Math.abs(applied) === 1 ? '' : 's'} ${a.kind === 'overtime' ? 'given' : 'deducted'}`;
-      const who = [a.decided_by ? 'by ' + a.decided_by : '', a.decided_at || ''].filter(Boolean).join(' · ');
-      acts = `<span style="background:${a.status === 'waived' ? '#F3F4F6' : '#ECFDF5'};color:${a.status === 'waived' ? '#6B7280' : '#047857'};border-radius:6px;padding:3px 9px;font-size:11px;font-weight:700;">${txt}</span>`
-        + (who ? `<span style="font-size:10.5px;color:#9CA3AF;">${who}</span>` : '')
-        + (open ? '' : `<button type="button" onclick="decidePayrollLeaveAction(${payload},'${a.status === 'waived' ? 'apply' : 'waive'}',true)"
-            style="background:none;border:none;color:#4F46E5;font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;margin-left:auto;">change ›</button>`);
-    }
-    const drift = a.changed
-      ? `<div style="font-size:10.5px;color:#B45309;margin-top:3px;">⚠ recommended now: ${a.recommended_days > 0 ? '+' : ''}${a.recommended_days} — settled on a different figure.</div>` : '';
-    return `<div style="padding:11px 2px;border-bottom:1px solid #F3F4F6;">
-      <div style="font-size:13px;font-weight:700;color:#111827;">${r.fullname}${r.paid ? ' <span style="font-size:10px;font-weight:700;color:#6B7280;background:#F3F4F6;border-radius:5px;padding:1px 6px;">salary paid</span>' : ''}</div>
-      <div style="font-size:12.5px;font-weight:700;color:${col};margin-top:1px;">${a.headline}</div>
-      <div style="font-size:11px;color:#6B7280;line-height:1.5;margin-top:2px;">${a.basis}<br>${a.formula}
-        · <button type="button" onclick="showDateBreakdown(${r.user_id},'${String(r.fullname).replace(/'/g, "\\'")}','${a.drill}')"
-            style="background:none;border:none;color:#4F46E5;font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;text-decoration-style:dotted;padding:0;">see the days ›</button></div>
-      ${drift}
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px;">${acts}</div>
-    </div>`;
-  }).join('')).join('');
 
   const cut = s.late_cut_count
     ? `<div style="font-size:11.5px;color:#B45309;background:#FFFBEB;border-radius:8px;padding:8px 10px;margin-bottom:10px;">⚠ ${s.late_cut_count} employee${s.late_cut_count > 1 ? 's have' : ' has'} a late <b>salary cut</b> of Rs ${Math.round(s.late_cut_total).toLocaleString('en-PK')} this month (too late for a leave penalty). That is money — it is deducted on the Payroll screen when the salary is paid.</div>` : '';
   const all = (!open && s.pending_count > 0)
-    ? `<div style="margin-bottom:10px;"><button type="button" onclick="applyAllPayrollLeaveActions()"
+    ? `<div style="margin-bottom:10px;"><button type="button" id="laApplyAll"
          style="background:#ECFDF5;border:1px solid #A7F3D0;color:#047857;border-radius:6px;padding:5px 13px;font-size:12px;font-weight:700;cursor:pointer;">Apply all ${s.pending_count} recommended</button>
          <span style="font-size:11px;color:#9CA3AF;margin-left:8px;">gives the bonuses and takes the penalties</span></div>` : '';
-  document.getElementById('laBody').innerHTML = cut + all + rows;
+
+  const items = [];
+  (j.rows || []).forEach(r => (r.actions || []).forEach(a => {
+    items.push(Object.assign({ user_id: r.user_id, fullname: r.fullname, paid: r.paid }, a));
+  }));
+
+  NFLeaveActions.render(document.getElementById('laBody'), items, {
+    header: cut + all,
+    monthOpen: open,
+    monthLabel: j.month_label,
+    onDecide: (item, choice) => decidePayrollLeaveAction(item.user_id, item.kind, choice),
+    onDrill: (item) => showDateBreakdown(item.user_id, item.fullname, item.drill),
+    afterPaint: () => {
+      const b = document.getElementById('laApplyAll');
+      if (b) b.onclick = () => applyAllPayrollLeaveActions();
+    }
+  });
 }
 
-async function decidePayrollLeaveAction(userId, name, kind, decision, isChange) {
-  if (isChange && !confirm(`Change this for ${name}?\n\nThe recorded decision will be replaced.`)) return;
+async function decidePayrollLeaveAction(userId, kind, decision) {
   document.querySelectorAll('#laBody button').forEach(b => b.disabled = true);
   try {
     const res = await fetch('/hr/payroll/leave-actions/decide', {
@@ -2144,6 +2166,36 @@ function renderMonthBody(data) {
         style="background:none;border:none;cursor:pointer;font-weight:700;color:${color};text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;">${n}</button>
     </td>`;
   };
+  // ⭐ Sep-6 2026 — the day-review standing, in the SAME words the Payroll screen uses.
+  // Same rule too: silent when the feature is off, before the start date, or when the month
+  // had nothing to review. Clicking opens the same drill, which is where a day is judged.
+  const attReviewChip = (u, kind, uid, nm) => {
+    const dr = u.day_review;
+    if (!dr || !dr.enabled) return '';
+    const s = dr[kind];
+    if (!s || !s.days) return '';
+    const drill = kind === 'late' ? 'month_late' : 'month_overtime';
+    const open = `<button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', '${drill}')" style="background:none;border:none;padding:0;cursor:pointer;font-size:9.5px;font-weight:700;text-decoration:underline;text-decoration-style:dotted;`;
+    if (s.stale) {
+      return `${open}color:#B45309;">🔁 ${s.stale} changed after checking ›</button>`;
+    }
+    if (s.pending > 0) {
+      return `<span style="display:block;">${open}color:#B45309;">⚠ ${s.reviewed} of ${s.days} checked ›</button></span>`;
+    }
+    const extra = kind === 'late'
+      ? (s.waived_minutes > 0 ? ` · ${fmtMinsShort(s.waived_minutes)} waived` : '')
+      : (s.changed > 0 ? ` · ${s.changed} adjusted` : '');
+    return `<span style="display:block;">${open}color:#047857;">✔ all ${s.days} checked${extra} ›</button></span>`;
+  };
+
+  // What a manager forgave, said out loud — otherwise the column simply shows a smaller
+  // number than the days add up to and it reads as the engine changing its mind.
+  const lateWaivedNote = (u) => {
+    const w = Number(u.late_waived_minutes) || 0;
+    if (w <= 0) return '';
+    return `<span style="display:block;font-size:9.5px;color:#6B7280;">${fmtMinsShort(Number(u.late_raw_minutes) || 0)} · ${fmtMinsShort(w)} waived</span>`;
+  };
+
   body.innerHTML = sorted.map(u => {
     const late = Number(u.total_late_minutes) || 0;
     const lateStyle = late > 300 ? 'background:#FEE2E2;color:#B91C1C;' : (late > 0 ? 'background:#FEF3C7;color:#92400E;' : 'background:#F3F4F6;color:#9CA3AF;');
@@ -2157,7 +2209,7 @@ function renderMonthBody(data) {
     const otPer = Number(u.overtime_minutes_per_bonus) || 540;
     const otTitle = `${fmtMinsShort(ot)} beyond the daily target. ${fmtMinsShort(otPer)} = 1 bonus leave day, so this earns ${otBonus}. Click to see the days.`;
     const otCell = ot > 0
-      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="${otTitle}" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;line-height:1.25;">${fmtMinsShort(ot)}${otBonus > 0 ? `<span style="display:block;font-size:9.5px;font-weight:700;color:#6d28d9;text-decoration:none;">= ${otBonus} bonus day${otBonus === 1 ? '' : 's'}</span>` : ''}</button></td>`
+      ? `<td class="px-4 py-3 text-center"><button type="button" onclick="event.stopPropagation(); showDateBreakdown(${uid}, '${nm}', 'month_overtime')" title="${otTitle}" style="background:none;border:none;cursor:pointer;font-weight:700;color:#047857;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;font-size:13px;line-height:1.25;">${fmtMinsShort(ot)}${otBonus > 0 ? `<span style="display:block;font-size:9.5px;font-weight:700;color:#6d28d9;text-decoration:none;">= ${otBonus} bonus day${otBonus === 1 ? '' : 's'}</span>` : ''}</button>${attReviewChip(u, 'overtime', uid, nm)}</td>`
       : `<td class="px-4 py-3 text-sm" style="text-align:center;color:#D1D5DB;">–</td>`;
     const flagsTd = flagsCell(u, uid, nm);
     const meterTd = meterCell(u, uid, nm);
@@ -2168,7 +2220,7 @@ function renderMonthBody(data) {
       ${filterCell(u.leave_days, '#2563EB', uid, nm, 'on_leave')}
       <td class="px-4 py-3 text-center">${late > 0
         ? `<button type="button" onclick="event.stopPropagation(); openMonthDetail(${uid}, '${nm}', 'late')" title="Open this month's detail, filtered to late days" style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;border:none;cursor:pointer;${lateStyle}">${fmtMinsShort(late)}</button>`
-        : `<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span>`}</td>
+        : `<span style="display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:600;${lateStyle}">${fmtMinsShort(late)}</span>`}${lateWaivedNote(u)}${attReviewChip(u, 'late', uid, nm)}</td>
       ${otCell}
       ${flagsTd}
       ${meterTd}
@@ -2595,7 +2647,27 @@ function bdDayMeta(m) {
     html += `<div style="font-size:11px;color:#6B7280;margin-top:2px;" title="Orders this rider delivered on this day, first to last.">` +
       `📦 ${num(m.orders)} order${m.orders === 1 ? '' : 's'} delivered${span}</div>`;
   }
-  return html;
+  return html + bdReviewLine(m);
+}
+
+/**
+ * ⭐ Sep-6 2026 — the day-review verdict, in the SAME words the Payroll drill uses.
+ * Read-only here on purpose: this page is where a manager LOOKS at a month, the bulb and the
+ * payroll drill are where he acts. Showing the verdict but not the buttons keeps one place
+ * to decide while still telling the truth on both screens.
+ */
+function bdReviewLine(m) {
+  const r = m && m.review;
+  if (!r) { return ''; }
+  const esc2 = (v) => String(v === null || v === undefined ? '' : v).replace(/</g, '&lt;');
+  const who = [r.by ? `by ${esc2(r.by)}` : '', r.at || ''].filter(Boolean).join(' · ');
+  let txt;
+  if (r.verdict === 'verified') { txt = '✔ verified'; }
+  else if (m.waived) { txt = `⏳ ${fmtMinsShort(m.waived)} waived`; }
+  else if (r.verdict === 'waived') { txt = '✕ not overtime'; }
+  else { txt = '✎ adjusted'; }
+  return `<div style="font-size:10.5px;font-weight:700;color:#047857;margin-top:2px;">` +
+    `${txt}${who ? ` · ${esc2(who)}` : ''}${r.reason ? ` · “${esc2(r.reason)}”` : ''}</div>`;
 }
 
 async function showDateBreakdown(userId, name, type) {
@@ -2635,9 +2707,11 @@ function exportMonthCsv() {
   if (!monthData.length) { alert('Nothing to export.'); return; }
   // Flags are split back out here — a spreadsheet wants one number per column, unlike the table
   // where they read better as one group of chips.
-  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Morning flags,Evening flags,Office checkouts,Missed meter,Leave (year),Absent (year)\n';
+  // ⚠ "Late minutes" is NET of anything a manager waived, so the waiver and the raw figure
+  // travel beside it — otherwise the sheet holds a number its own day rows do not add up to.
+  let csv = 'Employee,Present,Absent (month),Leave (month),Late minutes,Late waived,Late before waiver,Morning flags,Evening flags,Office checkouts,Missed meter,Leave (year),Absent (year)\n';
   [...monthData].sort((a, b) => String(a.fullname || '').localeCompare(String(b.fullname || ''))).forEach(u => {
-    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.checkin_violation_days || 0},${u.checkout_violation_days || 0},${u.office_checkout_days || 0},${u.meter_missed_days || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
+    csv += `"${(u.fullname || '').replace(/"/g, '""')}",${u.present_days || 0},${u.absent_days || 0},${u.leave_days || 0},${u.total_late_minutes || 0},${u.late_waived_minutes || 0},${u.late_raw_minutes || u.total_late_minutes || 0},${u.checkin_violation_days || 0},${u.checkout_violation_days || 0},${u.office_checkout_days || 0},${u.meter_missed_days || 0},${u.leaves_taken_year || 0},${u.absent_days_year || 0}\n`;
   });
   const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
@@ -4176,7 +4250,8 @@ function openQuickEdit(userId, userName, loginTime, logoutTime, attendanceDate) 
   quickEditOriginal.logout = String(logoutTime || '').slice(0, 5);
   document.getElementById('quickLoginTime').value = quickEditOriginal.login;
   document.getElementById('quickLogoutTime').value = quickEditOriginal.logout;
-  
+  quickEditSyncReason();
+
   const modal = document.getElementById('quickEditModal');
   modal.classList.remove('hidden');
   // Minimal overlay styling
@@ -4214,9 +4289,49 @@ function closeQuickEdit() {
     modal.classList.add('hidden');
     modal.removeAttribute('style');
   }
+  const rsn = document.getElementById('quickEditReason');
+  if (rsn) rsn.value = '';
+  const box = document.getElementById('quickEditReasonBox');
+  if (box) box.style.display = 'none';
   currentEditUserId = null;
   currentEditDate = null;
 }
+
+// Phase 0 — reveal the reason box only when a RECORDED time is being overwritten.
+// Adding a missing time is not an edit and must not grow a required field.
+function quickEditOverwrites() {
+  const login = String(document.getElementById('quickLoginTime').value || '');
+  const logout = String(document.getElementById('quickLogoutTime').value || '');
+  const out = [];
+  if (quickEditOriginal.login && login && login !== quickEditOriginal.login) out.push('check-in');
+  if (quickEditOriginal.logout && logout && logout !== quickEditOriginal.logout) out.push('checkout');
+  return out;
+}
+
+function quickEditSyncReason() {
+  const box = document.getElementById('quickEditReasonBox');
+  const why = document.getElementById('quickEditReasonWhy');
+  if (!box) return;
+  const fields = quickEditOverwrites();
+  box.style.display = fields.length ? 'block' : 'none';
+  if (fields.length && why) {
+    const pairs = [];
+    if (fields.includes('check-in')) {
+      pairs.push('check-in ' + quickEditOriginal.login + ' → ' + document.getElementById('quickLoginTime').value);
+    }
+    if (fields.includes('checkout')) {
+      pairs.push('checkout ' + quickEditOriginal.logout + ' → ' + document.getElementById('quickLogoutTime').value);
+    }
+    why.textContent = pairs.join(' · ') + ' — kept with your reason, and this day’s overtime is recalculated from it.';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  ['quickLoginTime', 'quickLogoutTime'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', quickEditSyncReason);
+  });
+});
 
 async function saveQuickEdit() {
   const loginTime = document.getElementById('quickLoginTime').value;
@@ -4240,6 +4355,21 @@ async function saveQuickEdit() {
     return;
   }
 
+  // Phase 0 — an overwrite carries its reason. Asked for here so the manager never loses
+  // his typing to a server refusal, and enforced server-side regardless.
+  const overwrites = quickEditOverwrites();
+  const reasonEl = document.getElementById('quickEditReason');
+  if (overwrites.length) {
+    quickEditSyncReason();
+    const reason = String((reasonEl && reasonEl.value) || '').trim();
+    if (!reason) {
+      alert('Say why the ' + overwrites.join(' and ') + ' is being changed — the old time is kept with your reason.');
+      if (reasonEl) reasonEl.focus();
+      return;
+    }
+    payload.reason = reason;
+  }
+
   try {
     const res = await fetch('/attendance', {
       method: 'POST',
@@ -4255,6 +4385,12 @@ async function saveQuickEdit() {
       alert('✅ Attendance updated successfully!');
       closeQuickEdit();
       loadAttendanceForDate();
+    } else if (json.reason_required) {
+      // The server saw an overwrite the client did not (e.g. the row moved under us).
+      const box = document.getElementById('quickEditReasonBox');
+      if (box) box.style.display = 'block';
+      alert('❌ ' + (json.message || 'A reason is required for this change.'));
+      if (reasonEl) reasonEl.focus();
     } else {
       alert('❌ Error: ' + (json.message || 'Failed to update attendance'));
     }
@@ -4440,14 +4576,10 @@ async function loadShiftData() {
               <span class="ml-1 text-[10px] text-gray-500">${u.role_name || ''}</span>
             </div>
           </div>
-          <div class="flex justify-center">
-            <input type="time" value="${u.shift_start || '09:00'}" class="px-1 py-1 border border-gray-300 rounded text-xs w-full" id="shift_start_${u.id}">
-          </div>
-          <div class="flex justify-center">
-            <input type="time" value="${u.shift_end || '17:00'}" class="px-1 py-1 border border-gray-300 rounded text-xs w-full" id="shift_end_${u.id}">
-          </div>
+          <div class="flex justify-center text-xs text-gray-600 font-medium">${u.shift_start || '—'}</div>
+          <div class="flex justify-center text-xs text-gray-600 font-medium">${u.shift_end || '—'}</div>
           <div class="flex justify-end">
-            <button onclick="saveShift(${u.id})" class="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs whitespace-nowrap">Save</button>
+            <button onclick="saveShift(${u.id}, ${JSON.stringify(u.fullname || ('User #' + u.id))})" class="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-xs whitespace-nowrap">Change</button>
           </div>
         </div>
       </div>
@@ -4457,31 +4589,23 @@ async function loadShiftData() {
   }
 }
 
-async function saveShift(userId) {
-  const start = document.getElementById(`shift_start_${userId}`).value;
-  const end = document.getElementById(`shift_end_${userId}`).value;
-
-  try {
-    const res = await fetch('/riders/shift', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
-      },
-      body: JSON.stringify({ user_id: userId, shift_start: start, shift_end: end })
-    });
-
-    const json = await res.json();
-    if (json.success) {
-      alert('✅ Shift updated!');
-      loadAllUsers();
-    } else {
-      alert('❌ Error updating shift');
-    }
-  } catch(e) {
-    console.error('Error saving shift', e);
-    alert('❌ Error saving shift');
+/**
+ * ⚰ 7-Sep-2026 — this used to POST raw times to `/riders/shift`, the legacy ungated door.
+ *    That route is gone. ONE ENGINE: it now opens the same "Change shift" popup the planner
+ *    and this page's own rows already use, which posts to `/shifts/assign` and therefore
+ *    obeys the ladder, the own-shift rule, the allowed-shift list and the approval queue.
+ *
+ * ⚠ The two time columns above are now READ-ONLY. They are the legacy
+ *   `t_ops_rider_profile` values, kept only as the resolution fallback for anyone never
+ *   migrated; nothing writes them any more. A shift is a TEMPLATE now, not two loose times,
+ *   which is why there is nothing here to type into.
+ */
+function saveShift(userId, userName) {
+  if (typeof openShiftChange !== 'function') {
+    alert('Open the Shift Planner to change shifts.');
+    return;
   }
+  openShiftChange({ userId: userId, userName: userName, onSaved: () => loadShiftData() });
 }
 
 // Employee Details Modal Functions
@@ -5629,5 +5753,6 @@ async function saveFuelRateGroups() {
 @include('partials.service-alerts')
 @include('partials.vehicle-ticket-alerts')
 @include('partials.workshop-alerts')
+@include('partials.shift-approval-alerts')
 
 @endsection

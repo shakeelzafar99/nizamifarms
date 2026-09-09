@@ -73,6 +73,56 @@ class SalaryCostService
             : $derived;
     }
 
+    /** Cached once per request — ships with payroll_advance_carry_sep2026.sql. */
+    private static ?bool $hasCarryCols = null;
+
+    /**
+     * Whether `t_req_master.settled_amount` + `carry_month` exist yet. Before that SQL runs
+     * an advance is settled all-or-nothing and recovered from its own month — today's rule.
+     */
+    public static function hasCarryColumns(): bool
+    {
+        if (self::$hasCarryCols === null) {
+            try {
+                self::$hasCarryCols = Schema::hasColumn('t_req_master', 'settled_amount')
+                    && Schema::hasColumn('t_req_master', 'carry_month');
+            } catch (\Throwable $e) {
+                self::$hasCarryCols = false;
+            }
+        }
+        return self::$hasCarryCols;
+    }
+
+    /**
+     * ⭐ Which month RECOVERS what is still open on this advance (Sep-7 2026, owner ruling:
+     * an advance is only ever deducted from salary, never repaid — so a month that could
+     * absorb only part of it moves the rest to the NEXT month rather than writing it off).
+     *
+     * This is `monthExpr()` with `carry_month` in front of it. The two deliberately differ:
+     *   monthExpr()         = the month the CASH left → the Expenses page keeps listing the
+     *                         row there, whatever later happens to it.
+     *   recoveryMonthExpr() = the month whose pay deducts what is still open → PayrollService
+     *                         (which grid row shows it) and the accrual cost below (which
+     *                         month's wage bill the open part belongs to). A carried advance is
+     *                         legitimately costed to TWO months: August books what August
+     *                         absorbed (inside that receipt's gross), September books the rest.
+     */
+    public static function recoveryMonthExpr(string $alias = 'r'): string
+    {
+        $a = preg_replace('/[^A-Za-z0-9_]/', '', $alias);
+        $base = self::monthExpr($alias);
+        return self::hasCarryColumns()
+            ? "COALESCE(NULLIF($a.carry_month, ''), $base)"
+            : $base;
+    }
+
+    /** SQL for what is still open on an advance row: `amount` less what salaries already took. */
+    public static function remainingExpr(string $alias = 'r'): string
+    {
+        $a = preg_replace('/[^A-Za-z0-9_]/', '', $alias);
+        return self::hasCarryColumns() ? "($a.amount - $a.settled_amount)" : "$a.amount";
+    }
+
     /** Every 'YYYY-MM' touched by a window, so a month-keyed table can be range-queried. */
     public static function monthsInWindow($start, $end): array
     {
@@ -220,7 +270,12 @@ class SalaryCostService
             return collect();
         }
         try {
-            $monthExpr = self::monthExpr('r');
+            // ⭐ Keyed by the month that RECOVERS what is still open, and summing only what is
+            // still open. A carried advance was part-absorbed by an earlier month — that part
+            // is already inside that month's paid gross — so counting the full amount here, or
+            // under the original month, would book the same rupees twice.
+            $monthExpr = self::recoveryMonthExpr('r');
+            $remaining = self::remainingExpr('r');
             $q = DB::table('t_req_master as r')
                 ->join('t_req_category as c', 'c.id', '=', 'r.category_id')
                 ->where('c.category_code', self::ADVANCE_CATEGORY)
@@ -236,11 +291,11 @@ class SalaryCostService
                 return $q->leftJoin('t_sys_user as u', 'u.id', '=', 'r.requester_user_id')
                     ->groupBy('r.requester_user_id', 'u.fullname', 'r.business_unit_id')
                     ->selectRaw('r.requester_user_id as user_id, u.fullname, r.business_unit_id as bu,'
-                        . ' MAX(COALESCE(r.expense_date, r.created_at)) as money_date, SUM(r.amount) as amt')
+                        . " MAX(COALESCE(r.expense_date, r.created_at)) as money_date, SUM($remaining) as amt")
                     ->get();
             }
             return $q->groupBy('r.business_unit_id')
-                ->selectRaw('r.business_unit_id as bu, SUM(r.amount) as amt')
+                ->selectRaw("r.business_unit_id as bu, SUM($remaining) as amt")
                 ->get();
         } catch (\Throwable $e) {
             \Log::warning('SalaryCostService::unrecoveredAdvances failed', ['error' => $e->getMessage()]);

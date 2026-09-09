@@ -31,6 +31,10 @@ class WorkshopVisitController extends Controller
     public function apiIndex(Request $r)         { $this->mobileContext = true; return $this->index($r); }
     public function apiStore(Request $r)         { $this->mobileContext = true; return $this->store($r); }
     public function apiAccept(Request $r, $id)   { $this->mobileContext = true; return $this->accept($r, $id); }
+    public function apiApprove(Request $r, $id)  { $this->mobileContext = true; return $this->approve($r, $id); }
+    public function apiDecline(Request $r, $id)  { $this->mobileContext = true; return $this->decline($r, $id); }
+    public function apiApprovals(Request $r)     { $this->mobileContext = true; return $this->approvals($r); }
+    public function apiAddWorkshopLocation(Request $r) { $this->mobileContext = true; return $this->addWorkshopLocation($r); }
     public function apiCancel(Request $r, $id)   { $this->mobileContext = true; return $this->cancel($r, $id); }
     public function apiDone(Request $r, $id)     { $this->mobileContext = true; return $this->done($r, $id); }
     public function apiPending(Request $r)       { $this->mobileContext = true; return $this->pending($r); }
@@ -49,24 +53,140 @@ class WorkshopVisitController extends Controller
             'to'           => 'nullable|date_format:Y-m-d',
             'include_done' => 'nullable|boolean',
         ]);
-        $user = $request->user() ?: auth()->user();
+        $user      = $request->user() ?: auth()->user();
+        $canManage = $this->visits->canSchedule($user, $this->mobileContext);
+        $canApprove = $this->visits->canApprove($user, $this->mobileContext);
 
         // ⚠ Someone who cannot schedule sees only his OWN visits. Without this a rider
         //   hitting the list endpoint would read the whole fleet's movements.
-        if (!$this->visits->canSchedule($user, $this->mobileContext)) {
+        // ⚠ A PLANNER is not a rider either (6-Sep review): Farooq holds no booking key, and
+        //   forcing his list to his own id turned every vehicle-scoped read empty for him.
+        if (!$canManage && !$canApprove) {
             $data['user_id'] = (int) $user->id;
+        }
+        /**
+         * ⚠⚠ ONLY A MANAGER SEES PROPOSALS, and only because he asked. A rider must never
+         *    receive a proposed day from any endpoint — that is the ruling, and this is the
+         *    one list endpoint he can reach. Planners get them too (a planner who is not a
+         *    booker still needs to see what is waiting on the machine's page).
+         */
+        if ($canManage || $canApprove) {
+            $data['include_proposed'] = true;
         }
 
         return response()->json([
             'success'      => true,
             'available'    => $this->visits->available(),
-            'can_schedule' => $this->visits->canSchedule($user, $this->mobileContext),
+            'can_schedule' => $canManage,
+            // ⭐ The UI asks this to decide between "Assign now / Send for approval" and a
+            //   plain Send-for-approval — the same question the server then re-decides.
+            'can_approve'  => $canApprove,
+            'approval_on'  => $this->visits->approvalEnabled(),
             'visits'       => $this->visits->listVisits($data),
             // 📍 Phase 4 — the registered workshops. Picking one makes it that day's shift
             //   location, so checking in there is on time by itself. Empty until a manager
             //   ticks a location as a workshop, and both schedulers then simply show no picker.
             'workshops'    => $this->visits->workshopLocations(),
+            // The Adjust picker: which shift a planner may put the rider on for that one day.
+            'shifts'       => $canApprove ? $this->visits->shiftTemplates() : [],
         ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    //  APPROVAL (6-Sep ruling) — a booked workshop day is a request until a planner
+    //  says yes. These three doors are the planners'.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /** Everything waiting on this planner, with the warnings the booker was shown. */
+    public function approvals(Request $request)
+    {
+        $user = $request->user() ?: auth()->user();
+        return response()->json([
+            'success'     => true,
+            'can_approve' => $this->visits->canApprove($user, $this->mobileContext),
+            'approval_on' => $this->visits->approvalEnabled(),
+            'pending'     => $this->visits->pendingApprovals($user, $this->mobileContext),
+            'workshops'   => $this->visits->workshopLocations(),
+            'shifts'      => $this->visits->canApprove($user, $this->mobileContext)
+                                ? $this->visits->shiftTemplates() : [],
+        ]);
+    }
+
+    /**
+     * 📍 ADD A WORKSHOP WITHOUT LEAVING THE BOOKING FORM (owner + team ruling, 6-Sep).
+     *
+     * ⭐ Lives here, next to the form that needs it, but writes through the ONE
+     *   `CompanyLocationsService::createWorkshop()` the Locations admin page can also use —
+     *   so "what makes a workshop usable" is answered in a single place.
+     *
+     * ⚠ Gate: either key. Qasim (`schedule_workshop`) is the man standing at the workshop
+     *   with no location to pick; a planner (`manage_shifts`) may be fixing it for him while
+     *   approving. Nobody else — this writes a row that attendance reads.
+     */
+    public function addWorkshopLocation(Request $request)
+    {
+        $data = $request->validate([
+            'location_name' => 'required|string|max:100',
+            // ⚠ Coordinates are required, but they may arrive as numbers OR as a Maps link,
+            //   so neither is `required` here — the service refuses when neither yields any.
+            'latitude'      => 'nullable|numeric|between:-90,90',
+            'longitude'     => 'nullable|numeric|between:-180,180',
+            'maps_url'      => 'nullable|string|max:500',
+            'radius_meters' => 'nullable|integer|min:100|max:10000',
+        ]);
+        $user = $request->user() ?: auth()->user();
+        if (!$this->visits->canSchedule($user, $this->mobileContext)
+            && !$this->visits->canApprove($user, $this->mobileContext)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+
+        $res = app(\App\Services\Location\CompanyLocationsService::class)
+            ->createWorkshop($data, (int) ($user->id ?? 0));
+        if (!$res['ok']) {
+            return response()->json(['success' => false, 'message' => $res['message']], 422);
+        }
+        return response()->json([
+            'success'   => true,
+            'location'  => $res['location'],
+            // Returned so the form can re-draw its picker with the new one already ticked,
+            // which is the whole "without having to leave the form" requirement.
+            'workshops' => $this->visits->workshopLocations(),
+            'message'   => $res['message'],
+        ]);
+    }
+
+    public function approve(Request $request, $id)
+    {
+        $data = $request->validate([
+            // All three are ADJUSTMENTS — absent means "as proposed".
+            'location_id'       => 'nullable|integer',
+            'visit_time'        => 'nullable|date_format:H:i',
+            // ⭐ The planner may also move his START TIME for that one day (Danish's 09:00
+            //   visit against a 09:30 shift). Nothing else in the flow could fix that.
+            'shift_template_id' => 'nullable|integer',
+        ]);
+        $user = $request->user() ?: auth()->user();
+        $res  = $this->visits->approve($user, (int) $id, $data, $this->mobileContext);
+        if (!$res['ok']) {
+            return response()->json(['success' => false, 'message' => $res['message']], 422);
+        }
+        // ⭐ THIS is where the rider finally hears about it — and the booker hears it went through.
+        $this->notify('approved', (int) $id, $user);
+        return response()->json(['success' => true, 'pinned' => (bool) ($res['pinned'] ?? false),
+                                 'message' => $res['message']]);
+    }
+
+    public function decline(Request $request, $id)
+    {
+        $request->validate(['reason' => 'nullable|string|max:255']);
+        $user = $request->user() ?: auth()->user();
+        $res  = $this->visits->decline($user, (int) $id, $request->input('reason'), $this->mobileContext);
+        if (!$res['ok']) {
+            return response()->json(['success' => false, 'message' => $res['message']], 422);
+        }
+        // ⚠ Only the booker is told. The rider was never part of this.
+        $this->notify('declined', (int) $id, $user);
+        return response()->json(['success' => true, 'message' => $res['message']]);
     }
 
     /** Advisory checks before a manager commits to a date — never blocking. */
@@ -106,20 +226,52 @@ class WorkshopVisitController extends Controller
             'maintenance_type_id' => 'nullable|integer',
             'ticket_id'           => 'nullable|integer',
             'note'                => 'nullable|string|max:255',
+            /**
+             * ⭐ 6-Sep: a PLANNER booking his own workshop day is asked "assign now, or send
+             *   for approval?" and answers here. Everyone else is sent for approval whatever
+             *   they send — the service decides from the caller's rights, never from this
+             *   flag, so a crafted payload cannot buy an assignment.
+             */
+            'send_for_approval'   => 'nullable|boolean',
+            /**
+             * ⚠ The booker's explicit "yes, change the day he already has" (owner ruling
+             *   7-Sep). Without it the service REFUSES a booking that would replace an
+             *   already-approved visit and hands back `needs_confirmation` plus exactly what
+             *   would change, so the screen can ask before anything happens.
+             */
+            'confirm_replace'     => 'nullable|boolean',
         ]);
 
         $user = $request->user() ?: auth()->user();
         $res  = $this->visits->schedule($user, $data, $this->mobileContext);
         if (!$res['ok']) {
+            /**
+             * ⏳ NOT AN ERROR — a question. The booking would change a workshop day the rider
+             * has already been told about, so the screen must ask first and re-send with
+             * `confirm_replace`. 409 (Conflict), not 422: a client that does not understand
+             * this still shows the message, and shows a real reason rather than "invalid".
+             */
+            if (!empty($res['needs_confirmation'])) {
+                return response()->json([
+                    'success'            => false,
+                    'needs_confirmation' => true,
+                    'replaces'           => $res['replaces'] ?? null,
+                    'message'            => $res['message'],
+                ], 409);
+            }
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
-        $this->notify('scheduled', (int) $res['visit_id'], $user);
+        // ⚠⚠ A proposal notifies the PLANNERS. It must NOT notify the rider — that push is
+        //    the "instant confirmation" the team ruled out, and sending it here would defeat
+        //    the whole flow while everything else about it looked correct.
+        $this->notify(!empty($res['proposed']) ? 'proposed' : 'scheduled', (int) $res['visit_id'], $user);
 
         return response()->json([
             'success'          => true,
             'visit_id'         => (int) $res['visit_id'],
             'rescheduled_from' => $res['rescheduled_from'] ?? null,
             'warnings'         => $res['warnings'] ?? [],
+            'proposed'         => (bool) ($res['proposed'] ?? false),
             'message'          => $res['message'],
         ]);
     }
@@ -336,6 +488,10 @@ class WorkshopVisitController extends Controller
         if (!$res['ok']) {
             return response()->json(['success' => false, 'message' => $res['message']], 422);
         }
+        // ⭐ 6-Sep: nobody used to be told a visit had closed — not the rider who took the
+        //   bike in, not the manager who booked it. A loop that closes silently is one people
+        //   stop trusting is closed.
+        $this->notify('done', (int) $id, $user);
         return response()->json([
             'success'        => true,
             'service_log_id' => $recorded['service_log_id'] ?? null,
@@ -390,6 +546,14 @@ class WorkshopVisitController extends Controller
         $user = $request->user() ?: auth()->user();
         $out  = $this->visits->summaryFor($user, $this->mobileContext);
 
+        /**
+         * ⭐ The planners' banner rides the same poll rather than a second one — one request
+         *   answers "what is happening" and "what is waiting on me".
+         * ⚠ Empty for anyone who is not a planner (the service refuses, not the caller).
+         */
+        $out['pending_approvals'] = $this->visits->pendingApprovals($user, $this->mobileContext);
+        $out['can_approve']       = $this->visits->canApprove($user, $this->mobileContext);
+
         // ⚠ No cron on prod — the day-before reminder rides on this poll and fires once
         //   per visit (`reminded_at`). Deferred so a slow push never delays the banner.
         try {
@@ -400,6 +564,31 @@ class WorkshopVisitController extends Controller
                             ->notifyWorkshopVisit('reminder', (int) $v['id'], 0);
                     } catch (\Throwable $e) {
                     }
+                }
+                /**
+                 * ⭐⭐ …AND THE APPROVAL ESCALATION, on the same ride. Nudge the planners at
+                 *    17:00 the day before; auto-DECLINE a proposal whose day arrived with
+                 *    nobody having looked, and tell the person who booked it.
+                 * ⚠ Never auto-approve: silence must not send a rider to a place no planner
+                 *   ever agreed to.
+                 */
+                try {
+                    $esc = $this->visits->escalateProposals();
+                    foreach ($esc['nudge'] as $id) {
+                        try {
+                            app(\App\Services\FirebaseService::class)
+                                ->notifyWorkshopVisit('approval_reminder', (int) $id, 0);
+                        } catch (\Throwable $e) {
+                        }
+                    }
+                    foreach ($esc['declined'] as $id) {
+                        try {
+                            app(\App\Services\FirebaseService::class)
+                                ->notifyWorkshopVisit('auto_declined', (int) $id, 0);
+                        } catch (\Throwable $e) {
+                        }
+                    }
+                } catch (\Throwable $e) {
                 }
             });
         } catch (\Throwable $e) {

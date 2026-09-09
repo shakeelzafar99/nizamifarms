@@ -11,16 +11,19 @@
     <div class="scm-body">
       <div id="scmSummary" class="scm-summary"></div>
 
+      {{-- 🔒 Shown instead of the form when the shift rules say this person is not yours to
+           change. The summary above stays — seeing the shift is not the same as setting it. --}}
+      <div id="scmLock" class="scm-lock" style="display:none;"></div>
+
+      <div id="scmForm">
       <div class="scm-sep"><span>Set a shift</span></div>
 
       <label class="scm-label">Shift</label>
       <select id="scmTemplate" class="scm-input"></select>
+      <div id="scmTplNote" style="display:none;font-size:11.5px;color:#64748b;margin-top:5px;"></div>
 
       <label class="scm-label">How long?</label>
-      <div class="scm-mode" data-mode="until_changed">
-        <div class="mt">New regular shift <span class="scm-dur scm-ongoing">REGULAR</span></div>
-        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
-      </div>
+      {{-- ⭐ Most-used first (owner ruling 6-Sep): this popup opens on "One day only". --}}
       <div class="scm-mode" data-mode="one_day">
         <div class="mt">One day only <span class="scm-dur scm-temp">TEMPORARY</span></div>
         <div class="md">Just the one date you pick — back to their normal shift <b>the next day</b>.</div>
@@ -28,6 +31,10 @@
       <div class="scm-mode" data-mode="date_range">
         <div class="mt">A date range <span class="scm-dur scm-temp">TEMPORARY</span></div>
         <div class="md">Only between the two dates — back to their normal shift <b>after</b>.</div>
+      </div>
+      <div class="scm-mode" data-mode="until_changed">
+        <div class="mt">New regular shift <span class="scm-dur scm-ongoing">REGULAR</span></div>
+        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
       </div>
 
       <div class="scm-dates">
@@ -42,6 +49,7 @@
       </div>
 
       <p id="scmEffect" class="scm-effect"></p>
+      </div>{{-- /#scmForm --}}
       <div class="scm-actions">
         <button type="button" id="scmCancel" class="scm-cancel">Cancel</button>
         <button type="button" id="scmSave" class="scm-save">Save</button>
@@ -88,6 +96,8 @@
   #shiftChangeModal .scm-chg.acked .scm-chg-x{ color:#15803d; }
   #shiftChangeModal .scm-nochg{ font-size:11.5px; color:#94a3b8; margin-top:7px; }
   #shiftChangeModal .scm-loading{ font-size:12px; color:#94a3b8; }
+  /* 🔒 The refusal, in the place the form would have been. */
+  #shiftChangeModal .scm-lock{ font-size:12.5px; color:#92400E; background:#FFFBEB; border:1px solid #FDE68A; border-radius:9px; padding:11px 13px; margin-top:14px; line-height:1.5; font-weight:600; }
   #shiftChangeModal .scm-sep{ display:flex; align-items:center; gap:10px; margin:16px 0 2px; color:#94a3b8; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
   #shiftChangeModal .scm-sep::before, #shiftChangeModal .scm-sep::after{ content:""; flex:1; height:1px; background:#e8edf3; }
   #shiftChangeModal .scm-locs{ display:flex; flex-wrap:wrap; gap:7px; }
@@ -104,13 +114,28 @@
   const CSRF = document.querySelector('meta[name="csrf-token"]').content;
   let templates = [], target = null, mode = 'until_changed', onSaved = null;
   let locations = [], selLoc = null, defaultLocId = null; // location picker state
+  /**
+   * 🔒 SHIFT AUTHORITY (Sep-2026) — filled from /shifts/user-summary, which answers the
+   * same gate the write endpoint uses:
+   *   canChange     false ⇒ the whole form is replaced by the lock and the reason;
+   *   needsApproval true  ⇒ Save becomes "Send for approval" and nothing lands yet;
+   *   allowedIds    non-null ⇒ the picker shows only those shift types.
+   * ⚠ Advisory only. The server refuses regardless of what this file believes.
+   */
+  let canChange = true, needsApproval = false, allowedIds = null, lockReason = null;
 
   const fmt = (d) => { try { return new Date(d+'T00:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short'}); } catch(e){ return d; } };
   const todayStr = () => { const d=new Date(); const p=(n)=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); };
 
-  async function loadTemplates(){
-    if (templates.length) return;
-    try { const j = await fetch('/shifts/list').then(r=>r.json()); if (j.success) templates = j.data.filter(t=>t.active); } catch(e){ console.error('shift templates load failed', e); }
+  /* ⚠ Re-fetched for EVERY rider, not cached across them: which types are on offer is a
+     property of the PERSON (his allowed-shift list), not of the page. `pending` types are
+     dropped — they cannot be assigned to anybody. */
+  async function loadTemplates(userId){
+    try {
+      const url = '/shifts/list' + (userId ? ('?for_user_id=' + encodeURIComponent(userId)) : '');
+      const j = await fetch(url).then(r=>r.json());
+      if (j.success) templates = j.data.filter(t=>t.active && !t.pending);
+    } catch(e){ console.error('shift templates load failed', e); }
   }
 
   function isNotReq(){ return $('scmTemplate').value === 'not_required'; }
@@ -160,10 +185,53 @@
     if (mode==='until_changed') msg = `→ ${who} will be on <b>${nm}</b> from <b>${fmt(from)}</b> until you change it. Past days are untouched.`;
     else if (mode==='one_day') msg = `→ ${who} on <b>${nm}</b> for <b>${fmt(from)}</b> only, then back to their normal shift automatically.`;
     else msg = `→ ${who} on <b>${nm}</b> for <b>${fmt(from)}–${fmt(to)}</b>, then back to their normal shift automatically.`;
+    // ⏳ The sentence that stops a manager assuming it has landed.
+    if (needsApproval) msg += `<br><span style="color:#9A3412;font-weight:600;">⏳ This waits for approval. ${who} is not told until it is approved.</span>`;
     $('scmEffect').innerHTML = msg;
   }
 
   function close(){ $('shiftChangeModal').style.display='none'; }
+
+  /**
+   * ⭐ Everything the rules change about this form, in one place.
+   *  • Locked: the "Set a shift" half is hidden entirely and the reason is shown. The
+   *    summary above it stays visible — a planner may still need to SEE the shift he is
+   *    not allowed to change (owner ruling: show with a lock, never hide the person).
+   *  • Needs approval: the button says what it does, and a line says the person is not told.
+   *  • Restricted: only the allowed types are in the dropdown, with a note saying why.
+   */
+  function applyAuthority(){
+    const form = $('scmForm'), lock = $('scmLock'), save = $('scmSave');
+    if (form) form.style.display = canChange ? '' : 'none';
+    if (lock){
+      lock.style.display = canChange ? 'none' : 'block';
+      lock.textContent = lockReason || "You can't change this person's shift.";
+    }
+    if (save){
+      save.style.display = canChange ? '' : 'none';
+      save.textContent = needsApproval ? 'Send for approval' : 'Save';
+      save.style.background = needsApproval ? '#B45309' : '';
+    }
+    if (allowedIds) {
+      const before = $('scmTemplate').value;
+      fillTemplateOptions();
+      if (before && [...$('scmTemplate').options].some(o=>o.value===before)) $('scmTemplate').value = before;
+    }
+    const note = $('scmTplNote');
+    if (note){
+      note.style.display = allowedIds ? 'block' : 'none';
+      note.textContent = allowedIds
+        ? ('Only these shifts are allowed for ' + ((target && target.userName) || 'this person') + '.')
+        : '';
+    }
+    renderEffect();
+  }
+
+  function fillTemplateOptions(){
+    const list = allowedIds ? templates.filter(t => allowedIds.indexOf(t.id) >= 0) : templates;
+    $('scmTemplate').innerHTML = list.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}${t.shift_end?'–'+t.shift_end:'+'} · off ${t.off_days}</option>`).join('')
+      + `<option value="not_required">🚫 Not required (day off, paid — not a shift)</option>`;
+  }
 
   async function loadSummary(userId){
     $('scmSummary').innerHTML = '<div class="scm-loading">Loading current shift…</div>';
@@ -173,6 +241,13 @@
     } catch(e){ $('scmSummary').innerHTML = ''; }
   }
   function renderSummary(d){
+    // 🔒 The gate's answer, applied to this form.
+    canChange = d.can_change !== false;
+    needsApproval = !!d.needs_approval;
+    allowedIds = d.allowed_template_ids || null;
+    lockReason = d.lock_reason || null;
+    applyAuthority();
+
     // Locations come with the summary (one fetch) → render the picker.
     if (Array.isArray(d.locations)) {
       locations = d.locations;
@@ -228,44 +303,73 @@
 
     const templateId = parseInt($('scmTemplate').value);
     if (!templateId){ alert('Pick a shift and a date.'); btn.disabled=false; btn.textContent='Save'; return; }
-    // Guard the "one day only, dated today" mix-up (they revert tomorrow).
-    if (mode==='one_day' && from===todayStr()){
-      if(!confirm('This sets the shift for TODAY only. They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')){ btn.disabled=false; btn.textContent='Save'; return; }
-    }
+    /* ⚠ The "one day only, dated today" confirm was removed on 6-Sep when one-day became
+       the DEFAULT. As the default it would interrupt nearly every save; the effect line
+       states it permanently instead. */
     const payload = { user_id: target.userId, shift_template_id: templateId, mode, effective_from: from };
     if (mode==='date_range') payload.effective_to = to;
     if (mode==='one_day') payload.effective_to = from;
     if (selLoc){ payload.location_id = selLoc; payload.set_default_location = $('scmSetDef') ? $('scmSetDef').checked : false; }
-    let json;
-    try { json = await fetch('/shifts/assign', { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(payload) }).then(r=>r.json()); }
-    catch(e){ json = { success:false, message:'Network error' }; }
+    const send = async (body) => {
+      try { return await fetch('/shifts/assign', { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(body) }).then(r=>r.json()); }
+      catch(e){ return { success:false, message:'Network error' }; }
+    };
+    let json = await send(payload);
+    /**
+     * ⏳ NOT AN ERROR — A QUESTION (owner ruling 7-Sep). This would overwrite a shift change
+     * the rider has already been told about, or confirmed. Ask, then send it again with the
+     * confirmation. ⚠ Asked ONCE — the retry carries the flag, so it cannot loop.
+     */
+    if (json && json.needs_confirmation) {
+      if (!confirm(json.message + '\n\nChange it?')) {
+        btn.disabled = false; btn.textContent = needsApproval ? 'Send for approval' : 'Save';
+        return;
+      }
+      json = await send(Object.assign({}, payload, { confirm_replace: 1 }));
+    }
     btn.disabled=false;
+    const restore = () => { btn.textContent = needsApproval ? 'Send for approval' : 'Save'; };
     if (json.success){
       // Keep the popup open and refresh the summary so the manager SEES the change land
       // (new primary updates "Now"; a temporary change appears in the list). Table refreshes too.
       loadSummary(target.userId);
       if (typeof onSaved==='function') onSaved();
-      btn.textContent = 'Saved ✓';
-      setTimeout(() => { btn.textContent = 'Save'; }, 1300);
+      /* ⚠ A queued change did NOT land — never show "Saved ✓" for one. */
+      if (json.pending){
+        btn.textContent = 'Sent ⏳';
+        alert(json.message || 'Sent for approval.');
+        if (window.refreshShiftApprovals) window.refreshShiftApprovals();
+      } else {
+        btn.textContent = 'Saved ✓';
+      }
+      setTimeout(restore, 1500);
     } else {
-      btn.textContent = 'Save';
+      restore();
       alert(json.message || 'Failed to save');
     }
   }
 
   window.openShiftChange = async function(opts){
     target = opts || {}; onSaved = (opts && opts.onSaved) || null;
-    await loadTemplates();
+    // ⚠ Reset the gate's answer to the SAFE side before the fetch lands. Carrying the last
+    //   rider's "you may" into this one would flash an editable form for a locked person.
+    canChange = true; needsApproval = false; allowedIds = null; lockReason = null;
+    await loadTemplates(target.userId);
     $('scmTitle').textContent = 'Change shift · ' + (target.userName || '');
     // Reset location state for the new rider; the summary fetch re-populates it.
     locations = []; selLoc = null; defaultLocId = null;
     if ($('scmSetDef')) $('scmSetDef').checked = false;
     if ($('scmLocSection')) $('scmLocSection').style.display = 'none';
-    $('scmTemplate').innerHTML = templates.map(t => `<option value="${t.id}">${t.shift_name} · ${t.shift_start}${t.shift_end?'–'+t.shift_end:'+'} · off ${t.off_days}</option>`).join('')
-      + `<option value="not_required">🚫 Not required (day off, paid — not a shift)</option>`;
+    fillTemplateOptions();
     const today = todayStr();
     $('scmFrom').value = today; $('scmTo').value = today;
-    setMode('until_changed');
+    /**
+     * ⭐ DEFAULT IS "ONE DAY ONLY" (owner ruling, 6-Sep-2026) — a one-day cover is the most
+     *   frequent change, so it is what opens. A lasting change is now the deliberate choice.
+     * ⚠ The "did you really mean today only?" confirm went with it; as the default it would
+     *   have fired on nearly every save, and the effect line already says the same thing.
+     */
+    setMode('one_day');
     onTemplateChange();
     $('shiftChangeModal').style.display='flex';
     loadSummary(target.userId);

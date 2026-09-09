@@ -74,6 +74,10 @@
     </div>
     <!--end::Page layout-->
     {{-- @include('layouts.partials.extra') --}} {{-- Commented out: demo template with broken image links --}}
+    {{-- The day-review bulb. On EVERY page rather than opted into page by page like the
+         alert partials, because the days it lists arrive while the manager is doing
+         something else. Renders nothing for anyone without `manage_payroll`. --}}
+    @include('partials.day-review-pill')
     @include('layouts.partials.scripts')
     <script src="{{ asset('assets/js/layouts/demo1.js') }}">
     </script>

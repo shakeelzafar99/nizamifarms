@@ -574,10 +574,20 @@ class RiderReportsController extends Controller
             foreach ($userIds as $rid) {
                 // Snapshot-preferred, per-date resolution — identical basis to the
                 // salary slip and the attendance report.
-                $today = (int) $svc->sumLateOvertimeMinutes($rid, $date, $date)['late_minutes'];
-                $month = (int) $svc->sumLateOvertimeMinutes($rid, $monthStart, $date)['late_minutes'];
+                $todayOt = $svc->sumLateOvertimeMinutes($rid, $date, $date);
+                $monthOt = $svc->sumLateOvertimeMinutes($rid, $monthStart, $date);
+                $today = (int) $todayOt['late_minutes'];
+                $month = (int) $monthOt['late_minutes'];
+                // ⭐ Sep-2026 — both figures are NET of minutes a manager forgave, and that is
+                // deliberate: a waived lateness has been accepted as genuine, so it should stop
+                // raising the issue. The waived total travels with it so the card can say why
+                // a rider dropped off the list rather than just going quiet.
                 if ($today > 0 && $month >= $threshold) {
-                    $out[$rid] = ['today_min' => $today, 'month_min' => $month];
+                    $out[$rid] = [
+                        'today_min' => $today,
+                        'month_min' => $month,
+                        'month_waived_min' => (int) ($monthOt['late_waived_minutes'] ?? 0),
+                    ];
                 }
             }
         } catch (\Throwable $e) {

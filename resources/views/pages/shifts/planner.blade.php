@@ -25,11 +25,19 @@
   /* 🔧 Workshop errand — amber so it reads as "something extra happens this day",
      distinct from the blue location pin and the indigo "not needed" cell. */
   .chip-ws { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:800; background:#FEF3C7; color:#92400E; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
+  /* ⏳ A workshop day that is only a REQUEST — visibly not the same thing as a booked one.
+     Dashed, so at a glance the cell reads "not settled yet". */
+  .chip-wsq { display:inline-flex; align-items:center; gap:2px; font-size:9.5px; font-weight:800; background:#EDE9FE; color:#5B21B6; border:1px dashed #A78BFA; border-radius:20px; padding:0 6px; margin-top:1px; align-self:flex-start; }
   .col-today { background:#FFFDF5; }
   .rider-cb { margin-right:8px; }
   .pchip { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; background:#EEF2F7; color:#334155; border:1px solid var(--line); border-radius:6px; padding:2px 7px; font-variant-numeric:tabular-nums; }
   .badge-chg { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; background:var(--brand-soft); color:#8E1414; border-radius:20px; padding:2px 8px; margin-top:4px; }
   .badge-ack { background:#FEF9C3; color:#854d0e; }
+  /* ⏳ A change WAITING for approval. Dashed and orange so it never reads like the solid
+     "this is happening" chip beside it — nothing has been written and nobody was told. */
+  .badge-req { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:700; background:#FFF7ED; color:#9A3412; border:1px dashed #FDBA74; border-radius:20px; padding:2px 8px; margin-top:4px; }
+  /* 🔒 A row this planner may not change. Owner ruling: shown, never hidden. */
+  .lock-ico { display:inline-block; width:14px; margin-right:8px; font-size:12px; opacity:.75; cursor:help; }
   .ack-yes { color:#15803d; font-weight:700; }
   .ack-no { color:#b45309; font-weight:700; }
   #awaitChip { display:none; align-items:center; gap:5px; font-size:12px; font-weight:700; background:#FEF9C3; color:#854d0e; border:1px solid #FDE68A; border-radius:20px; padding:4px 11px; }
@@ -82,6 +90,10 @@
       <p class="text-sm text-gray-500 mt-1">See and change who works which shift. Temporary changes come back to the primary automatically.</p>
     </div>
     <div class="flex items-center gap-2">
+      {{-- ⚙ Shown ONLY to the holder of `manage_shift_rules` (Taimur). Everyone else does
+           not learn the page exists. The page itself aborts 403 regardless. --}}
+      <a href="/shift-rules" id="rulesBtn" style="display:none;"
+         class="px-3 py-2 text-sm font-semibold text-red-700 border border-red-200 bg-red-50 rounded-lg hover:bg-red-100">⚙ Shift rules</a>
       <a href="/shifts" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Shift types</a>
       <a href="/attendance/locations" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Locations</a>
       <a href="/holidays" class="px-3 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">Holidays</a>
@@ -102,6 +114,12 @@
     </div>
     <input id="searchBox" oninput="debouncedSearch()" placeholder="Search name…" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-200 w-44">
     <span id="awaitChip">⏳ <span id="awaitCount">0</span> awaiting confirmation</span>
+    {{-- A SECOND count, deliberately not merged with the one beside it: "awaiting
+         confirmation" is a rider who has not tapped OK on a change that already happened.
+         This one is a change that has NOT happened and is waiting on a manager. --}}
+    <span id="approvalChip" style="display:none;align-items:center;gap:5px;font-size:12px;font-weight:700;background:#FFEDD5;color:#9A3412;border:1px solid #FED7AA;border-radius:20px;padding:4px 11px;">
+      ⏳ <span id="approvalCount">0</span> awaiting approval
+    </span>
     <div class="text-xs text-gray-400 flex items-center gap-3 ml-auto">
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#FBECEC;border:1px solid #F3D6D6"></span> temporary change</span>
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#EEF2F7;border:1px dashed #cbd5e1"></span> off day</span>
@@ -110,6 +128,9 @@
            still paid. It is here so whoever plans the shift can set that day's times
            or location around the appointment. --}}
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#FEF3C7;border:1px solid #FCD34D"></span> 🔧 workshop (✓ confirmed / ⏳ awaiting)</span>
+      {{-- ⏳ 6-Sep: a workshop day that has not been approved yet. The rider has been told
+           nothing about it; answer it in the card at the bottom-right of this page. --}}
+      <span><span class="inline-block w-3 h-3 rounded-sm align-middle" style="background:#EDE9FE;border:1px dashed #A78BFA"></span> ⏳ workshop? — needs YOUR approval</span>
     </div>
   </div>
 
@@ -145,12 +166,12 @@
     <div class="pm-body">
       <label class="pm-label">Shift <button type="button" class="pm-addlink" onclick="openNewShift()">＋ new shift type</button></label>
       <select id="mTemplate" class="pm-input" onchange="onTemplateChange()"></select>
+      {{-- Why the list is short, when Taimur has limited this person. --}}
+      <div id="tplNote" style="display:none;font-size:11.5px;color:#64748b;margin-top:5px;"></div>
 
       <label class="pm-label">How long?</label>
-      <div class="mode-opt" data-mode="until_changed" onclick="setMode('until_changed')">
-        <div class="mt">New regular shift <span class="dur-badge dur-ongoing">REGULAR</span></div>
-        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
-      </div>
+      {{-- ⭐ Most-used first (owner ruling 6-Sep): the popup opens on "One day only", so it
+           is also the option sitting under the cursor. --}}
       <div class="mode-opt" data-mode="one_day" onclick="setMode('one_day')">
         <div class="mt">One day only <span class="dur-badge dur-temp">TEMPORARY</span></div>
         <div class="md">Just the one date you pick — back to their normal shift <b>the next day</b>.</div>
@@ -158,6 +179,10 @@
       <div class="mode-opt" data-mode="date_range" onclick="setMode('date_range')">
         <div class="mt">A date range <span class="dur-badge dur-temp">TEMPORARY</span></div>
         <div class="md">Only between the two dates — back to their normal shift <b>after</b>.</div>
+      </div>
+      <div class="mode-opt" data-mode="until_changed" onclick="setMode('until_changed')">
+        <div class="mt">New regular shift <span class="dur-badge dur-ongoing">REGULAR</span></div>
+        <div class="md">Every day from the start date, <b>until you change it</b>. This is their new normal.</div>
       </div>
 
       <div class="pm-dates">
@@ -209,8 +234,11 @@
 
 <div id="newShiftModal" class="modal-bg" onclick="if(event.target===this)closeNewShift()">
   <div class="pm-card" onclick="event.stopPropagation()" style="max-width:440px;">
-    <div class="pm-head"><h2>New shift type</h2><button class="pm-x" onclick="closeNewShift()">&times;</button></div>
+    <div class="pm-head"><h2 id="nsTitle">New shift type</h2><button class="pm-x" onclick="closeNewShift()">&times;</button></div>
     <div class="pm-body">
+      {{-- ⏳ Under the default policy this is a PROPOSAL, not a creation. Say so before
+           they fill the form, not in an alert afterwards. --}}
+      <div id="nsProposeNote" style="display:none;font-size:12px;color:#9A3412;background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:9px 11px;margin-bottom:12px;line-height:1.5;"></div>
       <label class="pm-label">Name</label>
       <input id="nsName" class="pm-input" placeholder="e.g. Evening 5 PM" maxlength="100">
       <div class="pm-mini-grid" style="margin-top:10px;">
@@ -251,7 +279,20 @@ let TARGET = [];         // users being assigned in the modal [{id,name}]
 let MODE = 'until_changed';
 
 function post(url, body) {
-  return fetch(url, { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(body) }).then(r=>r.json());
+  return fetch(url, { method:'POST', headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF}, body:JSON.stringify(body) }).then(r=>r.json())
+    .then(json => {
+      /**
+       * ⏳ NOT AN ERROR — A QUESTION (owner ruling 7-Sep). This would overwrite a shift change
+       * the rider has already been told about, or confirmed. The server refused the first
+       * attempt and said exactly what would be undone; ask, then send it again with the
+       * confirmation. ⚠ Asked ONCE — the retry carries the flag, so it cannot loop.
+       */
+      if (json && json.needs_confirmation && !body.confirm_replace) {
+        if (!confirm(json.message + '\n\nChange it?')) return { success:false, message:'Nothing was changed.' };
+        return post(url, Object.assign({}, body, { confirm_replace: 1 }));
+      }
+      return json;
+    });
 }
 function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function openHistory(id){
@@ -315,6 +356,7 @@ function renderGrid() {
   empty.classList.add('hidden');
 
   let awaiting = 0;
+  let pendingApprovals = 0;   // ⏳ changes that have NOT happened, waiting on a manager
   body.innerHTML = DATA.riders.map(r=>{
     const changes = r.changes.map(c=>{
       const lbl = c.kind==='temporary'
@@ -359,26 +401,59 @@ function renderGrid() {
       if (c.workshop) {
         const w = c.workshop;
         const ok = w.accepted;
-        body += `<span class="chip-ws" title="${escapeHtml((w.vehicle_name||'bike'))} to the workshop${w.workshop ? ' — ' + escapeHtml(w.workshop) : ''}${ok ? ' · confirmed by the rider' : ' · NOT yet confirmed'}">`
-              + `🔧 ${w.time ? escapeHtml(w.time) : 'workshop'} ${ok ? '✓' : '⏳'}</span>`;
+        /**
+         * ⏳ 6-Sep RULING. A PROPOSED workshop day is drawn differently, because it is a
+         *    different thing: a request waiting on THIS PERSON, not a plan. The rider has
+         *    been told nothing about it, so the cell must not read like a fact about his
+         *    day — and this grid, where the question and his actual shift sit side by side,
+         *    is exactly where it should be answered.
+         * ⚠ Only a planner is sent proposals at all (weekData asks the service), so this
+         *   branch simply never fires for anyone else.
+         */
+        if (w.proposed) {
+          body += `<span class="chip-wsq" title="${escapeHtml((w.vehicle_name||'bike'))} to the workshop`
+                + `${w.workshop ? ' — ' + escapeHtml(w.workshop) : ''} · REQUEST awaiting your approval`
+                + ` · the rider has NOT been told">`
+                + `⏳ workshop? ${w.time ? escapeHtml(w.time) : ''}</span>`;
+        } else {
+          body += `<span class="chip-ws" title="${escapeHtml((w.vehicle_name||'bike'))} to the workshop${w.workshop ? ' — ' + escapeHtml(w.workshop) : ''}${ok ? ' · confirmed by the rider' : ' · NOT yet confirmed'}">`
+                + `🔧 ${w.time ? escapeHtml(w.time) : 'workshop'} ${ok ? '✓' : '⏳'}</span>`;
+        }
       }
       const click = clickable ? ` onclick="toggleCellTag(${r.user_id}, '${c.date}', ${c.not_needed?1:0}, '${escapeHtml(r.name).replace(/'/g,"\\'")}')" title="${c.not_needed?'Marked not needed — click to undo':'Click to mark not needed (paid, not counted absent)'}" style="cursor:pointer;"` : '';
       return `<td class="${isToday?'col-today':''}"><span class="cell-chip ${cls}"${click}>${body}</span></td>`;
     }).join('');
 
+    /* 🔒 SHIFT AUTHORITY. A row this person may not change is SHOWN WITH A LOCK, never
+       hidden — owner ruling 6-Sep: hiding people makes a planner think the grid is broken.
+       The row stays fully readable; only the Change button and the tick-box go.
+       ⚠ Advisory only — every write re-asks the server. */
+    const locked = r.can_change === false;
+    if (r.pending_requests && r.pending_requests.length) pendingApprovals += r.pending_requests.length;
+
+    /* ⏳ A change that is WAITING is drawn differently from one that HAPPENED: it is not a
+       fact about this person's week yet, and the rider has been told nothing. */
+    const waiting = (r.pending_requests||[]).map(q =>
+      `<span class="badge-req" title="Waiting for approval — ${escapeHtml(r.name)} has not been told">⏳ ${escapeHtml(q.shift_name||'shift')} · ${escapeHtml(q.when)} · asked by ${escapeHtml(q.asked_by)}</span>`
+    ).join(' ');
+
     const checked = SEL.has(r.user_id)?'checked':'';
     return `<tr>
       <td>
-        <label class="flex items-start cursor-pointer">
-          <input type="checkbox" class="rider-cb mt-0.5" ${checked} onchange="toggleSel(${r.user_id})">
+        <label class="flex items-start ${locked?'':'cursor-pointer'}">
+          ${locked
+            ? `<span class="lock-ico" title="${escapeHtml(r.lock_reason||'You cannot change this person\'s shift')}">🔒</span>`
+            : `<input type="checkbox" class="rider-cb mt-0.5" ${checked} onchange="toggleSel(${r.user_id})">`}
           <span>
             <span class="font-semibold text-sm text-gray-900">${r.name}</span>
             <span class="block text-[11px] text-gray-400">${r.role||''}</span>
             <span class="pchip mt-1">${r.primary.start}${r.primary.end?'–'+r.primary.end:'+'} · ${r.primary.shift_name}${r.primary.location_name?' · 📍'+r.primary.location_name:''}</span>
-            <button onclick="openAssignOne(${r.user_id})" class="ml-1 text-xs text-red-600 font-semibold hover:underline">Change</button>
+            ${locked
+              ? `<span class="text-[11px] text-gray-400 ml-1" title="${escapeHtml(r.lock_reason||'')}">${escapeHtml(r.lock_reason||'Locked')}</span>`
+              : `<button onclick="openAssignOne(${r.user_id})" class="ml-1 text-xs text-red-600 font-semibold hover:underline">${r.needs_approval?'Ask to change':'Change'}</button>`}
             <button onclick="event.preventDefault();openHistory(${r.user_id})" title="Who changed this rider's shift, and when" class="ml-2 text-[11px] text-gray-500 font-semibold hover:underline">History</button>
             ${r.has_phone===false ? `<button onclick="event.preventDefault();addNumber(${r.user_id})" title="No WhatsApp number — riders can't be notified of shift changes" class="ml-1 text-[11px] text-amber-600 font-semibold hover:underline">📱 add number</button>` : ''}
-            <div>${changes}</div>
+            <div>${changes}${waiting}</div>
           </span>
         </label>
       </td>
@@ -388,6 +463,12 @@ function renderGrid() {
   const chip = document.getElementById('awaitChip');
   document.getElementById('awaitCount').textContent = awaiting;
   chip.style.display = awaiting ? 'inline-flex' : 'none';
+  const aChip = document.getElementById('approvalChip');
+  document.getElementById('approvalCount').textContent = pendingApprovals;
+  aChip.style.display = pendingApprovals ? 'inline-flex' : 'none';
+  // ⚙ Only the shift-rules owner learns the page exists.
+  const rb = document.getElementById('rulesBtn');
+  if (rb) rb.style.display = DATA.can_manage_rules ? 'inline-block' : 'none';
   updateBulkBar();
 }
 
@@ -397,11 +478,37 @@ function clearSel(){ SEL.clear(); document.querySelectorAll('.rider-cb').forEach
 function updateBulkBar(){ const bar=document.getElementById('bulkBar'); if(SEL.size){ bar.classList.remove('hidden'); bar.classList.add('flex'); document.getElementById('bulkCount').textContent=SEL.size+' selected'; } else { bar.classList.add('hidden'); bar.classList.remove('flex'); } }
 
 /* modal */
+/* 🔒 Which shift types may these targets actually be put on?
+   Every target carries its own allowed list (null = all). For a bulk selection we take the
+   INTERSECTION — offering a shift that only some of them may take would produce a partial
+   save and a confusing message. Advisory only; the server refuses anything outside it. */
+function allowedTemplatesForTargets(){
+  let ids = null;
+  TARGET.forEach(t=>{
+    const r = DATA.riders.find(x=>x.user_id===t.id);
+    const a = r ? r.allowed_template_ids : null;
+    if (!a) return;                       // this one may take any shift
+    ids = (ids===null) ? a.slice() : ids.filter(x=>a.indexOf(x)>=0);
+  });
+  return ids;
+}
 function fillTemplates(){
   const s=document.getElementById('mTemplate');
+  const allowed = allowedTemplatesForTargets();
+  const list = allowed ? DATA.templates.filter(t=>allowed.indexOf(t.id)>=0) : DATA.templates;
   // 🚫 Not required — a special "shift" that just marks the day(s) not-needed (paid, not absent).
   const nr = `<option value="not_required">🚫 Not required (day off, paid — not a shift)</option>`;
-  s.innerHTML = DATA.templates.map(t=>`<option value="${t.id}">${t.name} · ${t.start}${t.end?'–'+t.end:'+'} · off ${t.off_days}</option>`).join('') + nr;
+  s.innerHTML = list.map(t=>`<option value="${t.id}">${t.name} · ${t.start}${t.end?'–'+t.end:'+'} · off ${t.off_days}</option>`).join('') + nr;
+  const note = document.getElementById('tplNote');
+  if (note){
+    // Say WHY the list is short, or a manager reads a missing shift as a bug.
+    note.style.display = allowed ? 'block' : 'none';
+    note.textContent = allowed
+      ? (TARGET.length===1
+          ? `Only these shifts are allowed for ${TARGET[0].name}.`
+          : `Only shifts allowed for every selected person are shown.`)
+      : '';
+  }
 }
 function isNotRequiredSelected(){ return document.getElementById('mTemplate').value === 'not_required'; }
 function onTemplateChange(){
@@ -413,8 +520,18 @@ function onTemplateChange(){
   if(nr && MODE==='until_changed') setMode('one_day');
   renderEffect();
 }
-function openAssignOne(id){ const r=DATA.riders.find(x=>x.user_id===id); TARGET=[{id, name:r.name}]; openAssignModal(); }
+function openAssignOne(id){
+  const r=DATA.riders.find(x=>x.user_id===id);
+  // Belt and braces: the button is not rendered for a locked row, but never open on one.
+  if (r && r.can_change === false){ alert(r.lock_reason || "You can't change this person's shift."); return; }
+  TARGET=[{id, name:r.name}]; openAssignModal();
+}
 function openAssignBulk(){ TARGET=[...SEL].map(id=>{ const r=DATA.riders.find(x=>x.user_id===id); return {id, name:r?r.name:('#'+id)}; }); openAssignModal(); }
+/* Does anything in this selection have to be asked rather than done? Drives the button
+   label and the sentence under it, so the manager knows BEFORE he presses. */
+function targetsNeedApproval(){
+  return TARGET.some(t=>{ const r=DATA.riders.find(x=>x.user_id===t.id); return r && r.needs_approval; });
+}
 let SELLOC = null;           // selected location id in the assign modal
 function renderLocBubbles(){
   const wrap=document.getElementById('locBubbles');
@@ -435,7 +552,15 @@ function openAssignModal(){
   fillTemplates();
   document.getElementById('mFrom').value = DATA.today;
   document.getElementById('mTo').value = DATA.today;
-  setMode('until_changed');
+  /**
+   * ⭐ DEFAULT IS "ONE DAY ONLY" (owner ruling, 6-Sep-2026): a one-day cover is by far the
+   *   most frequent change, so the popup opens on it. A lasting change is the rarer, heavier
+   *   act and is now the one chosen deliberately.
+   * ⚠ The old "did you really mean today only?" confirm went with it — as the default it
+   *   would have fired on nearly every save. The effect line below says the same thing
+   *   without a click, and always.
+   */
+  setMode('one_day');
   // Default location: the rider's own (single) → else the primary location.
   const primary=(DATA.locations||[]).find(l=>l.is_primary) || (DATA.locations||[])[0];
   const riderDefault=(TARGET.length===1) ? (DATA.riders.find(x=>x.user_id===TARGET[0].id)||{}).default_location_id : null;
@@ -443,7 +568,16 @@ function openAssignModal(){
   document.getElementById('mSetDefault').checked=false;
   renderLocBubbles();
   onTemplateChange(); // reset not-required UI state (restores "until changed" + location)
+  syncApprovalUi();
   document.getElementById('assignModal').style.display='flex';
+}
+/* ⏳ The Save button says what will actually happen. "Send for approval" is a different
+   promise from "Save" and must not hide behind the same word. */
+function syncApprovalUi(){
+  const needs = targetsNeedApproval();
+  const btn = document.getElementById('saveBtn');
+  if (btn) btn.textContent = needs ? 'Send for approval' : 'Save';
+  if (btn) btn.style.background = needs ? '#B45309' : '';
 }
 function closeAssign(){ document.getElementById('assignModal').style.display='none'; }
 function setMode(m){ MODE=m; document.querySelectorAll('.mode-opt').forEach(el=>el.classList.toggle('on', el.dataset.mode===m)); document.getElementById('toWrap').style.display = (m==='date_range')?'block':'none'; document.getElementById('fromLabel').textContent = (m==='one_day')?'Day':'From'; renderEffect(); }
@@ -467,6 +601,13 @@ function renderEffect(){
   if(MODE!=='until_changed' && end && end < DATA.today){
     msg += `<br><span style="color:#b45309;font-weight:600;">✎ Correcting a past period — attendance will recalculate. The rider is not notified (nothing to confirm).</span>`;
   }
+  /* ⏳ The most important sentence in the box when approval applies: nothing happens yet,
+     and the person is NOT told. Without it a manager assumes the change has landed. */
+  if(targetsNeedApproval()){
+    const names = TARGET.filter(t=>{ const r=DATA.riders.find(x=>x.user_id===t.id); return r && r.needs_approval; })
+                        .map(t=>t.name).join(', ');
+    msg += `<br><span style="color:#9A3412;font-weight:600;">⏳ This waits for approval. ${escapeHtml(names)} ${TARGET.length===1?'is':'are'} not told until it is approved.</span>`;
+  }
   document.getElementById('effectLine').innerHTML=msg;
 }
 async function saveAssign(){
@@ -489,11 +630,10 @@ async function saveAssign(){
 
   const templateId=parseInt(rawT);
   if(!templateId){ alert('Pick a shift and a date.'); return; }
-  // Guard the classic mix-up: a "one day only" change dated TODAY (they revert tomorrow).
-  // If they meant a lasting change they should pick "New regular shift".
-  if(MODE==='one_day' && from===DATA.today){
-    if(!confirm('This sets the shift for TODAY only ('+fmt(from)+'). They go back to their normal shift tomorrow.\n\nIf you want a lasting change, cancel and choose "New regular shift" (REGULAR) instead.\n\nContinue with today only?')) return;
-  }
+  /* ⚠ The "did you really mean today only?" confirm was removed on 6-Sep when one-day
+     became the DEFAULT (owner ruling). As the default it would have interrupted nearly
+     every save. The effect line above states the same thing permanently and without a
+     click: "…for <date> only, then back to their normal shift automatically." */
   const btn=document.getElementById('saveBtn'); btn.disabled=true; btn.textContent='Saving…';
   const payload={ shift_template_id:templateId, mode:MODE, effective_from:from };
   if(MODE==='date_range') payload.effective_to=to;
@@ -502,8 +642,14 @@ async function saveAssign(){
   let json;
   if(TARGET.length===1){ payload.user_id=TARGET[0].id; json=await post('/shifts/assign',payload); }
   else { payload.user_ids=TARGET.map(t=>t.id); json=await post('/shifts/bulk-assign',payload); }
-  btn.disabled=false; btn.textContent='Save';
-  if(json.success){ closeAssign(); clearSel(); loadWeek(WEEK); }
+  btn.disabled=false; syncApprovalUi();
+  if(json.success){
+    closeAssign(); clearSel(); loadWeek(WEEK);
+    /* ⚠ A queued change and a saved one look identical to the grid for a moment, so the
+       one that did NOT happen says so out loud. Same for a mixed bulk result. */
+    if(json.pending || (json.message && /approval/i.test(json.message))) alert(json.message);
+    if(window.refreshShiftApprovals) window.refreshShiftApprovals();
+  }
   else alert(json.message||'Failed to save');
 }
 async function cancelChange(id){
@@ -575,7 +721,21 @@ const NS_DAYS=[{n:1,l:'Mon'},{n:2,l:'Tue'},{n:3,l:'Wed'},{n:4,l:'Thu'},{n:5,l:'F
 let NS_ON=new Set([1,2,3,4,5,6,7]);
 function renderNsDays(){ document.getElementById('nsDays').innerHTML = NS_DAYS.map(d=>`<span class="pm-day-chip ${NS_ON.has(d.n)?'':'off'}" onclick="toggleNsDay(${d.n})">${d.l}</span>`).join(''); }
 function toggleNsDay(n){ NS_ON.has(n)?NS_ON.delete(n):NS_ON.add(n); renderNsDays(); }
-function openNewShift(){ document.getElementById('nsName').value=''; document.getElementById('nsStart').value=''; document.getElementById('nsEnd').value=''; NS_ON=new Set([1,2,3,4,5,6,7]); renderNsDays(); document.getElementById('newShiftModal').style.display='flex'; }
+function openNewShift(){
+  const st = DATA.template_create || {can:true, proposed:false};
+  // Refused outright (policy "top only") — say who to ask instead of opening a dead form.
+  if(!st.can){ alert(st.message || 'You cannot create a shift type.'); return; }
+  document.getElementById('nsName').value=''; document.getElementById('nsStart').value=''; document.getElementById('nsEnd').value='';
+  NS_ON=new Set([1,2,3,4,5,6,7]); renderNsDays();
+  document.getElementById('nsTitle').textContent = st.proposed ? 'Propose a shift type' : 'New shift type';
+  document.getElementById('nsSave').textContent  = st.proposed ? 'Send for approval' : 'Add shift type';
+  const note = document.getElementById('nsProposeNote');
+  note.style.display = st.proposed ? 'block' : 'none';
+  note.textContent = st.proposed
+    ? 'This is sent for approval. Nobody can be put on it until it is approved — you will see it as "⏳ waiting" in the meantime.'
+    : '';
+  document.getElementById('newShiftModal').style.display='flex';
+}
 function closeNewShift(){ document.getElementById('newShiftModal').style.display='none'; }
 async function saveNewShift(){
   const name=document.getElementById('nsName').value.trim();
@@ -586,11 +746,18 @@ async function saveNewShift(){
   const code=(name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')||'shift')+'_'+Date.now().toString(36).slice(-4);
   const btn=document.getElementById('nsSave'); btn.disabled=true; btn.textContent='Saving…';
   const json=await post('/shifts', {shift_name:name, shift_code:code, shift_start:start, shift_end:end||null, working_days:[...NS_ON]});
-  btn.disabled=false; btn.textContent='Add shift type';
+  btn.disabled=false;
+  const st = DATA.template_create || {proposed:false};
+  btn.textContent = st.proposed ? 'Send for approval' : 'Add shift type';
   if(json.success){
+    closeNewShift();
+    /* ⚠ A PROPOSED type must NOT be added to the local picker and auto-selected — it
+       cannot be assigned to anyone, so pre-selecting it would set the manager up to press
+       Save and be refused. Tell him where it went instead. */
+    if(json.pending){ alert(json.message || 'Sent for approval.'); return; }
     const offNames=NS_DAYS.filter(d=>!NS_ON.has(d.n)).map(d=>d.l).join(', ')||'None';
     DATA.templates.push({id:json.data.id, name:name, start:start, end:end||null, off_days:offNames});
-    fillTemplates(); document.getElementById('mTemplate').value=json.data.id; renderEffect(); closeNewShift();
+    fillTemplates(); document.getElementById('mTemplate').value=json.data.id; renderEffect();
   } else alert(json.message||'Could not save the shift type.');
 }
 
@@ -601,4 +768,7 @@ loadWeek(null);
      shifts is exactly who must know a rider is out that day. ⚠ INSIDE the section —
      anything after @endsection is discarded by Blade. --}}
 @include('partials.workshop-alerts')
+{{-- ⏳ …and the shift-change queue, for the same reason: the person planning shifts is
+     exactly who has to answer "may Farooq move to Manager Shift?". ⚠ INSIDE the section. --}}
+@include('partials.shift-approval-alerts')
 @endsection

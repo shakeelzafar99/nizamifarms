@@ -120,6 +120,14 @@
                                 @if($slip->late_deduction_overridden)
                                     <span class="text-xs text-orange-600">⚠ Overridden</span>
                                 @endif
+                                {{-- Sep-2026 — the minutes a manager forgave. A slip is a frozen
+                                     receipt, so this is what lets it still account for a figure
+                                     smaller than the month's own days. Null on older slips. --}}
+                                @if(!is_null($slip->late_waived_minutes) && $slip->late_waived_minutes > 0)
+                                    <span class="block text-xs text-gray-500">
+                                        {{ $slip->late_raw_minutes }} mins late · {{ $slip->late_waived_minutes }} waived by a manager
+                                    </span>
+                                @endif
                             </span>
                             <span class="font-semibold text-red-600">-PKR {{ number_format($slip->late_deduction, 2) }}</span>
                         </div>

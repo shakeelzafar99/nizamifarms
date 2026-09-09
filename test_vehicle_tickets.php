@@ -494,7 +494,46 @@ if (is_file($screen)) {
      */
     ok('shared copy forks on canManage', str_contains($js, 'const say = (en, ur) => (canManage ? en : ur);'), true);
     ok('  …so a manager gets the English button',
-       str_contains($js, "say('＋ Report a problem', '＋ Masla report karein')"), true);
+       str_contains($js, "say('＋ Open an issue', '＋ Masla report karein')"), true);
+    /**
+     * ⚠⚠ THE TWO HEADER LINKS WERE HARD-CODED ROMAN URDU while everything else forked —
+     *    so Shabib, working the fleet queue in English, was shown "Band karein" (owner
+     *    report, 6-Sep). The pair is named "Open an issue" / "Close issue" now.
+     */
+    ok('  …and the Close link forks too, in the owner’s words',
+       str_contains($js, "say('Close issue', 'Masla band karein')"), true);
+    ok('  …as does the back link', str_contains($js, "say('‹ All issues', '‹ Sab masail')"), true);
+
+    /**
+     * ⚠⚠⚠ THE BUG BEHIND "I pressed it and nothing happened" (prod, 6-Sep).
+     *
+     *  `Alert.prompt` is a static method that EXISTS on Android — its whole body is wrapped
+     *  in `if (Platform.OS === 'ios')`, so it is a TRUTHY function that silently returns.
+     *  Any `Alert.prompt ? … : …` therefore always takes the iOS branch, and on Android the
+     *  button opens nothing, sends nothing, and logs nothing. The guard must be the platform,
+     *  never the function's existence.
+     *
+     *  This asserts across the WHOLE app, not just this screen: three screens had the shape
+     *  and the next one written must not.
+     */
+    $rnDir = __DIR__ . '/../NizamiFarmsMobile/src';
+    $bad = [];
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($rnDir));
+    foreach ($it as $f) {
+        if ($f->isDir() || !str_ends_with($f->getFilename(), '.js')) continue;
+        $src = file_get_contents($f->getPathname());
+        // `Alert.prompt` used as a CONDITION (ternary test or && / || guard), not called.
+        if (preg_match('/Alert\.prompt\s*(\?[^.]|&&|\|\|)/', $src)
+            || preg_match('/\{\s*Alert\.prompt\s*\?/', $src)) {
+            $bad[] = basename($f->getPathname());
+        }
+    }
+    ok('⚠⚠ nothing branches on Alert.prompt EXISTING — it is truthy on Android and does nothing',
+       $bad, []);
+
+    ok('  …and the Close button itself guards on the PLATFORM',
+       str_contains($js, "if (Platform.OS === 'ios')"), true);
+
     ok('  …and the category chips fork too', str_contains($js, 'say(c.en, c.t)'), true);
     ok('  …and every category carries both labels',
        substr_count($js, "en: '") >= 4, true);

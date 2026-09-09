@@ -99,22 +99,22 @@ try {
 // ─────────────────────────────────────────────────────────────────────────────
 head('§1 scheduling');
 
-$denied = $wv->schedule($rider, ['vehicle_id' => $vid, 'visit_date' => $soon]);
+$denied = $wv->schedule($rider, ['vehicle_id' => $vid, 'visit_date' => $soon, 'confirm_replace' => 1]);
 ok('a rider cannot schedule one', $denied['ok'], false);
 
 $past = $wv->schedule($manager, ['vehicle_id' => $vid,
-    'visit_date' => \Carbon\Carbon::today()->subDay()->format('Y-m-d')]);
+    'visit_date' => \Carbon\Carbon::today()->subDay()->format('Y-m-d'), 'confirm_replace' => 1]);
 ok('a PAST date is refused', $past['ok'], false);
 ok('  …and points at Record service instead',
    (bool) preg_match('/record service/i', $past['message']), null, true);
 
-$noDate = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => 'soon']);
+$noDate = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => 'soon', 'confirm_replace' => 1]);
 ok('a malformed date is refused', $noDate['ok'], false);
 
 $r1 = $wv->schedule($manager, [
     'vehicle_id' => $vid, 'visit_date' => $soon, 'visit_time' => '11:00',
     'purpose' => 'service', 'workshop' => 'Ali Motors', 'note' => 'Brake + oil',
-]);
+    'confirm_replace' => 1]);
 ok('a manager can schedule one', $r1['ok'], true);
 $w1 = (int) $r1['visit_id'];
 $row = $wv->find($w1);
@@ -130,13 +130,13 @@ ok('  …and the receipt names who must accept',
  *   drawer, a ticket) sends `user_id` alone and the registry resolves his bike. Without
  *   this each of those screens would have to find the vehicle id its own way.
  */
-$byRider = $wv->schedule($manager, ['user_id' => (int) $otherRider->id, 'visit_date' => $soon]);
+$byRider = $wv->schedule($manager, ['user_id' => (int) $otherRider->id, 'visit_date' => $soon, 'confirm_replace' => 1]);
 ok('a visit can be scheduled from the RIDER alone', $byRider['ok'], true);
 ok('  …and the registry supplied his machine',
    (int) $wv->find((int) $byRider['visit_id'])['vehicle_id'], $vid2);
 $wv->cancel($manager, (int) $byRider['visit_id'], 'test cleanup');
 
-$neither = $wv->schedule($manager, ['visit_date' => $soon]);
+$neither = $wv->schedule($manager, ['visit_date' => $soon, 'confirm_replace' => 1]);
 ok('with neither a bike nor a rider it is refused', $neither['ok'], false);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ if ($offDate) {
     ok('an off day produces a warning', count($warn) > 0, true);
     ok('  …that says so in words',
        (bool) preg_match('/off day/i', implode(' ', $warn)), null, true);
-    $stillMade = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $offDate]);
+    $stillMade = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $offDate, 'confirm_replace' => 1]);
     ok('  …but the visit is still CREATED (warn, never block)', $stillMade['ok'], true);
     ok('  …and the warnings come back with it', count($stillMade['warnings']) > 0, true);
     $wv->cancel($manager, (int) $stillMade['visit_id'], 'test cleanup');
@@ -172,7 +172,20 @@ ok('naming the wrong rider for a bike warns about the keeper',
 head('§3 one live visit per machine — a second RESCHEDULES');
 
 $later = \Carbon\Carbon::today()->addDays(5)->format('Y-m-d');
-$r2 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $later]);
+
+/**
+ * ⭐⭐ SINCE 7-Sep THE MANAGER IS ASKED FIRST (owner ruling). Replacing a day the rider has
+ *    already been told about is exactly what this section is about, so the refusal is
+ *    asserted here rather than worked around: the server says what would change, and only a
+ *    caller that answers `confirm_replace` gets through.
+ */
+$blocked = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $later]);
+ok('scheduling again is REFUSED until he confirms', $blocked['ok'], false);
+ok('  …as a question, naming the day he already has',
+   ($blocked['needs_confirmation'] ?? null) === true
+   && str_contains((string) $blocked['message'], 'already has an approved workshop day'), true);
+
+$r2 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $later, 'confirm_replace' => 1]);
 ok('scheduling again on the same bike succeeds', $r2['ok'], true);
 $w2 = (int) $r2['visit_id'];
 ok('  …and reports what it replaced', (int) $r2['rescheduled_from'], $w1);
@@ -198,7 +211,7 @@ ok('  …by him', (int) $row['accepted_by'], (int) $rider->id);
 ok('accepting twice is refused', $wv->accept($rider, $w2)['ok'], false);
 
 // The stand-in path.
-$r3 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $later]);
+$r3 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $later, 'confirm_replace' => 1]);
 $w3 = (int) $r3['visit_id'];
 $onBehalf = $wv->accept($manager, $w3);
 ok('a manager may accept ON BEHALF when the app is not working', $onBehalf['ok'], true);
@@ -226,7 +239,7 @@ $tk = $vt->open($rider, ['title' => 'Chain slipping', 'body' => 'Since Monday'])
 $tid = (int) $tk['ticket_id'];
 $r4 = $wv->schedule($manager, [
     'vehicle_id' => $vid, 'visit_date' => $soon, 'purpose' => 'repair', 'ticket_id' => $tid,
-]);
+    'confirm_replace' => 1]);
 $w4 = (int) $r4['visit_id'];
 ok('a visit can be raised off a ticket', $r4['ok'], true);
 ok('  …the ticket now points at the visit', (int) $vt->find($tid)['workshop_visit_id'], $w4);
@@ -259,7 +272,7 @@ ok('marking done twice is refused', $wv->markDone($manager, $w4, [])['ok'], fals
 // ─────────────────────────────────────────────────────────────────────────────
 head('§7 "missed" is DERIVED — no cron required');
 
-$r5 = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $soon]);
+$r5 = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $soon, 'confirm_replace' => 1]);
 $w5 = (int) $r5['visit_id'];
 ok('a future visit is not missed', $wv->listVisits(['vehicle_id' => $vid2])[0]['is_missed'], false);
 // Age it. No status changes — that is the point: nothing had to run.
@@ -272,7 +285,7 @@ ok('  …while its stored status is untouched', $wv->find($w5)['status'], 'sched
 // ─────────────────────────────────────────────────────────────────────────────
 head('§9 the planner / attendance map');
 
-$r6 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $soon, 'visit_time' => '09:30']);
+$r6 = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $soon, 'visit_time' => '09:30', 'confirm_replace' => 1]);
 $map = $wv->mapForRange([(int) $rider->id, (int) $otherRider->id],
                         \Carbon\Carbon::today()->format('Y-m-d'),
                         \Carbon\Carbon::today()->addDays(10)->format('Y-m-d'));
@@ -301,7 +314,7 @@ ok('his next visit is resolvable for the banner', (bool) $next, null, true);
 head('§11 the day-before reminder fires ONCE');
 
 $tomorrow = \Carbon\Carbon::today()->addDay()->format('Y-m-d');
-$r7 = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $tomorrow]);
+$r7 = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $tomorrow, 'confirm_replace' => 1]);
 $first = $wv->dueReminders();
 ok('a visit dated tomorrow is picked up', count($first) >= 1, true);
 $second = $wv->dueReminders();
@@ -330,8 +343,18 @@ $warnRes = $json($ctl->warnings($mk('GET', '/workshop/warnings', [
 ok('the warnings endpoint answers before a manager commits', $warnRes['success'] ?? false, true);
 ok('  …and flags the keeper mismatch', count($warnRes['warnings']) > 0, true);
 
-$storeRes = $json($ctl->store($mk('POST', '/workshop', [
+/**
+ * ⚠ The controller door is asked to confirm too, since 7-Sep — this bike carries a live
+ *   visit by now. The refusal it gives WITHOUT the flag is asserted first, because that is
+ *   the behaviour a screen has to handle (409 + `needs_confirmation`).
+ */
+$askFirst = $json($ctl->store($mk('POST', '/workshop', [
     'vehicle_id' => $vid, 'visit_date' => $soon, 'purpose' => 'inspection'])));
+ok('the controller asks before replacing an approved day',
+   ($askFirst['success'] ?? true) === false && ($askFirst['needs_confirmation'] ?? null) === true, true);
+
+$storeRes = $json($ctl->store($mk('POST', '/workshop', [
+    'vehicle_id' => $vid, 'visit_date' => $soon, 'purpose' => 'inspection', 'confirm_replace' => 1])));
 ok('store schedules through the controller', $storeRes['success'] ?? false, true);
 $w8 = (int) $storeRes['visit_id'];
 
@@ -369,7 +392,7 @@ head('§14 DATES — a visit set for +3 days lands on that day, everywhere, and 
 $d3 = \Carbon\Carbon::today()->addDays(3)->format('Y-m-d');
 $d2 = \Carbon\Carbon::today()->addDays(2)->format('Y-m-d');
 $d4 = \Carbon\Carbon::today()->addDays(4)->format('Y-m-d');
-$rx = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'visit_time' => '10:00']);
+$rx = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'visit_time' => '10:00', 'confirm_replace' => 1]);
 $wx = (int) $rx['visit_id'];
 ok('stored visit_date is EXACTLY the day given (no clock involved)',
    substr((string) $wv->find($wx)['visit_date'], 0, 10), $d3);
@@ -423,7 +446,7 @@ ok('at 00:01 the next day, it is missed', $wv->listVisits(['vehicle_id' => $vid]
 head('§15 the management banner re-fires on EVERY event, not just creation');
 
 $mark = fn () => (int) $wv->summaryFor($manager)['latest_id'];
-$rY = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $d3]);
+$rY = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $d3, 'confirm_replace' => 1]);
 $wy = (int) $rY['visit_id'];
 $t0 = $mark();
 ok('creating a visit moves the watermark', $t0 > 0, true);
@@ -466,7 +489,7 @@ ok('  …exactly once — a second poll does not', $mark(), $t2);
  * (Moving the date backwards on a row whose other events are "now" would put the
  * missed instant BEFORE them — a timeline that cannot happen in real use.)
  */
-$rM = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $d3]);   // supersedes wy
+$rM = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => $d3, 'confirm_replace' => 1]);   // supersedes wy
 $wm = (int) $rM['visit_id'];
 $ago = \Carbon\Carbon::now()->subDays(5)->format('Y-m-d H:i:s');
 DB::table(WV::T_VISIT)->where('id', $wm)->update([
@@ -496,7 +519,7 @@ $meterNow = (int) ((new \App\Services\Riders\VehicleService())->currentMeterFor(
 
 // --- a manager completing it, with a meter ---
 $rp = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'),
-                               'purpose' => 'service', 'maintenance_type_id' => $resetting->id]);
+                               'purpose' => 'service', 'maintenance_type_id' => $resetting->id, 'confirm_replace' => 1]);
 $wp = (int) $rp['visit_id'];
 \Illuminate\Support\Facades\Auth::guard('web')->loginUsingId($manager->id);
 $ctl2 = app(\App\Http\Controllers\CRM\WorkshopVisitController::class);
@@ -524,7 +547,7 @@ ok('  …and the receipt names the job', str_contains($doneRes['message'], $rese
 
 // --- the RIDER completing his own ---
 $rr = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'),
-                               'purpose' => 'service', 'maintenance_type_id' => $nonResetting->id]);
+                               'purpose' => 'service', 'maintenance_type_id' => $nonResetting->id, 'confirm_replace' => 1]);
 $wr = (int) $rr['visit_id'];
 $before = DB::table('t_fleet_service_log')->count();
 $riderDone = $wv->markDone($rider, $wr, ['outcome_note' => 'done at the shop']);
@@ -532,10 +555,10 @@ ok('THE RIDER can complete his own visit (owner ruling)', $riderDone['ok'], true
 ok('  …and it is marked done', $wv->find($wr)['status'], 'done');
 
 // He must not be able to close someone else's, or one that has not come round.
-$rOther = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d')]);
+$rOther = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'), 'confirm_replace' => 1]);
 ok('a rider cannot complete ANOTHER rider’s visit',
    $wv->markDone($rider, (int) $rOther['visit_id'], [])['ok'], false);
-$rFuture = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3]);
+$rFuture = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'confirm_replace' => 1]);
 $fut = $wv->markDone($rider, (int) $rFuture['visit_id'], []);
 ok('a rider cannot close a visit whose day has not come', $fut['ok'], false);
 ok('  …and is told why', (bool) preg_match('/not come round/i', $fut['message']), null, true);
@@ -543,7 +566,7 @@ ok('a manager CAN close a future visit (he may have been told by phone)',
    $wv->markDone($manager, (int) $rFuture['visit_id'], [])['ok'], true);
 
 // --- the refusal must not leave a visit "done" with no service behind it ---
-$rBad = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d')]);
+$rBad = $wv->schedule($manager, ['vehicle_id' => $vid2, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'), 'confirm_replace' => 1]);
 $wb = (int) $rBad['visit_id'];
 $logsNow = DB::table('t_fleet_service_log')->count();
 $badRes = $ctl2->done($mk2('POST', "/w/$wb/done", ['meter' => $meterNow + 9,
@@ -605,7 +628,7 @@ if (is_file($bladeF)) {
 
 head('§17 the rider’s "did it get done?" prompt');
 
-$rq = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d')]);
+$rq = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'), 'confirm_replace' => 1]);
 $wq = (int) $rq['visit_id'];
 /**
  * ⚠⚠ TODAY IS NOT ENOUGH — HE MUST HAVE ACCEPTED IT FIRST (found on the device, 3-Sep).
@@ -626,7 +649,7 @@ ok('  …once ACCEPTED, the same visit is awaiting an outcome', (int) ($await['i
 
 // A future one must not be asked about yet.
 $wv->markDone($manager, $wq, []);
-$rf = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3]);
+$rf = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'confirm_replace' => 1]);
 ok('a FUTURE visit is not asked about', $wv->awaitingOutcomeFor((int) $rider->id), null);
 
 // A past unanswered one keeps being asked — the reason no midnight job is needed.
@@ -678,7 +701,7 @@ $before = $shiftSvc->getUserShift((int) $rider->id, $d5);
 $baseBefore = $before['location_id'] ?? null;
 
 $rL = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5,
-                               'location_id' => $wsLocId, 'purpose' => 'service']);
+                               'location_id' => $wsLocId, 'purpose' => 'service', 'confirm_replace' => 1]);
 $wl = (int) $rL['visit_id'];
 ok('scheduling at a registered workshop succeeds', $rL['ok'], true);
 ok('  …and reports that the shift location was pinned', $rL['shift_location_set'], true);
@@ -716,8 +739,8 @@ ok('  …and his day is back to its usual location',
    $shiftSvc->getUserShift((int) $rider->id, $d5)['location_id'] ?? null, $baseBefore);
 
 // Moving a visit must not leave the OLD day pinned to a workshop nobody is visiting.
-$rA = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5, 'location_id' => $wsLocId]);
-$rB = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'location_id' => $wsLocId]);
+$rA = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5, 'location_id' => $wsLocId, 'confirm_replace' => 1]);
+$rB = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d3, 'location_id' => $wsLocId, 'confirm_replace' => 1]);
 $shiftSvc->clearUserShiftCache((int) $rider->id);
 ok('rescheduling clears the old day’s override',
    DB::table('t_ops_user_shift_assignment')->where('workshop_visit_id', (int) $rA['visit_id'])->count(), 0);
@@ -736,7 +759,7 @@ if ($tmpl) {
         'workshop_visit_id' => null,          // ← made by a human
         'created_at' => now(), 'updated_at' => now(),
     ]);
-    $rH = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5, 'location_id' => $wsLocId]);
+    $rH = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5, 'location_id' => $wsLocId, 'confirm_replace' => 1]);
     ok('a booking does NOT overwrite a planner’s own override', $rH['shift_location_set'], false);
     $still = DB::table('t_ops_user_shift_assignment')->where('id', $humanId)->first(['location_id', 'workshop_visit_id']);
     ok('  …his row is untouched', [(int) $still->location_id, $still->workshop_visit_id], [1, null]);
@@ -749,7 +772,7 @@ if ($tmpl) {
 }
 
 // Booking WITHOUT a location must change nothing at all — Phase 4 is opt-in.
-$rN = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5]);
+$rN = $wv->schedule($manager, ['vehicle_id' => $vid, 'visit_date' => $d5, 'confirm_replace' => 1]);
 ok('a visit with no workshop location pins nothing', $rN['shift_location_set'], false);
 ok('  …and his day is unchanged',
    $shiftSvc->getUserShift((int) $rider->id, $d5)['location_id'] ?? null, $baseBefore);

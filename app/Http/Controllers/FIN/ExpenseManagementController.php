@@ -1011,9 +1011,23 @@ class ExpenseManagementController extends Controller
                 ($notes ? " - Reason: {$notes}" : '');
             $expenseRequest->updated_by = $user->id;
             $expenseRequest->save();
-            
+
             DB::commit();
-            
+
+            // ⭐ Storage (Supplies): deleting a take-out's expense puts the packet back
+            // in Storage, so the stock and the money stay in step. After the commit and
+            // non-fatal — the delete itself has already succeeded.
+            if ($expenseRequest->supply_takeout_id) {
+                try {
+                    app(\App\Services\FIN\SupplyStockService::class)->syncWithRequest($expenseRequest);
+                } catch (\Throwable $e) {
+                    Log::error('Storage take-out restore failed after expense delete (web)', [
+                        'request_id' => $expenseRequest->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             Log::info('Expense deleted successfully (web)', [
                 'expense_id' => $id,
                 'request_number' => $expenseRequest->request_number,

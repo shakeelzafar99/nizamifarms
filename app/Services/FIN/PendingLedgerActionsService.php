@@ -61,6 +61,7 @@ class PendingLedgerActionsService
         LedgerModel::TYPE_TRANSFER         => 'Transfer',
         LedgerModel::TYPE_VENDOR_PAYMENT   => 'Vendor Payment',
         LedgerModel::TYPE_VENDOR_PURCHASE  => 'Vendor Purchase',
+        LedgerModel::TYPE_SUPPLY_PURCHASE  => 'Storage stock purchase',
         LedgerModel::TYPE_EXPENSE          => 'Expense',
         LedgerModel::TYPE_EMPLOYEE_DEPOSIT => 'Deposit',
         LedgerModel::TYPE_SALARY_ADVANCE   => 'Salary Advance',

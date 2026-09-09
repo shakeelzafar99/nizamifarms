@@ -192,7 +192,12 @@ class AssetModel extends BaseModel
             self::STATUS_TRANSFERRED => ['class' => 'bg-yellow-100 text-yellow-800', 'label' => 'Transferred'],
         ];
         
-        return $badges[$this->status] ?? ['class' => 'bg-gray-100 text-gray-800', 'label' => ucfirst($this->status)];
+        // ⚠ getAttribute, NOT $this->status — BaseModel declares a real
+        // `protected string $status = "Success"` which shadows the DB column INSIDE
+        // this class, so every asset would have fallen through to the grey default.
+        $status = (string) $this->getAttribute('status');
+
+        return $badges[$status] ?? ['class' => 'bg-gray-100 text-gray-800', 'label' => ucfirst($status)];
     }
 
     /**

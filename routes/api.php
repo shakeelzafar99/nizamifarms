@@ -302,6 +302,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/shifts/day-tag-range', [\App\Http\Controllers\API\RiderController::class, 'setDayTagRangeMobile']); // 🚫 Not required range
         Route::post('/shifts/update-phone', [\App\Http\Controllers\API\RiderController::class, 'updateShiftRiderPhone']);
         Route::post('/shift/acknowledge', [\App\Http\Controllers\API\RiderController::class, 'acknowledgeShift']);
+        /**
+         * ⏳ SHIFT CHANGE APPROVALS (Sep-2026) — the phone twin of the desk's corner banner.
+         * ⚠ Deliberately NOT under a `manage_shifts` check: the queue is answered by LADDER
+         *   POSITION (see ShiftAuthorityService), and it returns an empty list to anyone who
+         *   has nothing to answer, so the banner renders nothing for them.
+         */
+        Route::get('/shift-approvals', [\App\Http\Controllers\API\RiderController::class, 'shiftApprovalsMobile']);
+        Route::post('/shift-approvals/{id}/approve', [\App\Http\Controllers\API\RiderController::class, 'approveShiftRequestMobile'])->where('id', '[0-9]+');
+        Route::post('/shift-approvals/{id}/decline', [\App\Http\Controllers\API\RiderController::class, 'declineShiftRequestMobile'])->where('id', '[0-9]+');
         // Rider-facing (self-only, no manage_shifts): floating banner + My Shift view
         Route::get('/shift/pending', [\App\Http\Controllers\API\RiderController::class, 'getPendingShiftAck']);
         Route::get('/shift/mine', [\App\Http\Controllers\API\RiderController::class, 'getMyShift']);
@@ -346,6 +355,9 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/decide-leave-action', [\App\Http\Controllers\API\PayrollController::class, 'decideLeaveAction']);
             Route::post('/settle-absence', [\App\Http\Controllers\API\PayrollController::class, 'settleAbsence']);
             Route::post('/dismiss-absence-alert', [\App\Http\Controllers\API\PayrollController::class, 'dismissAbsenceAlert']);
+            // Day review (Sep-2026): the same queue and verdicts as the web bulb.
+            Route::get('/day-reviews', [\App\Http\Controllers\API\PayrollController::class, 'dayReviewsPending']);
+            Route::post('/day-reviews/record', [\App\Http\Controllers\API\PayrollController::class, 'dayReviewRecord']);
         });
     
     // Approvals (Admin/Manager users)
@@ -479,6 +491,18 @@ Route::middleware('auth:sanctum')->group(function () {
     // ⭐ Phase 3 — the RIDER answering "did it get done?" on his own visit. Self-scoped
     // to Auth::id(), so no permission and nothing to leak.
     Route::get('/workshop-visits/outcome', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiOutcome']);
+    /**
+     * ⏳ APPROVAL (6-Sep ruling). A booked workshop day is a REQUEST until a SHIFT PLANNER
+     *    approves it; only then is the rider's day pinned and only then is he told.
+     * ⚠ No middleware here either — `manage_shifts` is checked inside the service, which is
+     *   the one place that answers "is this person a planner?" for both surfaces.
+     */
+    Route::get('/workshop-visits/approvals', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiApprovals']);
+    // 📍 Add a workshop from the booking sheet, without leaving it. Coordinates required —
+    //    the phone sends its own. Gate: schedule_workshop OR manage_shifts, in the controller.
+    Route::post('/workshop-visits/locations', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiAddWorkshopLocation']);
+    Route::post('/workshop-visits/{id}/approve', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiApprove'])->where('id', '[0-9]+');
+    Route::post('/workshop-visits/{id}/decline', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDecline'])->where('id', '[0-9]+');
     Route::post('/workshop-visits/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiAccept'])->where('id', '[0-9]+');
     Route::post('/workshop-visits/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiCancel'])->where('id', '[0-9]+');
     Route::post('/workshop-visits/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDone'])->where('id', '[0-9]+');
@@ -1003,6 +1027,34 @@ Route::middleware('auth:sanctum')->group(function () {
         // /warehouse/inventory-report above, so the phone and the web page can
         // never quote different production numbers for a month.
         Route::get('/month-review', [\App\Http\Controllers\KhaasController::class, 'monthReviewApi']);
+    });
+
+    // ============================
+    // 📦 Storage (Supplies) — packaging bought in bulk, charged to expenses one packet
+    // at a time as it is used. Same controller methods are mounted on /supplies/* in
+    // routes/web.php, so the phone and the web page can never disagree.
+    // Gated INSIDE the controller by access_supplies_storage / manage_supplies_storage.
+    // ============================
+    Route::prefix('supplies')->group(function () {
+        Route::get('/stock', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getStock']);
+        Route::get('/products', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getProducts']);
+        Route::get('/history', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getHistory']);
+        Route::get('/my-takeouts', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getMyTakeouts']);
+        Route::get('/alerts', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'alerts']);
+        Route::get('/{productId}/batches', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getBatches']);
+        Route::get('/{productId}/packets', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getPackets']);
+        Route::post('/products', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'saveProduct']);
+        Route::post('/products/{id}', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'saveProduct']);
+        Route::post('/batches', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'bookBatch']);
+        Route::post('/batches/{batchId}/void', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'voidBatch']);
+        Route::post('/batches/{batchId}/preview-correction', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'previewCorrection']);
+        Route::post('/batches/{batchId}/correct-price', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'correctPrice']);
+        Route::post('/{productId}/count', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'recordCount']);
+        Route::post('/decode', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'decodeBarcode']);
+        Route::post('/resolve-scan', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'resolveScan']);
+        Route::post('/take-out', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'takeOut']);
+        Route::post('/take-out/{takeoutId}/undo', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'undoTakeout']);
+        Route::post('/approval-switch', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'setApprovalSwitch']);
     });
 
     // ============================

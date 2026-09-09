@@ -3497,6 +3497,36 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                 if (m.media_url) html += `<div class="wa-msg-media"><a href="${esc(m.media_url)}" target="_blank" style="color:inherit;text-decoration:none;">📄 Document (click to open)</a></div>`;
                 else html += '<div class="wa-msg-media">📄 Document</div>';
             }
+            // Sep-2026 — a REACTION is not something the customer typed: it is an
+            // emoji stuck onto an existing message. Rendered as a bare bubble it
+            // read exactly like a fresh "👍" reply, with no way to tell WHAT was
+            // being agreed to. Quote the original (resolved server-side from
+            // metadata.reacted_message_id) and show the emoji under it.
+            // An EMPTY emoji means the customer REMOVED their reaction (Meta
+            // sends emoji:"") — that used to draw a completely blank bubble.
+            if (m.type === 'reaction') {
+                const rt = m.reacted_to;
+                const emoji = (m.content || '').trim();
+                if (rt) {
+                    html += '<div style="border-left:3px solid #86EFAC;background:rgba(0,0,0,0.05);border-radius:6px;padding:4px 8px;margin-bottom:4px;max-width:280px;">'
+                          + `<div style="font-size:10px;font-weight:700;color:#059669;letter-spacing:.3px;text-transform:uppercase;">${rt.direction === 'outbound' ? 'Reacted to our message' : 'Reacted to their message'}</div>`
+                          + `<div style="font-size:12px;color:#4B5563;">${esc(rt.snippet || '')}</div>`
+                          + '</div>';
+                }
+                html += emoji
+                    ? `<div style="font-size:26px;line-height:1.15;">${esc(emoji)}</div>`
+                    : '<div style="font-size:12px;color:#9CA3AF;font-style:italic;">Removed their reaction</div>';
+            }
+            // Sep-2026 — stickers are downloaded now (they used to be dropped and
+            // stored as "[Unsupported message type: sticker]"). Older rows have no
+            // media_url, so they fall back to the label instead of that raw string.
+            if (m.type === 'sticker') {
+                if (m.media_url) {
+                    html += `<div class="wa-msg-image"><a href="${esc(m.media_url)}" target="_blank"><img src="${esc(m.media_url)}" alt="Sticker" style="max-width:140px;max-height:140px;display:block;" /></a></div>`;
+                } else {
+                    html += '<div class="wa-msg-media">💬 Sticker</div>';
+                }
+            }
             if (m.type === 'location') {
                 const lat = meta.latitude, lng = meta.longitude;
                 const locName = meta.name || '', locAddr = meta.address || '';
@@ -3540,7 +3570,10 @@ select.wa-mgr-input { background: #fff; cursor: pointer; }
                     html += `<button type="button" class="wa-set-verified-btn" data-cust="${activeConv.customer_id}" data-lat="${esc(String(lat))}" data-lng="${esc(String(lng))}" data-context="chat_pin" style="margin-top:4px;background:#2563EB;color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">📌 Set as Verified Location</button>`;
                 }
             }
-            if (m.content && m.type !== 'location' && m.type !== 'audio') {
+            // 'reaction' and 'sticker' draw their own body above — without these
+            // two exclusions a reaction would print the emoji twice, and every
+            // legacy sticker row would print "[Unsupported message type: sticker]".
+            if (m.content && m.type !== 'location' && m.type !== 'audio' && m.type !== 'reaction' && m.type !== 'sticker') {
                 const linked = esc(m.content).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" style="color:#2563EB;text-decoration:underline;">$1</a>');
                 html += `<div class="wa-msg-text">${linked}</div>`;
 

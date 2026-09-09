@@ -17,6 +17,9 @@ class FirebaseService
      */
     public const SERVICE_ALERT_PERMISSION = 'receive_service_alerts';
 
+    /** Who hears about a Storage take-out waiting for approval. */
+    public const SUPPLY_ALERT_PERMISSION = 'receive_supply_alerts';
+
     protected string $projectId;
     protected ?string $credentialsPath;
 
@@ -276,6 +279,45 @@ class FirebaseService
     }
 
     /**
+     * 📦 A store take-out of packaging is waiting for approval (Sep-2026).
+     *
+     * Reuses the 'leave_updates' channel deliberately: an Android channel that does not
+     * already exist on an INSTALLED apk is silently unusable, so a brand-new channel id
+     * would mean no sound and no heads-up until every phone had reinstalled.
+     */
+    public function notifySupplyTakeoutPending(
+        string $productName,
+        string $qtyLabel,
+        float $cost,
+        string $takenBy,
+        int $takeoutId,
+        ?int $excludeUserId = null
+    ): void {
+        $who = $takenBy !== '' ? $takenBy : 'Someone';
+
+        $this->sendToPermissionGroup(self::SUPPLY_ALERT_PERMISSION, [
+            'title' => '📦 Storage take-out',
+            'body'  => "{$who} took {$qtyLabel} of {$productName} (Rs " . number_format($cost, 0) . ') — tap to approve.',
+        ], [
+            'type'       => 'supply_takeout_pending',
+            'takeout_id' => (string) $takeoutId,
+        ], 'leave_updates', $excludeUserId);
+    }
+
+    /** Tell the person who scanned it what the approver decided. */
+    public function notifySupplyDecision(int $userId, string $productName, string $qtyLabel, bool $approved, ?string $reason = null): void
+    {
+        $this->notifyUser($userId, [
+            'title' => $approved ? '📦 Take-out approved' : '📦 Take-out rejected',
+            'body'  => $approved
+                ? "{$productName} {$qtyLabel} approved."
+                : "{$productName} {$qtyLabel} rejected" . ($reason ? ": {$reason}" : '.'),
+        ], [
+            'type' => 'supply_decision',
+        ], 'leave_updates');
+    }
+
+    /**
      * U4 — escalate to management when a company-bike rider came home late or forgot to record his
      * meter (single strong alert to the rider on arrival happens elsewhere; this is the 10-minute
      * escalation). Targets whoever holds 'receive_bike_meter_alerts' (owner assigns the roles).
@@ -311,6 +353,29 @@ class FirebaseService
      * `t_ops_service_alert_push` — the same mechanism the bike-service alerts use — so a month
      * is announced once rather than once per page view.
      */
+    /**
+     * 💡 Days are waiting for a manager to check (Sep-2026).
+     *
+     * ⚠ There is no scheduler on prod, so this cannot fire on a timer. It is raised by the
+     * RIDER'S OWN check-in / check-out — the moment that creates the thing to review — and
+     * debounced to at most one push an hour by DayReviewService::pushDueOnce().
+     *
+     * ⚠⚠ Rides the EXISTING `shift_notifications` channel. Android channels are created at
+     * install time, so a brand-new channel id shows nothing on the APKs already in the field.
+     */
+    public function notifyDayReviewsDue(int $count): void
+    {
+        $what = $count === 1 ? '1 day is' : $count . ' days are';
+        $this->sendToPermissionGroup('manage_payroll', [
+            'title' => '💡 Days waiting for you to check',
+            'body'  => $what . ' waiting — overtime to confirm, or lateness to waive. '
+                . 'Anything you do not get to still counts in full.',
+        ], [
+            'type'  => 'day_review_due',
+            'count' => (string) $count,
+        ], 'shift_notifications');
+    }
+
     public function notifyAbsenceDecisionsDue(string $month, int $employees, float $days): void
     {
         $label = date('F Y', strtotime($month . '-01'));
@@ -731,19 +796,200 @@ class FirebaseService
             ];
             $riderId  = (int) $v->user_id;
             $ALERT    = \App\Services\Riders\WorkshopVisitService::ALERT_PERMISSION;
+            // ⭐ 6-Sep: the shift PLANNERS are their own audience — approving a workshop day
+            //   is a decision about a rider's day, which is their table, not the fleet's.
+            $PLANNER  = \App\Services\Riders\WorkshopVisitService::APPROVE_PERMISSION;
+
+            /** Who booked it — the person waiting to hear yes or no. */
+            $bookedBy = (int) ($v->proposed_by ?? 0) ?: (int) ($v->created_by ?? 0);
+
+            /**
+             * ⚠⚠ WHO THE TAP IS FOR (6-Sep review). The phone routes every `workshop_visit`
+             *    push to the RIDER's My Vehicle screen — right for him, a dead end for a
+             *    manager: Farooq tapping "needs your approval" landed on a screen for a bike
+             *    he does not hold. Manager-bound pushes carry `audience=manager` so
+             *    `routeFromPush` can send them to the fleet page (or the shifts page for a
+             *    planner with no fleet key) instead. Old APKs ignore the key.
+             */
+            $mgr = $data + ['audience' => 'manager'];
+
+            /**
+             * Where he has to be, named. ⚠ Only a REGISTERED location can actually move his
+             * check-in; a typed name is a label and nothing more, so the copy falls back to
+             * it but the pin never does.
+             */
+            $place = null;
+            try {
+                if (!empty($v->location_id)) {
+                    $place = DB::table('t_ops_company_locations')
+                        ->where('id', (int) $v->location_id)->value('location_name');
+                }
+            } catch (\Throwable $e) {
+            }
+            $place = $place ?: ($v->workshop ?: null);
+
+            if ($event === 'proposed') {
+                /**
+                 * ⚠⚠ THE RIDER IS TOLD NOTHING HERE, AND THAT IS THE WHOLE POINT (owner +
+                 *    team ruling, 6-Sep). A booked workshop day is a REQUEST until a planner
+                 *    approves it; telling him now would be the instant confirmation the team
+                 *    specifically ruled out.
+                 */
+                $this->sendToPermissionGroup($PLANNER, [
+                    'title' => '⏳ Workshop day needs your approval',
+                    'body'  => "{$rider} → {$bike}, {$when}"
+                        . ($place ? " at {$place}" : '')
+                        . " · asked by {$actor}",
+                ], $mgr + ['event' => 'proposed'], 'shift_notifications', $actorId);
+                return;
+            }
+
+            if ($event === 'approval_reminder') {
+                // 17:00 the day before, once. Nobody has looked at it yet.
+                $this->sendToPermissionGroup($PLANNER, [
+                    'title' => '⏳ Still waiting: workshop day TOMORROW',
+                    'body'  => "{$rider} → {$bike}, {$when}. Nobody has approved it — it is dropped "
+                        . 'automatically an hour before his shift.',
+                ], $mgr + ['event' => 'approval_reminder'], 'shift_notifications');
+                return;
+            }
+
+            if ($event === 'declined' || $event === 'auto_declined') {
+                // ⚠ Only the person who asked. The rider never knew there was a question.
+                if ($bookedBy && $bookedBy !== $actorId) {
+                    $reason = trim((string) ($v->decline_reason ?? ''));
+                    $this->notifyUser($bookedBy, [
+                        'title' => $event === 'auto_declined'
+                            ? '⌛ Workshop day dropped — nobody approved it'
+                            : '❌ Workshop day declined',
+                        'body'  => "{$rider} → {$bike}, {$when}"
+                            . ($event === 'auto_declined' ? '' : " · {$actor}")
+                            . ($reason !== '' ? " — {$reason}" : '')
+                            . ' · ' . $rider . ' was not told.',
+                    ], $mgr + ['event' => $event], 'shift_notifications');
+                }
+                return;
+            }
+
+            if ($event === 'approved') {
+                /**
+                 * ⭐⭐ THE ONE MESSAGE THE RIDER ACTUALLY GETS, and the team was explicit about
+                 *    what it must say: this is a LOCATION change for attendance, NOT a time
+                 *    change. So it names the place, states the time he already had, and tells
+                 *    him to check in there — because checking in at his usual place that
+                 *    morning is exactly the mistake this whole feature exists to prevent.
+                 */
+                $startsAt = null;
+                try {
+                    $s = (new \App\Services\ShiftResolutionService())
+                        ->getUserShift($riderId, substr((string) $v->visit_date, 0, 10));
+                    // ⚠ `shift_start`, not `start_time` — the resolver's own key name.
+                    // ⚠ Asked AFTER the pin is written, so this is the hour he will actually
+                    //   be measured on, including a start time the planner just adjusted.
+                    $startsAt = !empty($s['shift_start']) ? substr((string) $s['shift_start'], 0, 5) : null;
+                } catch (\Throwable $e) {
+                }
+                $vd = \Carbon\Carbon::parse($v->visit_date);
+                $dayWord = $vd->isToday() ? 'Aaj' : ($vd->isTomorrow() ? 'Kal' : $vd->format('j M') . ' ko');
+
+                /**
+                 * ⭐⭐ DID THIS REPLACE A DAY HE HAD ALREADY BEEN TOLD ABOUT? (owner ruling
+                 *    7-Sep). Approving a replacement retires the old approved visit — and the
+                 *    rider is still holding the old date in his head. Saying only "aap ki
+                 *    shift X par hai" leaves him to work out for himself that the earlier day
+                 *    is off. So the old date is named, first, in Roman Urdu.
+                 * ⚠ Read from `superseded_by` — no signature change, and it is written in the
+                 *   same transaction as the swap, so it is here by the time this push runs.
+                 */
+                $movedFrom = null;
+                try {
+                    $old = DB::table('t_ops_workshop_visit')
+                        ->where('superseded_by', (int) $v->id)->where('status', 'rescheduled')
+                        ->orderByDesc('id')->first(['visit_date', 'visit_time']);
+                    if ($old) {
+                        $movedFrom = \Carbon\Carbon::parse($old->visit_date)->format('j M')
+                            . ($old->visit_time ? ' ' . substr((string) $old->visit_time, 0, 5) : '');
+                    }
+                } catch (\Throwable $e) {
+                }
+
+                $body = $place
+                    // ⚠ No markdown — a push body is plain text on both platforms.
+                    ? "{$dayWord} aap ki shift {$place} par hai"
+                        . ($startsAt ? " — time wahi {$startsAt}." : '.')
+                        . " Jagah badal gayi hai, wahan check-in karein. Bike: {$bike}."
+                    : "{$dayWord} {$bike} workshop le kar jana hai" . ($startsAt ? " — time wahi {$startsAt}." : '.')
+                        . ' Jagah abhi tay nahi — manager se pooch lein.';
+                if ($movedFrom) {
+                    $body = "Pehle {$movedFrom} ka plan tha, ab woh CANCEL hai. " . $body;
+                }
+                $this->notifyUser($riderId, [
+                    'title' => $movedFrom ? '🔧 Workshop day badal gaya' : '🔧 Workshop day — jagah badal gayi',
+                    'body'  => $body,
+                ], $data + ['event' => 'approved'], 'shift_notifications');
+
+                // …and the person who asked for it hears that it went through.
+                if ($bookedBy && $bookedBy !== $actorId) {
+                    $this->notifyUser($bookedBy, [
+                        'title' => '✅ Workshop day approved',
+                        'body'  => "{$actor} approved {$bike} for {$rider}, {$when}"
+                            . ($place ? " at {$place}" : '') . '. He has been told.',
+                    ], $mgr + ['event' => 'approved'], 'shift_notifications');
+                }
+                return;
+            }
+
+            if ($event === 'done') {
+                /**
+                 * ⭐ 6-Sep: nobody was told a visit finished — not the rider who took the bike
+                 *   in, not the manager who booked it. A loop that closes silently is one
+                 *   people stop trusting is closed.
+                 */
+                if ($riderId !== $actorId) {
+                    $this->notifyUser($riderId, [
+                        'title' => '✅ Workshop visit mukammal',
+                        'body'  => "{$bike} · {$when} — record ho gaya hai. Shukriya.",
+                    ], $data + ['event' => 'done'], 'shift_notifications');
+                }
+                if ($bookedBy && $bookedBy !== $actorId && $bookedBy !== $riderId) {
+                    $this->notifyUser($bookedBy, [
+                        'title' => '✅ Workshop visit done',
+                        'body'  => "{$rider} → {$bike}, {$when} · marked done by {$actor}",
+                    ], $mgr + ['event' => 'done'], 'shift_notifications');
+                }
+                return;
+            }
 
             if ($event === 'scheduled') {
                 if ($riderId !== $actorId) {
+                    /**
+                     * ⭐⭐ A planner assigning DIRECTLY can also be replacing a day the rider
+                     *    already had. Same rule as the approval branch (owner 7-Sep): name the
+                     *    old date first, so he is not left holding two plans.
+                     */
+                    $movedFrom = null;
+                    try {
+                        $old = DB::table('t_ops_workshop_visit')
+                            ->where('superseded_by', (int) $v->id)->where('status', 'rescheduled')
+                            ->orderByDesc('id')->first(['visit_date', 'visit_time']);
+                        if ($old) {
+                            $movedFrom = \Carbon\Carbon::parse($old->visit_date)->format('j M')
+                                . ($old->visit_time ? ' ' . substr((string) $old->visit_time, 0, 5) : '');
+                        }
+                    } catch (\Throwable $e) {
+                    }
                     // ⭐ Roman Urdu — this one has a BUTTON he must press (owner ruling).
                     $this->notifyUser($riderId, [
-                        'title' => '🔧 Workshop jana hai — confirm karein',
-                        'body'  => "{$bike} · {$when}. Tap kar ke confirm karein.",
+                        'title' => $movedFrom ? '🔧 Workshop day badal gaya — confirm karein'
+                                              : '🔧 Workshop jana hai — confirm karein',
+                        'body'  => ($movedFrom ? "Pehle {$movedFrom} ka plan tha, ab woh CANCEL hai. " : '')
+                                   . "{$bike} · {$when}. Tap kar ke confirm karein.",
                     ], $data, 'shift_notifications');
                 }
                 $this->sendToPermissionGroup($ALERT, [
                     'title' => '🔧 Workshop visit set',
                     'body'  => "{$rider} → {$bike}, {$when} · set by {$actor}",
-                ], $data, 'shift_notifications', $actorId);
+                ], $mgr + ['event' => 'scheduled'], 'shift_notifications', $actorId);
                 return;
             }
 
@@ -751,7 +997,7 @@ class FirebaseService
                 $this->sendToPermissionGroup($ALERT, [
                     'title' => '✅ Workshop visit confirmed',
                     'body'  => "{$rider} confirmed {$bike} on {$when}",
-                ], $data, 'shift_notifications', $actorId);
+                ], $mgr + ['event' => 'accepted'], 'shift_notifications', $actorId);
                 return;
             }
 
@@ -775,7 +1021,7 @@ class FirebaseService
                     'title' => '🔧 Workshop tomorrow',
                     'body'  => "{$rider} → {$bike}, {$when}"
                         . ($v->status === 'scheduled' ? ' · not confirmed' : ''),
-                ], $data, 'shift_notifications');
+                ], $mgr + ['event' => 'reminder'], 'shift_notifications');
             }
         } catch (\Throwable $e) {
             // A visit that was recorded must never fail because a push did.
@@ -798,7 +1044,12 @@ class FirebaseService
     protected function sendToPermissionGroups(array $permissionCodes, array $notification, array $data, string $channelId = 'whatsapp_messages', ?int $excludeUserId = null, ?string $preferFlavor = null): void
     {
         if (!$this->projectId || !file_exists($this->credentialsPath)) {
-            Log::debug('Firebase: Skipping push notification (not configured)');
+            // ⚠ Name the audience. Verifying "who would have been told" is how the workshop
+            //   and ticket rounds were checked with the live credentials moved aside, and an
+            //   unnamed line proves only that something was skipped.
+            Log::debug('Firebase: Skipping push notification (not configured)', [
+                'permissions' => $permissionCodes, 'exclude_user' => $excludeUserId,
+            ]);
             return;
         }
 

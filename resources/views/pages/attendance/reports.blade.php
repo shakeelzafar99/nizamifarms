@@ -421,7 +421,14 @@ function renderReportTable(data) {
         <td class="px-4 py-3 text-sm text-center ${emp.absent_days > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}">${emp.absent_days || 0}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.leave_days > 0 ? 'text-blue-600 font-semibold' : 'text-gray-400'}">${emp.leave_days || 0}</td>
         <td class="px-4 py-3 text-sm text-center ${emp.late_days > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${emp.late_days}</td>
-        <td class="px-4 py-3 text-sm text-center ${totalLateMins > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${totalLateMins > 0 ? totalLateMins + 'm' : '-'}</td>
+        <td class="px-4 py-3 text-sm text-center ${totalLateMins > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}">${totalLateMins > 0 ? totalLateMins + 'm' : '-'}${
+          /* ⭐ Sep-2026 — the figure above is NET of minutes a manager forgave. The endpoint
+             already returns the split; without this line the column silently disagrees with
+             the day rows underneath it and with Payroll. */
+          (Number(emp.late_waived_minutes) || 0) > 0
+            ? `<span style="display:block;font-size:9.5px;font-weight:600;color:#6B7280;">${emp.late_raw_minutes}m · ${emp.late_waived_minutes}m waived</span>`
+            : ''
+        }</td>
         <td class="px-4 py-3 text-sm text-center ${(emp.leaves_taken_year || 0) > 0 ? 'text-purple-600 font-semibold' : 'text-gray-400'}">${(emp.leaves_taken_year || 0) > 0 ? emp.leaves_taken_year + 'd' : '-'}</td>
         <td class="px-4 py-3 text-sm text-center">
           <button 
@@ -789,13 +796,15 @@ function getStatus(loginTime, shiftStart) {
 }
 
 function exportToCSV() {
-  let csv = 'Employee,Shift,Present Days,Attendance %,Absent,On Leave,Late Days,Avg Late (min),OT Days\n';
+  let csv = 'Employee,Shift,Present Days,Attendance %,Absent,On Leave,Late Days,Avg Late (min),Late Waived (min),OT Days\n';
   
   reportData.forEach(emp => {
     const userWorkingDays = emp.working_days || calculatedWorkingDays || 27;
     const attendancePerc = userWorkingDays > 0 ? ((emp.present_days / userWorkingDays) * 100).toFixed(1) : 0;
     const avgLate = emp.late_days > 0 ? (emp.total_late_minutes / emp.late_days).toFixed(0) : 0;
-    csv += `${emp.fullname},${emp.shift_name || 'Default'},${emp.present_days}/${userWorkingDays},${attendancePerc}%,${emp.absent_days || 0},${emp.leave_days || 0},${emp.late_days},${avgLate},${emp.overtime_days}\n`;
+    // Net, plus what a manager forgave — the average above is of the NET minutes.
+    const lateWaived = emp.late_waived_minutes || 0;
+    csv += `${emp.fullname},${emp.shift_name || 'Default'},${emp.present_days}/${userWorkingDays},${attendancePerc}%,${emp.absent_days || 0},${emp.leave_days || 0},${emp.late_days},${avgLate},${lateWaived},${emp.overtime_days}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv' });

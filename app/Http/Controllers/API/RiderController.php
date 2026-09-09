@@ -6296,6 +6296,16 @@ class RiderController extends Controller
                 ]);
             }
 
+            // 💡 A late check-in is something a manager may want to waive, so tell them.
+            // ⚠ AFTER the snapshot above (that is what freezes the late minutes) and off the
+            // response via terminating(), so the rider never waits for it. Debounced to one
+            // push an hour inside the service; there is no scheduler on prod, which is why
+            // the rider's own action is what raises it.
+            app()->terminating(function () {
+                try { app(\App\Services\HR\DayReviewService::class)->pushDueOnce(); }
+                catch (\Throwable $e) { /* best effort */ }
+            });
+
             // Prepare response message with location info
             $message = 'Checked in successfully at ' . date('h:i A', strtotime($currentTime));
             $responseData = [
@@ -7736,6 +7746,16 @@ class RiderController extends Controller
                     'error' => $snapErr->getMessage(),
                 ]);
             }
+
+            // 💡 The day just closed, so its overtime is now final and reviewable. Raised off
+            // the response and debounced to one push an hour (see DayReviewService).
+            // ⚠ A day whose checkout rode a manager unlock is deliberately NOT offered yet —
+            // the queue itself withholds it until the window expires, so no early push can
+            // freeze a figure that can still move.
+            app()->terminating(function () {
+                try { app(\App\Services\HR\DayReviewService::class)->pushDueOnce(); }
+                catch (\Throwable $e) { /* best effort */ }
+            });
 
             // ⭐ Company-bike GOING-HOME journey (U4): arm an ETA-to-home + grace so the rider records
             // his ONE meter reading at home. NON-FATAL, only for company-bike riders with a home pin.
@@ -12118,6 +12138,28 @@ class RiderController extends Controller
                 ->get()
                 ->keyBy('attendance_date');
 
+            // ⭐ Sep-6 2026 (owner ruling) — a rider sees the same per-day overtime and the same
+            // review standing management sees. Both fetched ONCE for the range, never per day.
+            // ⚠ The bonus DAYS those minutes may earn are NOT sent here; they stay hidden until
+            // management grants them (API/PayrollController::mySalary).
+            $otByDateOwn = [];
+            $dayReviewOwn = [];
+            try {
+                $otByDateOwn = app(\App\Services\HR\OvertimeService::class)
+                    ->overtimeForRange($user->id, $startDate, $effectiveEndDate, true)['details'] ?? [];
+            } catch (\Throwable $e) { $otByDateOwn = []; }
+            try {
+                $drSvc = app(\App\Services\HR\DayReviewService::class);
+                foreach ($drSvc->forRange($user->id, $startDate, $effectiveEndDate) as $k => $rv) {
+                    // Only what a rider needs: the verdict and what it did, never who decided it.
+                    $dayReviewOwn[$k] = [
+                        'verdict' => $rv['verdict'],
+                        'waived'  => $rv['waived_minutes'],
+                        'reason'  => $rv['reason'],
+                    ];
+                }
+            } catch (\Throwable $e) { $dayReviewOwn = []; }
+
             // Get approved/pending leave requests for the month
             $leaveRequests = \App\Models\Request\RequestModel::where('requester_user_id', $user->id)
                 ->whereIn('status', ['approved', 'pending'])
@@ -12186,6 +12228,10 @@ class RiderController extends Controller
                         // must never read as Absent (same rule as the web filler + salary calc).
                         $status = ($kind === 'not_needed') ? 'not_needed' : 'absent';
                         $lateMinutes = 0;
+                        // ⚠ Reset per DAY. Only the login branch below sets it, so leaving it
+                        // alone would let a leave / half / absent day inherit the previous
+                        // iteration's raw and waived minutes and report another day's figures.
+                        $lateDay = null;
 
                         // ✅ FIRST: Check if this date is on leave (even if they have an attendance record)
                         if (isset($leaveDates[$dateStr])) {
@@ -12194,17 +12240,23 @@ class RiderController extends Controller
                             // Half-day: present, 0.5 leave, no lateness counted (owner's rule).
                             $status = 'half_day';
                         } elseif ($record->login_time) {
-                            // Check if late — prefer the frozen check-in snapshot, else the
-                            // shift in effect ON THIS DATE; truncate seconds (matches all screens).
-                            if ($record->late_minutes !== null) {
-                                $lateMinutes = (int) $record->late_minutes;
-                            } else {
-                                $dayStart = $record->expected_shift_start
-                                    ?: (($shiftService->getUserShift($user->id, $dateStr)['shift_start'] ?? '09:00') . ':00');
-                                $s = strtotime($dateStr . ' ' . $dayStart);
-                                $l = strtotime($dateStr . ' ' . $record->login_time);
-                                $lateMinutes = ($l > $s) ? (int) (($l - $s) / 60) : 0;
-                            }
+                            // Late through the ONE rule (ShiftResolutionService::lateForDay) —
+                            // frozen snapshot first, else the shift in effect ON THIS DATE, and
+                            // minutes a manager has waived come off. Sep-6 2026: this used to be
+                            // a fourth inline copy of the formula.
+                            $lateDay = $shiftService->lateForDay(
+                                $user->id, $dateStr, $record->login_time,
+                                $record->late_minutes, $record->expected_shift_start, false
+                            );
+                            $lateMinutes = $lateDay['minutes'];
+                            // ⚠⚠ THE RIDER'S OWN SCREEN follows the EFFECTIVE minutes, unlike
+                            // every manager surface, which follows the raw figure.
+                            // Riders are deliberately told nothing about the review layer
+                            // (owner ruling), so a day whose lateness a manager forgave must
+                            // simply read as a normal day here. Keying the badge off `raw`
+                            // instead produced a red "Late" chip reading "0 min" — a
+                            // contradiction he has no way to interpret, on the one screen
+                            // where nobody can explain it to him.
                             $status = $lateMinutes > 0 ? 'late' : ($record->logout_time ? 'completed' : 'in_progress');
                         }
                         // else: status stays as initialised above — 'not_needed' on a tagged day,
@@ -12256,6 +12308,17 @@ class RiderController extends Controller
                             'logout_time_formatted' => $record->logout_time ? date('h:i A', strtotime($record->logout_time)) : null,
                             'status' => $status,
                             'late_minutes' => $lateMinutes,
+                            // ⭐⭐ Sep-6 2026 (owner ruling) — a rider now sees the SAME per-day
+                            // figures management sees, and whether each has been checked yet.
+                            // The bonus DAYS those overtime minutes might earn are deliberately
+                            // NOT here: those are hidden until management actually grants them
+                            // (see API/PayrollController::mySalary).
+                            'late_raw_minutes' => $lateDay['raw'] ?? $lateMinutes,
+                            'late_waived_minutes' => $lateDay['waived'] ?? 0,
+                            'overtime_minutes' => (int) ($otByDateOwn[$dateStr]['minutes'] ?? 0),
+                            'overtime_meta' => $otByDateOwn[$dateStr] ?? null,
+                            'late_review' => $dayReviewOwn[$dateStr . '|late'] ?? null,
+                            'overtime_review' => $dayReviewOwn[$dateStr . '|overtime'] ?? null,
                             'notes' => $record->notes,
                             'picture_start' => $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null,
                             'picture_end' => $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null,
@@ -12304,7 +12367,14 @@ class RiderController extends Controller
 
             // Total late minutes for the month — per-date + snapshot aware (same helper
             // as the salary calc and the web reports, so all screens agree).
-            $totalLateMinutes = $shiftService->sumLateOvertimeMinutes($user->id, $startDate, $effectiveEndDate)['late_minutes'];
+            $lateOtOwn = $shiftService->sumLateOvertimeMinutes($user->id, $startDate, $effectiveEndDate);
+            $totalLateMinutes = $lateOtOwn['late_minutes'];
+            // ⭐ Sep-2026 (owner ruling) — the rider sees his own overtime MINUTES and what
+            // was forgiven, the same figures management reads. ⚠ NOT the bonus DAYS those
+            // minutes might earn: those stay hidden until management grants them.
+            $totalOvertimeOwn = array_sum(array_map(fn ($d) => (int) ($d['minutes'] ?? 0), $otByDateOwn));
+            $totalLateWaivedOwn = (int) ($lateOtOwn['late_waived_minutes'] ?? 0);
+            $totalLateRawOwn = (int) ($lateOtOwn['late_raw_minutes'] ?? $totalLateMinutes);
 
             // Build summary: prefer salary service; otherwise compute a safe fallback
             if ($salaryData['success']) {
@@ -12314,6 +12384,9 @@ class RiderController extends Controller
                     'absent_days' => $salaryData['absent_days'],
                     'leave_days' => $salaryData['leave_days'],
                     'late_minutes' => $totalLateMinutes,
+                    'late_waived_minutes' => $totalLateWaivedOwn,
+                    'late_raw_minutes' => $totalLateRawOwn,
+                    'overtime_minutes' => $totalOvertimeOwn,
                 ];
             } else {
                 // Fallback path: no salary profile/config in production etc.
@@ -12381,6 +12454,9 @@ class RiderController extends Controller
                     'absent_days' => $absentDays !== null ? $absentDays : max(0, $workingDays - $presentDays - $leaveDays),
                     'leave_days' => $leaveDays,
                     'late_minutes' => $totalLateMinutes,
+                    'late_waived_minutes' => $totalLateWaivedOwn,
+                    'late_raw_minutes' => $totalLateRawOwn,
+                    'overtime_minutes' => $totalOvertimeOwn,
                 ];
 
                 \Log::warning('Monthly attendance fallback used', [
@@ -13417,13 +13493,13 @@ class RiderController extends Controller
                 ->with('category')
                 ->get();
             
-            $totalPendingAdvances = $pendingAdvances->sum('amount');
+            $totalPendingAdvances = $pendingAdvances->sum(fn ($a) => (float) $a->amount - (float) ($a->settled_amount ?? 0)); // still open (Sep-7: part may be carried)
             
             $advancesData = $pendingAdvances->map(function($advance) {
                 return [
                     'id' => $advance->id,
                     'request_number' => $advance->request_number,
-                    'amount' => (float) $advance->amount,
+                    'amount' => (float) $advance->amount - (float) ($advance->settled_amount ?? 0), // still open
                     'title' => $advance->title,
                     'description' => $advance->description,
                     'submitted_at' => $advance->submitted_at,
@@ -13825,7 +13901,7 @@ class RiderController extends Controller
                     return [
                         'id' => $adv->id,
                         'request_number' => $adv->request_number,
-                        'amount' => (float)$adv->amount,
+                        'amount' => (float) $adv->amount - (float) ($adv->settled_amount ?? 0), // still open (Sep-7: part may be carried)
                         'title' => $adv->title,
                         'description' => $adv->description,
                         'created_at' => $adv->created_at->format('Y-m-d'),
@@ -19236,7 +19312,21 @@ class RiderController extends Controller
             $expenseRequest->save();
             
             \DB::commit();
-            
+
+            // ⭐ Storage (Supplies): deleting a take-out's expense puts the packet back
+            // in Storage, so the stock and the money stay in step. After the commit and
+            // non-fatal — the delete itself has already succeeded.
+            if ($expenseRequest->supply_takeout_id) {
+                try {
+                    app(\App\Services\FIN\SupplyStockService::class)->syncWithRequest($expenseRequest);
+                } catch (\Throwable $e) {
+                    \Log::error('Storage take-out restore failed after expense delete (mobile)', [
+                        'request_id' => $expenseRequest->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             \Log::info('Expense deleted successfully', [
                 'expense_id' => $id,
                 'request_number' => $expenseRequest->request_number,
@@ -19634,6 +19724,11 @@ class RiderController extends Controller
                     'a.is_remote_checkin',
                     'a.checkout_latitude',
                     'a.checkout_longitude',
+                    // The FROZEN shift snapshot. Needed so this board judges lateness with the
+                    // same inputs as every other screen (ShiftResolutionService::lateForDay);
+                    // without them it silently fell back to today's roster shift.
+                    'a.late_minutes',
+                    'a.expected_shift_start',
                     // Blocked-checkout capture (latest attempt) — feeds the bypass sheet context
                     'a.checkout_attempt_at',
                     'a.checkout_attempt_lat',
@@ -19867,20 +19962,34 @@ class RiderController extends Controller
                 $isOvertime = false;
                 $overtimeMinutes = 0;
                 
+                // ⭐⭐ Sep-6 2026 — lateness through the ONE engine (lateForDay), not a local
+                // Carbon subtraction. This block used to be a FIFTH implementation of the
+                // rule and it disagreed with every other screen in two ways: it ignored the
+                // FROZEN `expected_shift_start` snapshot (so a later shift change rewrote a
+                // past day here but nowhere else), and it only computed lateness once the
+                // rider had checked OUT — a rider still on duty read as 0 minutes late all
+                // day. It now also honours a manager's waive, like the rest of the app.
+                // ⚠ Deliberately OUTSIDE the login+logout guard below: he is late the moment
+                // he checks in, whether or not he has finished.
+                $lateDay = $shiftService->lateForDay(
+                    (int) $row->user_id,
+                    $selectedDate,
+                    $row->login_time,
+                    $row->late_minutes ?? null,
+                    $row->expected_shift_start ?? null,
+                    false
+                );
+                $lateMinutes = $lateDay['minutes'];
+                // The BADGE follows the raw figure — he really was late; a waive forgives the
+                // minutes, not the fact — while the minutes shown are what still counts.
+                $isLate = $lateDay['raw'] > 0;
+
                 if ($row->login_time && $row->logout_time) {
                     $login = \Carbon\Carbon::parse($row->login_time);
                     $logout = \Carbon\Carbon::parse($row->logout_time);
                     // ⭐ Calculate hours worked (round to 2 decimal places)
                     $hours = round(abs($logout->diffInMinutes($login)) / 60, 2);
-                    
-                    // Check if late
-                    $shiftStart = \Carbon\Carbon::parse($shiftData['shift_start']);
-                    if ($login->gt($shiftStart)) {
-                        $isLate = true;
-                        // ⭐ Use abs() to ensure positive, round to whole number
-                        $lateMinutes = (int) abs($login->diffInMinutes($shiftStart));
-                    }
-                    
+
                     // Check if overtime — only when the shift HAS an end (start-only shifts
                     // have no overtime).
                     if (!empty($shiftData['shift_end'])) {
@@ -20415,23 +20524,19 @@ class RiderController extends Controller
                 // shift in effect ON THIS DATE and compute (truncate seconds). Keeps
                 // per-day rows consistent with the snapshot-preferring monthly totals.
                 // A HALF-DAY counts no lateness (owner's rule) — short-circuit to 0.
-                if (!$record->login_time || $record->is_half_day) {
-                    $record->late_minutes = 0;
-                } elseif (!is_null($record->snap_late_minutes)) {
-                    $record->late_minutes = (int) $record->snap_late_minutes;
-                    if ($record->late_minutes > 0) { $lateDays++; }
-                } else {
-                    $dayStart = $record->expected_shift_start
-                        ?: ($shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null);
-                    $shiftStart = $dayStart ? strtotime($record->attendance_date . ' ' . $dayStart) : null;
-                    $actualLogin = strtotime($record->attendance_date . ' ' . $record->login_time);
-                    if ($shiftStart && $actualLogin > $shiftStart) {
-                        $lateDays++;
-                        $record->late_minutes = (int) (($actualLogin - $shiftStart) / 60);
-                    } else {
-                        $record->late_minutes = 0;
-                    }
-                }
+                // Late through the ONE rule (Sep-6 2026 — this was the fourth inline copy).
+                // ⚠ default_shift is null HERE and only here: this screen has never guessed
+                // 09:00 for a user whose shift cannot be resolved, it has always reported 0.
+                // Keeping that difference explicit is what makes the consolidation a no-op.
+                $lateDayRec = $shiftService->lateForDay(
+                    $userId, (string) $record->attendance_date, $record->login_time,
+                    $record->snap_late_minutes, $record->expected_shift_start,
+                    (bool) $record->is_half_day, ['default_shift' => null]
+                );
+                $record->late_minutes = $lateDayRec['minutes'];
+                $record->late_waived_minutes = $lateDayRec['waived'];
+                $record->late_raw_minutes = $lateDayRec['raw'];
+                if ($lateDayRec['raw'] > 0) { $lateDays++; }
 
                 // Target-based overtime for THIS day, from the map above. The service already
                 // drops half-days and days with no checkout, so a missing key means none earned.
@@ -20445,11 +20550,19 @@ class RiderController extends Controller
                 // resolved only when it's actually late, so no extra lookups on normal days.
                 $record->overtime_meta = $otDetailsDet[$recDateOtDet] ?? null;
                 $record->shift_start_time = null;
-                if ($record->late_minutes > 0) {
-                    $ss = $record->expected_shift_start
-                        ?: ($shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null);
-                    if ($ss && preg_match('/(\d{1,2}):(\d{2})/', (string) $ss, $mm)) {
-                        $record->shift_start_time = str_pad($mm[1], 2, '0', STR_PAD_LEFT) . ':' . $mm[2];
+                // ⚠ Keyed on the RAW figure, not the effective one: a day whose lateness was
+                // fully waived still has to show what it was measured against, or the waive
+                // reads as "there was never anything here".
+                if ($lateDayRec['raw'] > 0) {
+                    // lateForDay resolved the start already whenever it had to compute; only
+                    // pay for a lookup when the frozen snapshot short-circuited that.
+                    $record->shift_start_time = $lateDayRec['shift_start'];
+                    if ($record->shift_start_time === null) {
+                        $ss = $record->expected_shift_start
+                            ?: ($shiftService->getUserShift($userId, $record->attendance_date)['shift_start'] ?? null);
+                        if ($ss && preg_match('/(\d{1,2}):(\d{2})/', (string) $ss, $mm)) {
+                            $record->shift_start_time = str_pad($mm[1], 2, '0', STR_PAD_LEFT) . ':' . $mm[2];
+                        }
                     }
                 }
 
@@ -20964,6 +21077,11 @@ class RiderController extends Controller
                     'leave_days' => $leaveDays,
                     'late_days' => $lateDays,
                     'late_minutes' => $lateMinutes,
+                    // ⭐ Sep-2026 — `late_minutes` is NET of minutes a manager forgave. These two
+                    // carry the split so this store report can explain a reduced figure, the
+                    // same way the web Month tab and Payroll do. Additive: older APKs ignore them.
+                    'late_waived_minutes' => (int) ($lateOt['late_waived_minutes'] ?? 0),
+                    'late_raw_minutes' => (int) ($lateOt['late_raw_minutes'] ?? $lateMinutes),
                     'overtime_days' => $overtimeDays,
                     'overtime_minutes' => $overtimeMinutes,
                     'overtime_target_minutes' => $overtimeTargetMinutes,
@@ -21448,7 +21566,7 @@ class RiderController extends Controller
                         $q->whereNull('settlement_status')
                           ->orWhere('settlement_status', '!=', 'settled');
                     })
-                    ->sum('amount');
+                    ->get()->sum(fn ($a) => (float) $a->amount - (float) ($a->settled_amount ?? 0)); // still open (Sep-7)
             }
             
             // Get company accounts for petty cash source selection
@@ -32409,7 +32527,36 @@ class RiderController extends Controller
         if (!Auth::user()->hasMobilePermission('manage_shifts')) {
             return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
         }
+        // ⚠ Stamp the source BEFORE delegating: `list()` asks the authority service which
+        //   permission half to read, and it reads that from this very attribute.
+        $request->attributes->set('shift_log_source', 'mobile');
         return app(\App\Http\Controllers\Ops\ShiftController::class)->list($request);
+    }
+
+    /**
+     * ⏳ SHIFT CHANGE APPROVALS on the phone (Sep-2026). Three thin wrappers over the same
+     * controller the desk uses, so "who may answer this" cannot differ between them.
+     *
+     * ⚠ NOT gated by `manage_shifts` here: the queue is answered by LADDER POSITION, and the
+     *   service returns an empty list to anyone with nothing to answer. Gating on the
+     *   permission would be both redundant and wrong — the ladder is the finer rule.
+     */
+    public function shiftApprovalsMobile(Request $request)
+    {
+        $request->attributes->set('shift_mobile', true);
+        return app(\App\Http\Controllers\Ops\ShiftRulesController::class)->approvals($request);
+    }
+
+    public function approveShiftRequestMobile(Request $request, $id)
+    {
+        $request->attributes->set('shift_mobile', true);
+        return app(\App\Http\Controllers\Ops\ShiftRulesController::class)->approve($request, $id);
+    }
+
+    public function declineShiftRequestMobile(Request $request, $id)
+    {
+        $request->attributes->set('shift_mobile', true);
+        return app(\App\Http\Controllers\Ops\ShiftRulesController::class)->decline($request, $id);
     }
 
     /** Delivery riders + current shift + active/upcoming changes (StoreShiftsScreen data). */
@@ -32419,6 +32566,14 @@ class RiderController extends Controller
             return response()->json(['success' => false, 'message' => 'You do not have permission to manage shifts'], 403);
         }
         $svc = new \App\Services\ShiftResolutionService();
+        /**
+         * 🔒 SHIFT AUTHORITY (Sep-2026) — resolved ONCE for the whole list, then asked per
+         * rider below. ⚠ `true` = the mobile permission half, so the phone and the desk read
+         * the same key from the right side.
+         */
+        $shiftActor = $request->user() ?: Auth::user();
+        $shiftAuthority = app(\App\Services\Ops\ShiftAuthorityService::class);
+        $shiftOpenRequests = app(\App\Services\Ops\ShiftChangeRequestService::class)->openByUser();
         $today = now()->format('Y-m-d');
         $riders = \DB::table('t_sys_user as u')
             ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
@@ -32457,6 +32612,7 @@ class RiderController extends Controller
                 }
             }
             $def = $svc->userDefaultLocation($r->id); // rider's default office (pre-selected on assign)
+            $shiftAuth = $shiftAuthority->rowStateFor($shiftActor, (int) $r->id, true);
             $out[] = ['user_id' => $r->id, 'name' => $r->fullname,
                 'has_phone' => !empty(trim((string) $r->phone)),
                 'default_location_id' => $def['location_id'],
@@ -32474,6 +32630,17 @@ class RiderController extends Controller
                  * ⚠ Additive: an older app ignores the key.
                  */
                 'workshop' => $workshopByUser[(int) $r->id] ?? null,
+                /**
+                 * 🔒 SHIFT AUTHORITY (Sep-2026) — the same three answers the web grid gets,
+                 * so the phone offers exactly what the server will accept.
+                 * ⚠ Additive: an older APK ignores these keys and simply shows the old UI;
+                 *   its writes are still refused by the gate, with a message it can display.
+                 */
+                'can_change' => $shiftAuth['can'],
+                'lock_reason' => $shiftAuth['reason'],
+                'needs_approval' => $shiftAuth['needs_approval'],
+                'allowed_template_ids' => $shiftAuthority->allowedTemplateIdsFor($shiftActor, (int) $r->id),
+                'pending_requests' => $shiftOpenRequests[(int) $r->id] ?? [],
                 'changes' => $changes];
         }
         // Active office locations (for the assign screen's location bubbles).

@@ -227,6 +227,8 @@ class SalarySlipController extends Controller
             
             // Deductions
             'late_minutes' => 'nullable|numeric|min:0',
+            'late_waived_minutes' => 'nullable|integer|min:0',
+            'late_raw_minutes' => 'nullable|integer|min:0',
             'late_deduction' => 'nullable|numeric|min:0',
             'absent_days' => 'nullable|integer|min:0',
             'absent_deduction' => 'nullable|numeric|min:0',
@@ -297,6 +299,13 @@ class SalarySlipController extends Controller
                 
                 // Deductions
                 'late_minutes' => $validated['late_minutes'] ?? 0,
+                // Frozen alongside it: what the month really was and what a manager forgave.
+                // Without these the receipt records a reduced figure it cannot account for.
+                // ⚠ Posted by the create screen, which reads them from the calculate endpoint.
+                // Defaulting `raw` to the net figure is right for every slip made before day
+                // review existed and for any month with no waiver: raw and net are the same.
+                'late_waived_minutes' => $validated['late_waived_minutes'] ?? 0,
+                'late_raw_minutes' => $validated['late_raw_minutes'] ?? ($validated['late_minutes'] ?? 0),
                 'late_deduction' => $validated['late_deduction'] ?? 0,
                 'absent_days' => $validated['absent_days'] ?? 0,
                 'absent_deduction' => $validated['absent_deduction'] ?? 0,

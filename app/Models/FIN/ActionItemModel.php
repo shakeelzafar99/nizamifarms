@@ -117,19 +117,24 @@ class ActionItemModel extends BaseModel
     /**
      * Helper Methods
      */
+    // ⚠ getAttribute/setAttribute, NOT $this->status — BaseModel declares a real
+    // `protected string $status = "Success"` which shadows the DB column INSIDE this
+    // class: reads always saw "Success", and writes set the php property so save()
+    // dropped them silently. Same reason RequestModel::isPending() reads it explicitly.
+
     public function isPending(): bool
     {
-        return $this->status === self::STATUS_PENDING;
+        return $this->getAttribute('status') === self::STATUS_PENDING;
     }
 
     public function isResolved(): bool
     {
-        return $this->status === self::STATUS_RESOLVED;
+        return $this->getAttribute('status') === self::STATUS_RESOLVED;
     }
 
     public function resolve(int $userId, ?string $notes = null): bool
     {
-        $this->status = self::STATUS_RESOLVED;
+        $this->setAttribute('status', self::STATUS_RESOLVED);
         $this->resolved_by = $userId;
         $this->resolved_at = now();
         $this->resolution_notes = $notes;
@@ -139,7 +144,7 @@ class ActionItemModel extends BaseModel
 
     public function dismiss(int $userId, ?string $notes = null): bool
     {
-        $this->status = self::STATUS_DISMISSED;
+        $this->setAttribute('status', self::STATUS_DISMISSED);
         $this->resolved_by = $userId;
         $this->resolved_at = now();
         $this->resolution_notes = $notes;

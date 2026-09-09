@@ -444,6 +444,15 @@
                                   </div>
                               </a>
                           </div>
+                          {{-- 💰 Customer Balances — the audit screen for money we hold FOR customers. --}}
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="/customers/balances">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-gray-200 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-gray-600 group-hover:text-gray-900 w-[20px]"><i class="ki-filled ki-wallet text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-gray-900">Customer Balances</span>
+                                  </div>
+                              </a>
+                          </div>
                           @if(auth()->user()->hasMobilePermission('view_whatsapp_messages') || auth()->user()->hasMobilePermission('view_whatsapp_messages_limited'))
                           <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
                               <a href="/messages">
@@ -705,6 +714,48 @@
                                       <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-sky-700 flex-1">Chiller / Freezer</span>
                                       @if($overnightStoredCount > 0)
                                       <span class="kt-badge kt-badge-sm font-bold" style="background-color:#e0f2fe; color:#0369a1; border-radius:9999px; padding:1px 8px; font-size:11px;">{{ $overnightStoredCount }}</span>
+                                      @endif
+                                  </div>
+                              </a>
+                          </div>
+                      </div>
+                  </div>
+                  @endif
+
+                  {{-- ===== G2b · 📦 Storage / Supplies (mobile-permission gated, same pattern as Overnight) ===== --}}
+                  @php
+                      $hasSuppliesAccess = false;
+                      $suppliesPending = 0;
+                      if (auth()->check()) {
+                          $suppliesUser = auth()->user();
+                          if (!$suppliesUser->relationLoaded('roles')) {
+                              $suppliesUser->load(['roles.mobilePermissions']);
+                          }
+                          $hasSuppliesAccess = $suppliesUser->hasMobilePermission('access_supplies_storage');
+                          if ($hasSuppliesAccess) {
+                              // Take-outs still waiting for an approver — the same number the
+                              // mobile banner shows, so the two surfaces always agree.
+                              $suppliesPending = \App\Models\FIN\SupplyTakeoutModel::where('status', 'pending')->count();
+                          }
+                      }
+                  @endphp
+                  @if($hasSuppliesAccess)
+                  <div class="nf-section" data-nf-sec="supplies" data-nf-default="collapsed">
+                      <div class="kt-menu-item pt-2.25 pb-px">
+                          <button type="button" class="nf-sec-toggle flex items-center gap-1.5 w-full text-left ps-[10px] pe-[10px] py-0 bg-transparent border-0 cursor-pointer group" aria-expanded="true">
+                              <i class="ki-filled ki-down nf-sec-chev text-[10px] text-amber-500 group-hover:text-amber-700 transition-transform"></i>
+                              <span class="kt-menu-heading uppercase text-xs font-medium text-amber-600 group-hover:text-amber-700 transition-colors flex-1">📦 Storage</span>
+                              <span class="nf-sec-rollup"></span>
+                          </button>
+                      </div>
+                      <div class="nf-section-body">
+                          <div class="kt-menu-item" data-kt-menu-item-toggle="accordion" data-kt-menu-item-trigger="click">
+                              <a href="{{ route('supplies.index') }}">
+                                  <div class="kt-menu-link flex items-center grow cursor-pointer border border-transparent gap-[10px] ps-[10px] pe-[10px] py-[6px] hover:bg-amber-50 rounded-md transition-colors duration-200 group" tabindex="0">
+                                      <span class="kt-menu-icon items-start text-amber-600 group-hover:text-amber-700 w-[20px]"><i class="ki-filled ki-package text-lg"></i></span>
+                                      <span class="kt-menu-title text-sm font-medium text-gray-900 group-hover:text-amber-700 flex-1">Supplies</span>
+                                      @if($suppliesPending > 0)
+                                      <span class="kt-badge kt-badge-sm font-bold" style="background-color:#fef3c7; color:#92400e; border-radius:9999px; padding:1px 8px; font-size:11px;">{{ $suppliesPending }}</span>
                                       @endif
                                   </div>
                               </a>

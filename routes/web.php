@@ -399,6 +399,13 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/workshop/alerts', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'alerts'])->name('fleet.workshop.alerts');
     Route::get('/orders/riders-map/fleet/workshop/warnings', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'warnings'])->name('fleet.workshop.warnings');
     Route::get('/orders/riders-map/fleet/workshop/outcome', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'outcome'])->name('fleet.workshop.outcome');
+    // ⏳ APPROVAL (6-Sep ruling) — the shift planners' three doors. `manage_shifts` is
+    //    checked inside WorkshopVisitService, the one place that answers "is he a planner?".
+    Route::get('/orders/riders-map/fleet/workshop/approvals', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'approvals'])->name('fleet.workshop.approvals');
+    // 📍 Add a workshop inline from the booking modal — same writer the phone uses.
+    Route::post('/orders/riders-map/fleet/workshop/locations', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'addWorkshopLocation'])->name('fleet.workshop.locations.store');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/approve', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'approve'])->name('fleet.workshop.approve')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/decline', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'decline'])->name('fleet.workshop.decline')->where('id', '[0-9]+');
     Route::post('/orders/riders-map/fleet/workshop/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'accept'])->name('fleet.workshop.accept')->where('id', '[0-9]+');
     Route::post('/orders/riders-map/fleet/workshop/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'cancel'])->name('fleet.workshop.cancel')->where('id', '[0-9]+');
     Route::post('/orders/riders-map/fleet/workshop/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'done'])->name('fleet.workshop.done')->where('id', '[0-9]+');
@@ -530,7 +537,16 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');
     Route::post('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'store'])->name('riders.store');
     Route::get('/riders/{id}', [\App\Http\Controllers\CRM\RiderProfileController::class, 'show'])->name('riders.show');
-    Route::post('/riders/shift', [\App\Http\Controllers\CRM\RiderProfileController::class, 'updateShift'])->name('riders.shift');
+    /**
+     * ⚰ RETIRED 7-Sep-2026 — `POST /riders/shift` is gone. It was the legacy door: it wrote
+     *   raw `t_ops_rider_profile.shift_start/shift_end` and had NO permission check at all,
+     *   so any logged-in user could rewrite anyone's hours. Its only caller was a modal on
+     *   the attendance page that nothing ever opened.
+     *
+     * ⭐ ONE ENGINE (owner ruling): every shift change goes through `Ops\ShiftController`,
+     *   which is where the ladder, the own-shift rule, the allowed-shift lists and the
+     *   approval queue live. A second door meant a second set of rules; this one had none.
+     */
 
     // Attendance (admin/manager view)
     Route::get('/attendance', [\App\Http\Controllers\CRM\AttendanceController::class, 'index'])->name('attendance.index');
@@ -645,6 +661,32 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/shift-planner', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'index'])->name('shift-planner.index');
     Route::get('/shift-planner/week', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'weekData'])->name('shift-planner.week');
     Route::post('/shift-planner/update-phone', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'updatePhone'])->name('shift-planner.update-phone');
+
+    /**
+     * ⚙ SHIFT RULES (Sep-2026) — who may change whose shift, and the approval queue.
+     *
+     * ⚠⚠ TWO GATES, both INSIDE the controller (never middleware here, because the phone
+     *    calls the same methods through routes/api.php and the two must not drift):
+     *      • the settings half needs `manage_shift_rules` — Taimur only, owner ruling 6-Sep;
+     *      • approve / decline is answered by LADDER POSITION, so it is deliberately open to
+     *        any planner and returns an empty queue to everyone else.
+     *
+     * ⚠ Own prefix, not `/shifts/...`, so nothing can ever be confused with
+     *   `POST /shifts/{id}/set-default` — `{id}` would happily match the word "rules".
+     */
+    Route::get('/shift-rules', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'index'])->name('shift-rules.index');
+    Route::get('/shift-rules/data', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'data'])->name('shift-rules.data');
+    Route::post('/shift-rules/ladder', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'saveLadder'])->name('shift-rules.ladder');
+    Route::post('/shift-rules/person', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'savePerson'])->name('shift-rules.person');
+    Route::post('/shift-rules/person/remove', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'removePerson'])->name('shift-rules.person.remove');
+    Route::post('/shift-rules/switch', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'saveSwitch'])->name('shift-rules.switch');
+    // The corner banner polls this from the planner, attendance and riders-map pages.
+    Route::get('/shift-rules/approvals', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'approvals'])->name('shift-rules.approvals');
+    Route::post('/shift-rules/requests/{id}/approve', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'approve'])->name('shift-rules.approve')->where('id', '[0-9]+');
+    Route::post('/shift-rules/requests/{id}/decline', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'decline'])->name('shift-rules.decline')->where('id', '[0-9]+');
+    Route::post('/shift-rules/requests/{id}/withdraw', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'withdraw'])->name('shift-rules.withdraw')->where('id', '[0-9]+');
+    Route::post('/shift-rules/types/{id}/approve', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'approveTemplate'])->name('shift-rules.type-approve')->where('id', '[0-9]+');
+    Route::post('/shift-rules/types/{id}/decline', [\App\Http\Controllers\Ops\ShiftRulesController::class, 'declineTemplate'])->name('shift-rules.type-decline')->where('id', '[0-9]+');
 
     // Holiday Management
     Route::get('/holidays', [\App\Http\Controllers\Ops\HolidayController::class, 'index'])->name('holidays.index');
@@ -976,6 +1018,23 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/', [\App\Http\Controllers\CRM\CustomerController::class, 'index'])->name('customers.index');
         Route::get('/search', [\App\Http\Controllers\CRM\CustomerController::class, 'search'])->name('customers.search.alt');
         Route::get('/filter', [\App\Http\Controllers\CRM\CustomerController::class, 'filter'])->name('customers.filter');
+
+        // ---------------------------------------------------------------
+        // 💰 Customer Balances — the audit screen for the account-balance
+        // bucket (Sep-2026). Read-only: every correction offered on the page
+        // posts to the existing /customer-credit/* endpoints.
+        // ⚠ MUST stay above /{id} or "balances" is read as a customer id.
+        // Riders are blocked server-side — this is money, not delivery work.
+        // ---------------------------------------------------------------
+        Route::middleware('block.rider')->group(function () {
+            Route::get('/balances', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'index'])->name('customers.balances');
+            Route::get('/balances/data', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'balances'])->name('customers.balances.data');
+            Route::get('/balances/activity', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'activity'])->name('customers.balances.activity');
+            Route::get('/balances/daily', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'daily'])->name('customers.balances.daily');
+            Route::get('/balances/overview', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'overview'])->name('customers.balances.overview');
+            Route::get('/balances/export', [\App\Http\Controllers\CRM\CustomerCreditReportController::class, 'export'])->name('customers.balances.export');
+        });
+
         // Geocoding routes (must be before {id} to avoid conflict)
         Route::get('/geocode-stats', [\App\Http\Controllers\CRM\CustomerController::class, 'geocodeStats'])->name('customers.geocode-stats');
         Route::post('/batch-geocode', [\App\Http\Controllers\CRM\CustomerController::class, 'batchGeocode'])->name('customers.batch-geocode');
@@ -1319,6 +1378,39 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/inventory/storage-config', [\App\Http\Controllers\KhaasController::class, 'updateStorageConfig'])->name('inventory.storage-config');
     });
 
+    // 📦 Storage (Supplies) — packaging bought in bulk, charged to expenses one packet
+    // at a time as it is used. The SAME controller methods are mounted on
+    // /api/supplies/* for the mobile app, so the two surfaces cannot drift apart.
+    Route::prefix('supplies')->name('supplies.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'index'])->name('index');
+        Route::get('/stock', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getStock'])->name('stock');
+        Route::get('/products', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getProducts'])->name('products');
+        Route::get('/history', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getHistory'])->name('history');
+        Route::get('/my-takeouts', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getMyTakeouts'])->name('my-takeouts');
+        Route::get('/alerts', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'alerts'])->name('alerts');
+        Route::get('/{productId}/batches', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getBatches'])->name('batches');
+        Route::get('/{productId}/packets', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'getPackets'])->name('packets');
+        Route::post('/products', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'saveProduct'])->name('products.store');
+        Route::post('/products/{id}', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'saveProduct'])->name('products.update');
+        Route::post('/batches', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'bookBatch'])->name('batches.store');
+        Route::post('/batches/{batchId}/void', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'voidBatch'])->name('batches.void');
+        Route::post('/batches/{batchId}/preview-correction', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'previewCorrection'])->name('batches.preview-correction');
+        Route::post('/batches/{batchId}/correct-price', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'correctPrice'])->name('batches.correct-price');
+        Route::post('/{productId}/count', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'recordCount'])->name('count');
+        Route::post('/decode', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'decodeBarcode'])->name('decode');
+        Route::post('/resolve-scan', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'resolveScan'])->name('resolve-scan');
+        Route::post('/take-out', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'takeOut'])->name('take-out');
+        Route::post('/take-out/{takeoutId}/undo', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'undoTakeout'])->name('take-out.undo');
+    });
+
+    // The approval switch lives OFF the /supplies prefix on purpose.
+    // ⚠ PATH SHAPE IS LOAD-BEARING: prod's StackProtect bot filter challenges by URL
+    // SHAPE and has silently killed paths ending in /settings or /config. This mirrors
+    // /admin/operations/scan-verify, which works in production today.
+    Route::post('/admin/operations/supply-approval',
+        [\App\Http\Controllers\FIN\SupplyStorageController::class, 'setApprovalSwitch'])
+        ->name('admin.operations.supply-approval')->middleware('block.rider');
+
     // ⭐ Overnight Storage (NF store chiller/freezer tracker — standalone, no inventory impact)
     // Same controller methods are mounted on /api/overnight/* for the mobile app.
     Route::prefix('overnight')->name('overnight.')->group(function () {
@@ -1648,6 +1740,16 @@ Route::middleware(['auth'])->group(function () {
             // Settle absences parked in an earlier month: charge, excuse, or use own leave.
             Route::post('/settle-absence', [\App\Http\Controllers\HR\PayrollController::class, 'settleAbsence'])->name('settle-absence');
             Route::post('/dismiss-absence-alert', [\App\Http\Controllers\HR\PayrollController::class, 'dismissAbsenceAlert'])->name('dismiss-absence-alert');
+        });
+
+        // Day review (Sep-2026) — verify a day's overtime, or waive late minutes, while it is
+        // still fresh, so month-end is a confirmation instead of a review. Same `manage_payroll`
+        // audience as payroll itself. ⚠ An unreviewed day still counts in full.
+        Route::prefix('day-reviews')->name('day-reviews.')->group(function () {
+            Route::get('/pending-count', [\App\Http\Controllers\HR\DayReviewController::class, 'pendingCount'])->name('pending-count');
+            Route::get('/pending', [\App\Http\Controllers\HR\DayReviewController::class, 'pending'])->name('pending');
+            Route::get('/month', [\App\Http\Controllers\HR\DayReviewController::class, 'forMonth'])->name('month');
+            Route::post('/record', [\App\Http\Controllers\HR\DayReviewController::class, 'record'])->name('record');
         });
 
         // Salary Slips

@@ -3654,6 +3654,30 @@ class OrderController extends Controller
                 }
             }
 
+            // ⭐ Proof-before-order (Sep-2026): the customer often pays at Shopify
+            // checkout and sends the screenshot BEFORE this approval click, so her
+            // proof was matched while this order did not exist and got parked on
+            // an old invoice. Now that the order is real, re-run HER unresolved
+            // screenshots only (see PaymentSignalMatcher::rematchCustomerProofs).
+            // Signal tables only; never blocks the conversion.
+            if ($convertedOrder->customer_id) {
+                try {
+                    $proofRematch = app(\App\Services\Payments\Signals\PaymentSignalMatcher::class)
+                        ->rematchCustomerProofs((int) $convertedOrder->customer_id, 'shopify_convert');
+                    if (!empty($proofRematch['candidates'])) {
+                        \Log::info('Proof re-match after Shopify conversion', [
+                            'order_id' => $convertedOrder->id,
+                            'customer_id' => $convertedOrder->customer_id,
+                        ] + $proofRematch);
+                    }
+                } catch (\Throwable $e) {
+                    \Log::warning('Proof re-match after Shopify conversion failed', [
+                        'order_id' => $convertedOrder->id,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+
             // Auto location request: queue this customer if the automation is ON and
             // they qualify (no-op when the switch is off). Never blocks conversion.
             // Skipped for orders parked as 'pending' for a future day — those request

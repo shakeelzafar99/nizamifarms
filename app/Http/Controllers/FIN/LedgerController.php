@@ -135,6 +135,7 @@ class LedgerController extends Controller
             LedgerModel::TYPE_EXPENSE => 'Expense',
             LedgerModel::TYPE_VENDOR_PURCHASE => 'Vendor Purchase',
             LedgerModel::TYPE_VENDOR_PAYMENT => 'Vendor Payment',
+            LedgerModel::TYPE_SUPPLY_PURCHASE => 'Storage stock purchase',
             LedgerModel::TYPE_SALARY_ADVANCE => 'Salary Advance',
             LedgerModel::TYPE_SALARY_PAYMENT => 'Salary Payment',
             LedgerModel::TYPE_REIMBURSEMENT_ACCRUAL => 'Reimbursement Accrual',

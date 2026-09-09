@@ -390,6 +390,95 @@ class ShiftResolutionService
      *
      * @return array ['late_minutes','overtime_minutes','late_days','overtime_days']
      */
+    /**
+     * ⭐⭐ THE one late-minutes rule for a single day (Sep-6 2026).
+     *
+     * Lateness used to be recomputed inline in FOUR places — here, lateDaysBreakdown(), the
+     * rider's own month in RiderController, and the manager's per-day mobile view. They agreed
+     * by luck, not by construction. A per-day waive applied to only some of them would make
+     * the screens contradict each other, which is exactly the failure the overtime code's
+     * "one engine" comments were written to prevent. So the rule lives here now and all four
+     * call it.
+     *
+     * The rule itself is unchanged: a half-day is never late · the FROZEN snapshot wins when
+     * it exists · otherwise measure the check-in against the shift start in effect that day.
+     *
+     * On top of it sits the day review: `waived` minutes are ones a manager has forgiven for
+     * a genuine reason. With no review — the normal case, and the case before this feature is
+     * switched on — `waived` is 0 and `minutes` equals `raw`, so nothing moves.
+     *
+     * @param  $snapshotLate  the row's frozen `late_minutes` (null = never stamped)
+     * @param  array $opts    default_shift ('09:00', pass null to refuse to guess) ·
+     *                        want_shift_start (resolve the start even when the snapshot wins,
+     *                        for evidence — it costs a shift lookup, so it is opt-in) ·
+     *                        apply_review (false = the raw engine figure, for a reviewer)
+     * @return array{raw:int,waived:int,minutes:int,shift_start:?string,login:?string}
+     */
+    /** Held so the per-day loops below do not resolve it thousands of times. */
+    private static ?\App\Services\HR\DayReviewService $reviewSvc = null;
+
+    public function lateForDay(
+        int $userId,
+        string $date,
+        ?string $loginTime,
+        $snapshotLate,
+        ?string $expectedShiftStart,
+        bool $isHalfDay = false,
+        array $opts = []
+    ): array {
+        $date = substr($date, 0, 10);
+        $out = ['raw' => 0, 'waived' => 0, 'minutes' => 0, 'shift_start' => null, 'login' => null];
+        if ($isHalfDay || $loginTime === null || $loginTime === '') {
+            return $out;
+        }
+        $out['login'] = $this->hmOf($loginTime);
+
+        $default = array_key_exists('default_shift', $opts) ? $opts['default_shift'] : '09:00';
+        $needStart = is_null($snapshotLate) || !empty($opts['want_shift_start']);
+        $start = null;
+        if ($needStart) {
+            // ⚠ Only look the shift up when it is actually needed. The payroll page walks every
+            // employee's every day through here, and an unconditional lookup would undo the
+            // N+1 work that took that page from 14s to 2.3s.
+            $start = $expectedShiftStart ?: null;
+            if (!$start) {
+                $resolved = $this->getUserShift($userId, $date)['shift_start'] ?? null;
+                $resolved = $resolved ?: $default;
+                $start = $resolved ? ($resolved . ':00') : null;
+            }
+            $out['shift_start'] = $this->hmOf($start);
+        }
+
+        if (!is_null($snapshotLate)) {
+            $out['raw'] = (int) $snapshotLate;
+        } elseif ($start) {
+            $s = strtotime($date . ' ' . $start);
+            $l = strtotime($date . ' ' . $loginTime);
+            // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
+            $out['raw'] = ($l > $s) ? (int) (($l - $s) / 60) : 0;
+        }
+
+        if ($out['raw'] > 0 && ($opts['apply_review'] ?? true)) {
+            // ⚠ Resolved ONCE and held. This method runs inside per-day loops over whole
+            // months for every employee — resolving the service through the container on
+            // every call would be thousands of container lookups on one payroll page.
+            if (self::$reviewSvc === null) {
+                self::$reviewSvc = app(\App\Services\HR\DayReviewService::class);
+            }
+            $out['waived'] = self::$reviewSvc->waivedLate($userId, $date, $out['raw']);
+        }
+        $out['minutes'] = max(0, $out['raw'] - $out['waived']);
+        return $out;
+    }
+
+    /** First H:MM in a stored time ('09:00:00' or a full datetime) → 'H:i'; null if unreadable. */
+    private function hmOf($t): ?string
+    {
+        if ($t === null || $t === '') { return null; }
+        return preg_match('/(\d{1,2}):(\d{2})/', (string) $t, $m)
+            ? (str_pad($m[1], 2, '0', STR_PAD_LEFT) . ':' . $m[2]) : null;
+    }
+
     public function sumLateOvertimeMinutes(int $userId, string $startDate, string $endDate): array
     {
         $otSvc = new \App\Services\HR\OvertimeService();
@@ -410,24 +499,24 @@ class ShiftResolutionService
         // the frozen row is never mutated, so undoing the half-day restores the real numbers.
         $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
 
-        $totLate = 0; $totOt = 0; $lateDays = 0; $otDays = 0;
+        $totLate = 0; $totOt = 0; $lateDays = 0; $otDays = 0; $totWaived = 0;
 
         foreach ($rows as $r) {
             $date = substr((string) $r->attendance_date, 0, 10);
             if (isset($halfDays[$date])) { continue; } // half-day → no late, no OT
 
-            // --- Late ---
-            if (!is_null($r->late_minutes)) {
-                $late = (int) $r->late_minutes;
-            } else {
-                $start = $r->expected_shift_start
-                    ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
-                $s = strtotime($date . ' ' . $start);
-                $l = strtotime($date . ' ' . $r->login_time);
-                // Truncate seconds to whole minutes — matches legacy TIMESTAMPDIFF(MINUTE).
-                $late = ($l > $s) ? (int) (($l - $s) / 60) : 0;
-            }
-            if ($late > 0) { $totLate += $late; $lateDays++; }
+            // --- Late --- through the ONE rule (lateForDay). This is the money path: the
+            // total it returns is what computeRow() measures against the monthly buffer, so
+            // waived minutes come off HERE, before the buffer, exactly as the owner ruled.
+            $day = $this->lateForDay($userId, $date, $r->login_time, $r->late_minutes,
+                                     $r->expected_shift_start, false);
+            $late = $day['minutes'];
+            $totWaived += $day['waived'];
+            // ⭐ A day counts as a late DAY on the raw figure — he really was late, and the
+            // waive forgives the minutes, not the fact. A fully waived day contributes 0
+            // minutes but is still visible as a day, which is what the reports show.
+            if ($day['raw'] > 0) { $lateDays++; }
+            if ($late > 0) { $totLate += $late; }
 
             // --- Overtime (only when checked out AND the shift has an end time) ---
             if (!empty($r->logout_time)) {
@@ -464,15 +553,23 @@ class ShiftResolutionService
             'overtime_minutes' => $totOt,
             'late_days' => $lateDays,
             'overtime_days' => $otDays,
+            // Additive: what a manager forgave this month, so a payslip can say
+            // "400 min late, 200 waived" instead of quietly showing the smaller number.
+            'late_waived_minutes' => $totWaived,
+            'late_raw_minutes' => $totLate + $totWaived,
         ];
     }
 
     /**
-     * Per-day late minutes for the drill-down ("which days was I late"). Same
-     * frozen-snapshot-first rule as sumLateOvertimeMinutes(). Only returns days with late > 0.
-     * @return array<int,array{date:string,minutes:int}>
+     * Per-day late minutes for the drill-down ("which days was I late"). Goes through the
+     * SAME lateForDay() rule as sumLateOvertimeMinutes(), so the drill and the total can
+     * never disagree. Returns days the rider was ACTUALLY late (raw > 0) — including a day
+     * whose minutes a manager has since waived, which shows with `waived` set and `minutes`
+     * reduced. ⭐ When a rule changes, grep the wording too: this sentence used to say
+     * "only returns days with late > 0" and a waive made that a lie.
+     * @return array<int,array{date:string,minutes:int,raw_minutes:int,waived:int,login:?string,shift_start:?string}>
      */
-    public function lateDaysBreakdown(int $userId, string $startDate, string $endDate): array
+    public function lateDaysBreakdown(int $userId, string $startDate, string $endDate, bool $withEvidence = true): array
     {
         $rows = DB::table('t_ops_attendance')
             ->where('user_id', $userId)
@@ -485,38 +582,34 @@ class ShiftResolutionService
         // A half-day date shows no lateness (matches sumLateOvertimeMinutes' suppression).
         $halfDays = (new \App\Services\HR\LeavePolicyService())->halfDayDates($userId, $startDate, $endDate);
 
-        // First H:MM in a stored time ('09:00:00' or a full datetime) → 'H:i'; null if unreadable.
-        $hm = function ($t) {
-            if ($t === null || $t === '') { return null; }
-            return preg_match('/(\d{1,2}):(\d{2})/', (string) $t, $m)
-                ? (str_pad($m[1], 2, '0', STR_PAD_LEFT) . ':' . $m[2]) : null;
-        };
-
         $out = [];
         foreach ($rows as $r) {
             $date = substr((string) $r->attendance_date, 0, 10);
             if (isset($halfDays[$date])) { continue; }
-            // The shift start this day was judged against — the stored one when present, else the
-            // resolved roster shift. Resolved in BOTH branches (the stored-late_minutes branch
-            // skipped it before) so the drill can always show what the rider was measured against.
-            $start = $r->expected_shift_start
-                ?: (($this->getUserShift($userId, $date)['shift_start'] ?? '09:00') . ':00');
-            if (!is_null($r->late_minutes)) {
-                $late = (int) $r->late_minutes;
-            } else {
-                $s = strtotime($date . ' ' . $start);
-                $l = strtotime($date . ' ' . $r->login_time);
-                $late = ($l > $s) ? (int) (($l - $s) / 60) : 0;
-            }
-            if ($late > 0) {
+            // want_shift_start: this is the DRILL, so the day must always be able to say what
+            // the check-in was measured against, even when the frozen snapshot supplied the
+            // minutes. That is the one place the extra shift lookup is worth paying for.
+            // ⚠ want_shift_start costs a shift resolution PER DAY when the frozen snapshot
+            // already supplied the minutes. The drill needs it; a caller that only counts
+            // days (the payroll review chips, which run per employee on every page load)
+            // must not pay for it — that is a ~1.4s N+1 on a 12-employee month.
+            $day = $this->lateForDay($userId, $date, $r->login_time, $r->late_minutes,
+                                     $r->expected_shift_start, false,
+                                     ['want_shift_start' => $withEvidence]);
+            // ⭐ Listed on the RAW figure. A day whose minutes were entirely waived must still
+            // appear — with the waive and its reason on it — or the forgiveness becomes
+            // invisible and the manager cannot see what he already decided.
+            if ($day['raw'] > 0) {
                 // `login` / `shift_start` are ADDITIVE evidence for the drill-downs — the same
                 // "show the manager how this number was reached" contract OvertimeService's
-                // `details` follows. The only caller reads date/minutes and is unaffected.
+                // `details` follows.
                 $out[] = [
                     'date'        => $date,
-                    'minutes'     => $late,
-                    'login'       => $hm($r->login_time),
-                    'shift_start' => $hm($start),
+                    'minutes'     => $day['minutes'],     // what still counts
+                    'raw_minutes' => $day['raw'],         // what the day actually was
+                    'waived'      => $day['waived'],
+                    'login'       => $day['login'],
+                    'shift_start' => $day['shift_start'],
                 ];
             }
         }

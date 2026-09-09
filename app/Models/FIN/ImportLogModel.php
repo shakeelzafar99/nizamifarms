@@ -74,14 +74,20 @@ class ImportLogModel extends BaseModel
     /**
      * Helper Methods
      */
+    // ⚠ getAttribute/setAttribute, NOT $this->status — BaseModel declares a real
+    // `protected string $status = "Success"` which shadows the DB column INSIDE this
+    // class. Reads always saw "Success"; worse, WRITES set the php property and were
+    // silently dropped by save(), so complete()/markFailed() below never persisted a
+    // thing. Same reason RequestModel::isPending() reads the attribute explicitly.
+
     public function isCompleted(): bool
     {
-        return $this->status === self::STATUS_COMPLETED;
+        return $this->getAttribute('status') === self::STATUS_COMPLETED;
     }
 
     public function isFailed(): bool
     {
-        return $this->status === self::STATUS_FAILED;
+        return $this->getAttribute('status') === self::STATUS_FAILED;
     }
 
     public function getSuccessRateAttribute(): float
@@ -133,7 +139,7 @@ class ImportLogModel extends BaseModel
      */
     public function complete($summary = [])
     {
-        $this->status = $this->rows_failed > 0 ? self::STATUS_PARTIAL : self::STATUS_COMPLETED;
+        $this->setAttribute('status', $this->rows_failed > 0 ? self::STATUS_PARTIAL : self::STATUS_COMPLETED);
         $this->summary = $summary;
         $this->save();
     }
@@ -143,7 +149,7 @@ class ImportLogModel extends BaseModel
      */
     public function markFailed($errorDetails = [])
     {
-        $this->status = self::STATUS_FAILED;
+        $this->setAttribute('status', self::STATUS_FAILED);
         $this->error_details = $errorDetails;
         $this->save();
     }

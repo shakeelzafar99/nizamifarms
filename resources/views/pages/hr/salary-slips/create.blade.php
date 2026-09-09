@@ -138,6 +138,11 @@
                                     <i class="ki-filled ki-lock" id="late-lock"></i> Override
                                 </button>
                             </label>
+                            {{-- Sep-2026 — a manager may have forgiven some of this month's
+                                 lateness. Without this line the field shows a smaller number
+                                 than the day rows below it add up to, with nothing to explain
+                                 the difference. --}}
+                            <div id="late-waived-note" style="display:none;font-size:11px;color:#B45309;font-weight:600;margin-bottom:4px;"></div>
                             <div class="flex gap-2">
                                 <input type="number" id="late-minutes" step="0.01" class="kt-input w-1/2" readonly>
                                 <input type="number" id="late-deduction" step="0.01" class="kt-input w-1/2 font-medium text-red-600" readonly>
@@ -660,6 +665,20 @@ function populateForm(data) {
     // Deductions
     document.getElementById('late-minutes').value = parseFloat(data.late_minutes).toFixed(2);
     document.getElementById('late-deduction').value = parseFloat(data.late_deduction).toFixed(2);
+    // ⭐ Sep-2026 — `late_minutes` above is NET of any minutes a manager waived. Carry the
+    // split through so the frozen slip can still explain a reduced figure, and say so on
+    // screen rather than leaving a smaller number with no cause.
+    window.__lateSplit = {
+      waived: Number(data.late_waived_minutes || 0),
+      raw: Number(data.late_raw_minutes || data.late_minutes || 0),
+    };
+    const lateNote = document.getElementById('late-waived-note');
+    if (lateNote) {
+      lateNote.textContent = window.__lateSplit.waived > 0
+        ? `${window.__lateSplit.raw} min late · ${window.__lateSplit.waived} min waived by a manager · ${Math.round(Number(data.late_minutes))} min counted`
+        : '';
+      lateNote.style.display = window.__lateSplit.waived > 0 ? 'block' : 'none';
+    }
     document.getElementById('absent-days').value = data.absent_days;
     document.getElementById('absent-deduction').value = parseFloat(data.absent_deduction).toFixed(2);
     document.getElementById('salary-advance').value = parseFloat(data.salary_advance).toFixed(2);
@@ -817,6 +836,9 @@ function saveSalarySlip(status) {
         
         // Deductions
         late_minutes: parseFloat(document.getElementById('late-minutes').value) || 0,
+        // The split travels with it, so the frozen slip can account for a reduced figure.
+        late_waived_minutes: Math.round((window.__lateSplit && window.__lateSplit.waived) || 0),
+        late_raw_minutes: Math.round((window.__lateSplit && window.__lateSplit.raw) || 0),
         late_deduction: parseFloat(document.getElementById('late-deduction').value) || 0,
         absent_days: parseInt(document.getElementById('absent-days').value) || 0,
         absent_deduction: parseFloat(document.getElementById('absent-deduction').value) || 0,

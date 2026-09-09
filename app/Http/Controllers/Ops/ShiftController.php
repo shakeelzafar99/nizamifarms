@@ -7,6 +7,8 @@ use Illuminate\Http\Request;
 use App\Models\Ops\ShiftTemplateModel;
 use App\Models\Ops\UserShiftAssignmentModel;
 use App\Services\ShiftResolutionService;
+use App\Services\Ops\ShiftAuthorityService;
+use App\Services\Ops\ShiftChangeRequestService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 
@@ -14,9 +16,108 @@ class ShiftController extends Controller
 {
     protected $shiftService;
 
+    /**
+     * ⭐⭐ THE GATE (Sep-2026). Every shift write in the company arrives here — the web
+     *    planner, the reusable change-shift popup on the attendance page, and every mobile
+     *    screen (the API wrappers in RiderController delegate to these very methods). So
+     *    "who may change whose shift" is answered ONCE, in ShiftAuthorityService, and the
+     *    desk and the phone cannot drift apart.
+     *
+     * ⚠⚠ Before this round these endpoints had NO permission check at all on the web side.
+     *    Step 0 of decide() is `manage_shifts`; that alone closes a door that was open to
+     *    every logged-in non-rider.
+     *
+     * See SHIFT-AUTHORITY-PLAN-SEP2026.md; SQL shift_authority_sep2026.sql.
+     */
+    protected ShiftAuthorityService $authority;
+    protected ShiftChangeRequestService $requests;
+
     public function __construct()
     {
         $this->shiftService = new ShiftResolutionService();
+        $this->authority = app(ShiftAuthorityService::class);
+        $this->requests = app(ShiftChangeRequestService::class);
+    }
+
+    /**
+     * Who is asking, and is this the phone? Mobile calls arrive through the API wrappers,
+     * which stamp `shift_log_source` — the same flag the audit log already uses, so the
+     * permission half (web key vs mobile key) is read from the one place that knows.
+     */
+    private function actor(Request $request)
+    {
+        return $request->user() ?: auth()->user();
+    }
+
+    private function isMobile(Request $request): bool
+    {
+        return $request->attributes->get('shift_log_source', 'web') === 'mobile';
+    }
+
+    /**
+     * A change this rider has ALREADY BEEN TOLD ABOUT that the new one would replace, or null.
+     *
+     * ⭐ Only two shapes count, because only these were announced as "something changes on
+     *   this day": a TEMPORARY override, and an UPCOMING primary that has not started yet. A
+     *   standing shift is not a promise about a particular day, so replacing it is ordinary
+     *   work and must not nag.
+     * ⚠ `notified_at` OR `acknowledged_at` — told, or told and confirmed. Both are promises;
+     *   the second is just a stronger one, and the message says which.
+     */
+    private function announcedChangeClashing(int $userId, string $from, ?string $to): ?array
+    {
+        try {
+            $today = now()->format('Y-m-d');
+            $spanEnd = $to ?: '9999-12-31';   // an open-ended change reaches forward for ever
+            $rows = UserShiftAssignmentModel::with('shiftTemplate')
+                ->where('user_id', $userId)
+                ->where(function ($q) {
+                    $q->whereNotNull('acknowledged_at')->orWhereNotNull('notified_at');
+                })
+                ->get();
+            foreach ($rows as $r) {
+                $f = $r->effective_from ? $r->effective_from->format('Y-m-d') : null;
+                $t = $r->effective_to ? $r->effective_to->format('Y-m-d') : null;
+                $isTemporary = $t !== null;
+                $isUpcoming  = $t === null && $f !== null && $f > $today;
+                if (!$isTemporary && !$isUpcoming) continue;      // a standing shift — ignore
+                if ($t !== null && $t < $today) continue;         // already elapsed
+                // Overlap between [f, t|∞] and the new [from, spanEnd].
+                if (($t ?: '9999-12-31') < $from || ($f ?: '0000-01-01') > $spanEnd) continue;
+                $name = optional($r->shiftTemplate)->shift_name ?: 'a shift';
+                $fmt = fn ($d) => $d ? \Carbon\Carbon::parse($d)->format('j M') : '';
+                return [
+                    'assignment_id' => (int) $r->id,
+                    'shift_name'    => $name,
+                    'from'          => $f,
+                    'to'            => $t,
+                    'acknowledged'  => $r->acknowledged_at !== null,
+                    'label'         => $name . ' · ' . ($isTemporary
+                        ? ($fmt($f) . ($t && $t !== $f ? '–' . $fmt($t) : ''))
+                        : ('from ' . $fmt($f))),
+                ];
+            }
+        } catch (\Throwable $e) {
+            // Advisory only — never let it block a legitimate change.
+        }
+        return null;
+    }
+
+    /**
+     * The gate, in the shape a controller wants: returns NULL to carry on, or a ready
+     * JSON refusal. `assign` may also come back as "queued for approval" — that is not a
+     * refusal, so callers handle APPROVAL themselves before calling this.
+     */
+    private function refuse(Request $request, int $targetUserId, ?int $templateId, string $action)
+    {
+        if ($request->attributes->get('shift_authority_ok')) {
+            return null; // an approved request replaying through the engine
+        }
+        $d = $this->authority->decide($this->actor($request), $targetUserId, $templateId, $action, $this->isMobile($request));
+        if ($d['verdict'] === ShiftAuthorityService::DENY) {
+            return response()->json(['success' => false, 'message' => $d['message']], 403);
+        }
+        return null;
     }
 
     /**
@@ -41,11 +142,40 @@ class ShiftController extends Controller
      */
     public function list(Request $request)
     {
+        /**
+         * ⭐ `for_user_id` — "which shifts may I put THIS person on?" A picker that asks gets
+         *   back only what the gate would accept, so a manager never picks a shift and then
+         *   reads a refusal. Asking without it (the Shift Types admin page) still lists
+         *   everything, which is what that page is for.
+         *
+         * ⚠ A shift type still WAITING for approval is never assignable. It is returned
+         *   anyway, flagged `pending`, so the person who proposed it sees "⏳ waiting" in his
+         *   own picker instead of wondering where it went — the front ends disable it.
+         */
+        $actor = $this->actor($request);
+        $forUserId = $request->filled('for_user_id') ? (int) $request->input('for_user_id') : null;
+        $allowedIds = ($forUserId && $actor) ? $this->authority->allowedTemplateIdsFor($actor, $forUserId) : null;
+        $hasApproval = $this->authority->templateApprovalAvailable();
+        $meId = (int) (optional($actor)->id ?? 0);
+
         $shifts = ShiftTemplateModel::with(['userAssignments'])
             ->orderBy('is_default', 'desc')
             ->orderBy('shift_name')
             ->get()
-            ->map(function($shift) {
+            ->filter(function ($shift) use ($allowedIds, $hasApproval, $meId) {
+                if ($hasApproval && ($shift->approval_status ?? 'approved') !== 'approved') {
+                    // Declined types are gone for good; a proposal is shown only to the
+                    // person who raised it and to whoever can approve it.
+                    if (($shift->approval_status ?? '') !== 'proposed') return false;
+                    // ⚠ `$meId > 0` matters: a proposal whose `proposed_by` is NULL would
+                    //   otherwise match an unauthenticated caller (0 === 0) and leak.
+                    if ($meId > 0 && (int) ($shift->proposed_by ?? 0) === $meId) return true;
+                    return $meId > 0 && $this->authority->isTop($meId);
+                }
+                return $allowedIds === null || in_array((int) $shift->id, $allowedIds, true);
+            })
+            ->map(function($shift) use ($hasApproval) {
+                $status = $hasApproval ? ($shift->approval_status ?? 'approved') : 'approved';
                 return [
                     'id' => $shift->id,
                     'shift_name' => $shift->shift_name,
@@ -58,13 +188,21 @@ class ShiftController extends Controller
                     'is_default' => $shift->is_default,
                     'active' => $shift->active,
                     'description' => $shift->description,
+                    'approval_status' => $status,
+                    'pending' => $status === 'proposed',
                     'assigned_users_count' => $shift->currentUserAssignments()->count()
                 ];
-            });
+            })
+            ->values();
 
         return response()->json([
             'success' => true,
-            'data' => $shifts
+            'data' => $shifts,
+            // What the front ends need to word their own buttons — never to enforce
+            // anything; every action is re-checked here.
+            'can_create' => $this->authority->templateCreateState($actor, $this->isMobile($request)),
+            'can_edit' => $this->authority->canEditTemplate($actor, null, $this->isMobile($request))['can'],
+            'restricted' => $allowedIds !== null,
         ]);
     }
 
@@ -73,6 +211,18 @@ class ShiftController extends Controller
      */
     public function store(Request $request)
     {
+        /**
+         * 🆕 A NEW SHIFT TYPE IS NOT A SMALL THING — it is a new set of hours anyone can then
+         * be put on. Owner ask 6-Sep: others should not mint them freely. Under the default
+         * policy (`approval`) a planner may PROPOSE one; it lands `proposed`, appears in his
+         * own picker as "⏳ waiting", cannot be assigned to anybody, and shows as a card for
+         * the top of the ladder. Policy lives in t_fin_config so it changes without code.
+         */
+        $state = $this->authority->templateCreateState($this->actor($request), $this->isMobile($request));
+        if (!$state['can']) {
+            return response()->json(['success' => false, 'message' => $state['message']], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'shift_name' => 'required|string|max:100',
             'shift_code' => 'required|string|max:50|unique:t_ops_shift_template,shift_code',
@@ -91,7 +241,7 @@ class ShiftController extends Controller
         }
 
         try {
-            $shift = ShiftTemplateModel::create([
+            $data = [
                 'shift_name' => $request->shift_name,
                 'shift_code' => $request->shift_code,
                 'shift_start' => $request->shift_start . ':00',
@@ -102,10 +252,32 @@ class ShiftController extends Controller
                 'active' => true,
                 'created_by' => auth()->id(),
                 'updated_by' => auth()->id()
-            ]);
+            ];
+            // Schema-guarded: before shift_authority_sep2026.sql these columns do not exist
+            // and a proposal is impossible, so the old "create it outright" behaviour stands.
+            if ($this->authority->templateApprovalAvailable()) {
+                $data['approval_status'] = $state['proposed'] ? 'proposed' : 'approved';
+                $data['proposed_by'] = $state['proposed'] ? auth()->id() : null;
+                if (!$state['proposed']) {
+                    $data['approved_by'] = auth()->id();
+                    $data['approved_at'] = now();
+                }
+            }
+            $shift = ShiftTemplateModel::create($data);
 
             // Clear cache
             $this->shiftService->clearAllShiftCaches();
+
+            if (!empty($state['proposed'])) {
+                $this->notifyTemplateProposed((int) $shift->id, $request);
+                return response()->json([
+                    'success' => true,
+                    'pending' => true,
+                    'message' => 'Sent to ' . $this->authority->namesOf($this->authority->topUserIds())
+                               . ' for approval. You can use it once it is approved.',
+                    'data' => $shift
+                ]);
+            }
 
             return response()->json([
                 'success' => true,
@@ -117,6 +289,29 @@ class ShiftController extends Controller
                 'success' => false,
                 'message' => 'Error creating shift: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /** Tell the top of the ladder that a shift type is waiting. Best-effort. */
+    private function notifyTemplateProposed(int $templateId, Request $request): void
+    {
+        try {
+            $t = ShiftTemplateModel::find($templateId);
+            if (!$t) return;
+            $who = optional($this->actor($request))->fullname ?: 'A manager';
+            $body = $who . ' proposed "' . $t->shift_name . '" · '
+                  . substr($t->shift_start, 0, 5) . ($t->shift_end ? '–' . substr($t->shift_end, 0, 5) : ' onwards')
+                  . '. Nobody can be put on it until you approve.';
+            foreach ($this->authority->topUserIds() as $uid) {
+                app(\App\Services\FirebaseService::class)->notifyUser(
+                    (int) $uid,
+                    ['title' => '🆕 A new shift type needs your approval', 'body' => $body],
+                    ['type' => 'shift_type_proposed', 'template_id' => (string) $templateId],
+                    'shift_notifications'
+                );
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('Shift type proposal push failed (non-fatal)', ['error' => $e->getMessage()]);
         }
     }
 
@@ -132,6 +327,17 @@ class ShiftController extends Controller
                 'success' => false,
                 'message' => 'Shift template not found'
             ], 404);
+        }
+
+        /**
+         * ⚠⚠ THE BACK DOOR THIS CHECK EXISTS TO SHUT. Editing "Manager Shift" from 11:00 to
+         *    14:00 changes the real working hours of everybody on it — Shabib included —
+         *    without touching one assignment. Gating assignments and leaving template editing
+         *    open would have made the whole feature bypassable in two clicks.
+         */
+        $edit = $this->authority->canEditTemplate($this->actor($request), (int) $id, $this->isMobile($request));
+        if (!$edit['can']) {
+            return response()->json(['success' => false, 'message' => $edit['message']], 403);
         }
 
         $validator = Validator::make($request->all(), [
@@ -181,8 +387,14 @@ class ShiftController extends Controller
     /**
      * Delete a shift template
      */
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
+        // Same back door as update(): deleting a type rewrites what everyone on it worked.
+        $edit = $this->authority->canEditTemplate($this->actor($request), (int) $id, $this->isMobile($request));
+        if (!$edit['can']) {
+            return response()->json(['success' => false, 'message' => $edit['message']], 403);
+        }
+
         $shift = ShiftTemplateModel::find($id);
         
         if (!$shift) {
@@ -237,6 +449,11 @@ class ShiftController extends Controller
      */
     public function setActive(Request $request, $id)
     {
+        $edit = $this->authority->canEditTemplate($this->actor($request), (int) $id, $this->isMobile($request));
+        if (!$edit['can']) {
+            return response()->json(['success' => false, 'message' => $edit['message']], 403);
+        }
+
         $shift = ShiftTemplateModel::find($id);
         if (!$shift) {
             return response()->json(['success' => false, 'message' => 'Shift template not found'], 404);
@@ -263,8 +480,15 @@ class ShiftController extends Controller
     /**
      * Set a shift as default
      */
-    public function setDefault($id)
+    public function setDefault(Request $request, $id)
     {
+        // ⚠ The DEFAULT template is what every unassigned person resolves to — moving it
+        //   changes real hours company-wide, so it is gated like an edit.
+        $edit = $this->authority->canEditTemplate($this->actor($request), (int) $id, $this->isMobile($request));
+        if (!$edit['can']) {
+            return response()->json(['success' => false, 'message' => $edit['message']], 403);
+        }
+
         $shift = ShiftTemplateModel::find($id);
         
         if (!$shift) {
@@ -437,6 +661,83 @@ class ShiftController extends Controller
             return response()->json(['success' => false, 'message' => 'An end date is required for a date-range change.'], 422);
         }
 
+        /**
+         * ⏳ THE GATE. Three answers: go ahead, refuse, or park it for someone above.
+         * ⚠ A replay from an approval carries `shift_authority_ok` and skips all of this —
+         *   the question was already answered when the approver pressed the button.
+         */
+        if (!$request->attributes->get('shift_authority_ok')) {
+            $d = $this->authority->decide($this->actor($request), $userId, $templateId, 'assign', $this->isMobile($request));
+            if ($d['verdict'] === ShiftAuthorityService::DENY) {
+                return response()->json(['success' => false, 'message' => $d['message']], 403);
+            }
+            if ($d['verdict'] === ShiftAuthorityService::APPROVAL) {
+                /**
+                 * ⚠⚠ NEVER QUEUE A PURELY-HISTORICAL CORRECTION — it would be a dead letter.
+                 *    A bounded change that ENDS before today is a past-record correction. The
+                 *    lapse rule (owner Q5) kills any request whose start day has passed, and
+                 *    the sweep runs on the very next approvals poll — so a correction raised
+                 *    today for last week would be accepted, parked, and silently killed
+                 *    seconds later, leaving the requester with a "dropped" push and the
+                 *    record still wrong. Refuse it NOW, naming who can make it, so he knows
+                 *    at once instead of finding out from a notification.
+                 */
+                if ($to !== null && $to < now()->format('Y-m-d')) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That is a correction to a period that has already passed — '
+                                   . $this->authority->namesOf($d['approvers']) . ' must make it. Ask them.',
+                    ], 403);
+                }
+                $q = $this->requests->queue([
+                    'user_id' => $userId,
+                    'shift_template_id' => $templateId,
+                    'mode' => $mode,
+                    'effective_from' => $from,
+                    'effective_to' => $to,
+                    'location_id' => $request->input('location_id'),
+                    'set_default_location' => $request->boolean('set_default_location'),
+                ], $this->actor($request), $d['approvers'], $request->attributes->get('shift_log_source', 'web'));
+
+                // ⚠⚠ `pending: true` — NOT an assignment. An old APK simply shows the message
+                //    and refreshes; it can never read this as "done".
+                return response()->json([
+                    'success' => (bool) $q['ok'],
+                    'pending' => (bool) $q['ok'],
+                    'request_id' => $q['id'],
+                    'message' => $q['message'],
+                ], $q['ok'] ? 200 : 422);
+            }
+        }
+
+        /**
+         * ⚠⚠ IS HE ALREADY EXPECTING SOMETHING ELSE? (owner ruling 7-Sep.) A shift change the
+         *    rider has already been TOLD about — or has CONFIRMED — is a promise. Overwriting
+         *    it used to be silent for the manager: the row was simply replaced, and the only
+         *    hint was a chip he may not have read. Now the first attempt is refused, says what
+         *    he is about to undo, and only goes through when the screen sends `confirm_replace`.
+         *
+         * ⭐ Deliberately NARROW so this is not noise. It looks only at TEMPORARY overrides and
+         *   at an UPCOMING primary — the things that were announced as a change. A rider's
+         *   standing shift is not "a promise about a particular day", so ordinary day-to-day
+         *   assigning is untouched.
+         * ⚠ The rider is told about the NEW change by the engine as usual; this is about the
+         *   manager knowing he is replacing something, and the approver seeing it too.
+         */
+        if (!$request->attributes->get('shift_authority_ok') && !$request->boolean('confirm_replace')) {
+            $clash = $this->announcedChangeClashing($userId, $from, $isTemp ? $to : null);
+            if ($clash) {
+                return response()->json([
+                    'success' => false,
+                    'needs_confirmation' => true,
+                    'replaces' => $clash,
+                    'message' => 'He has already been told about a shift change: ' . $clash['label']
+                        . ($clash['acknowledged'] ? ' — he has confirmed it' : ' — he has not confirmed it yet')
+                        . '. Yeh us ko badal dega — usko dobara batana parega.',
+                ], 409);
+            }
+        }
+
         // A bounded change that ends BEFORE today is a pure historical CORRECTION:
         // re-stamp the past so reports/lateness fix, but send NO notification and
         // require NO confirmation (there's nothing for the rider to act on).
@@ -525,6 +826,55 @@ class ShiftController extends Controller
         $locationId = $request->filled('location_id') ? (int) $request->input('location_id') : null;
         $setDefault = $request->boolean('set_default_location');
 
+        /**
+         * ⏳ THE GATE, per person — owner ruling Q7 (6-Sep): a mixed selection is NOT refused
+         * as a batch. Apply what may be applied, park what needs approval, skip what may
+         * never be touched, and say all three in one sentence. Refusing the whole batch over
+         * one locked row would make a planner un-tick people to find the culprit.
+         */
+        $queued = [];
+        $skipped = [];
+        if (!$request->attributes->get('shift_authority_ok')) {
+            $actor = $this->actor($request);
+            $mobile = $this->isMobile($request);
+            $src = $request->attributes->get('shift_log_source', 'web');
+            $go = [];
+            foreach ($userIds as $uid) {
+                $d = $this->authority->decide($actor, (int) $uid, $templateId, 'assign', $mobile);
+                if ($d['verdict'] === ShiftAuthorityService::DENY) {
+                    $skipped[] = $this->authority->nameOf((int) $uid);
+                } elseif ($d['verdict'] === ShiftAuthorityService::APPROVAL) {
+                    $q = $this->requests->queue([
+                        'user_id' => (int) $uid,
+                        'shift_template_id' => $templateId,
+                        'mode' => $mode,
+                        'effective_from' => $from,
+                        'effective_to' => $to,
+                        'location_id' => $locationId,
+                        'set_default_location' => $setDefault,
+                    ], $actor, $d['approvers'], $src);
+                    if ($q['ok']) $queued[] = $this->authority->nameOf((int) $uid);
+                    else $skipped[] = $this->authority->nameOf((int) $uid);
+                } else {
+                    $go[] = (int) $uid;
+                }
+            }
+            $userIds = $go;
+
+            // Nothing left to write, but something DID happen (or was refused) — report it
+            // rather than running an empty transaction and claiming success for 0 people.
+            if (!$userIds) {
+                $parts = [];
+                if ($queued)  $parts[] = count($queued) . ' sent for approval (' . implode(', ', $queued) . ')';
+                if ($skipped) $parts[] = count($skipped) . ' skipped (' . implode(', ', $skipped) . ')';
+                return response()->json([
+                    'success' => (bool) $queued,
+                    'pending' => (bool) $queued,
+                    'message' => $parts ? ucfirst(implode(' · ', $parts)) . '.' : 'Nothing to change.',
+                ], $queued ? 200 : 403);
+            }
+        }
+
         // Per-user widened re-stamp span (existing overrides this replaces), before delete.
         $spans = [];
         if ($isTemp) {
@@ -557,11 +907,18 @@ class ShiftController extends Controller
                 $this->logAssignment((int) $userId, 'assign', $mode, $templateId, $from, $isTemp ? $to : null, $request);
             }
 
+            $msg = $isHistorical
+                ? ('Past shift corrected for ' . count($userIds) . ' rider(s) — attendance recalculated. No notification sent.')
+                : ('Shift ' . ($isTemp ? 'change' : 'assigned') . ' saved for ' . count($userIds) . ' user(s)');
+            // Q7: the other two outcomes ride along in the SAME message, so the planner is
+            // never left wondering what happened to the people he had also ticked.
+            if ($queued)  $msg .= ' · ' . count($queued) . ' sent for approval (' . implode(', ', $queued) . ')';
+            if ($skipped) $msg .= ' · ' . count($skipped) . ' skipped (' . implode(', ', $skipped) . ')';
+
             return response()->json([
                 'success' => true,
-                'message' => $isHistorical
-                    ? ('Past shift corrected for ' . count($userIds) . ' rider(s) — attendance recalculated. No notification sent.')
-                    : ('Shift ' . ($isTemp ? 'change' : 'assigned') . ' saved for ' . count($userIds) . ' user(s)')
+                'pending' => (bool) $queued,
+                'message' => $msg,
             ]);
         } catch (\Exception $e) {
             return response()->json([
@@ -706,6 +1063,15 @@ class ShiftController extends Controller
                 ->where('user_id', $userId)->where('is_active', 1)->value('location_id');
         } catch (\Throwable $e) { /* locations optional */ }
 
+        /**
+         * 🔒 SHIFT AUTHORITY — the reusable popup asks the same question the grid does, in
+         * the same fetch it already makes. Without this the attendance page would offer a
+         * Change button on someone the server will then refuse.
+         * ⚠ Advisory only; every write re-asks.
+         */
+        $me = $this->actor($request);
+        $rowState = $this->authority->rowStateFor($me, $userId, $this->isMobile($request));
+
         return response()->json([
             'success' => true,
             'primary' => ['shift_name' => $primary['shift_name'], 'start' => $primary['shift_start'], 'end' => $primary['shift_end']],
@@ -713,6 +1079,10 @@ class ShiftController extends Controller
             'locations' => $locations,
             'default_location_id' => $defaultLocationId ? (int) $defaultLocationId : null,
             'usual_location_id' => $primary['location_id'] ?? null,
+            'can_change' => $rowState['can'],
+            'lock_reason' => $rowState['reason'],
+            'needs_approval' => $rowState['needs_approval'],
+            'allowed_template_ids' => $this->authority->allowedTemplateIdsFor($me, $userId),
         ]);
     }
 
@@ -740,6 +1110,16 @@ class ShiftController extends Controller
         }
 
         $userId = (int) $row->user_id;
+
+        /**
+         * ⚠⚠ CANCELLING IS CHANGING. Reverting a temporary change puts the person back on a
+         *    different shift, so it goes through the same gate. `decide('cancel')` never
+         *    returns "queue it" — a revert has no payload to replay later — so a person whose
+         *    row needs approval comes back as a refusal naming who to ask. Without this,
+         *    Shabib could quietly undo a change Taimur had made to his own day.
+         */
+        if ($deny = $this->refuse($request, $userId, null, 'cancel')) return $deny;
+
         $today = now()->format('Y-m-d');
         $from = $row->effective_from ? $row->effective_from->format('Y-m-d') : $today;
 
@@ -809,6 +1189,10 @@ class ShiftController extends Controller
                 'message' => $validator->errors()->first()
             ], 422);
         }
+
+        // Ending someone's assignment drops them to the default shift — a change like any
+        // other, and gated like one.
+        if ($deny = $this->refuse($request, (int) $request->user_id, null, 'end')) return $deny;
 
         $asOf = now()->format('Y-m-d');
 

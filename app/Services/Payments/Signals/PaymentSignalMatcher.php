@@ -184,6 +184,80 @@ class PaymentSignalMatcher
     }
 
     /**
+     * ⭐ PROOF-BEFORE-ORDER (Sep-2026). Re-run ONE customer's own unresolved
+     * screenshots now that a new order of theirs exists.
+     *
+     * Matching otherwise happens exactly once, when the proof arrives. In the
+     * Shopify flow the customer pays at checkout and sends the screenshot
+     * minutes before the team approves the order into t_crm_prod_order — so
+     * at match time their order is not there yet, the step-6 fallback parks the
+     * proof on an OLD invoice, and nothing ever looks again. 3-Sep: Zahida's
+     * Rs 8,007 sat on her July order as "amount differs" while SH-22582 (created
+     * 43 min after her screenshot) read "No proof yet" and she was asked to pay
+     * twice. Four such cases in 90 days, every one a Shopify pre-payment.
+     *
+     * Deliberately narrow: this customer only, WhatsApp side only (the bank
+     * twin follows by pairing), still amount_mismatch / unmatched, recent, and
+     * never anything a human ruled on (rematch() enforces TERMINAL_REASONS).
+     * It re-enters through rematch() → match(), so the no-stacking guard,
+     * pairing, displacement and the movement log all apply unchanged. Writes
+     * only to the signal tables. Fail-open: callers are order-creation paths
+     * and must never be blocked by proof bookkeeping.
+     *
+     * @return array{candidates:int, rematched:int, now_matched:int}
+     */
+    public function rematchCustomerProofs(int $customerId, string $trigger, int $days = 7): array
+    {
+        $out = ['candidates' => 0, 'rematched' => 0, 'now_matched' => 0];
+        if ($customerId <= 0 || !config('payment_signals.enabled')) {
+            return $out;
+        }
+
+        try {
+            $signals = PaymentSignal::query()
+                ->where('source', PaymentSignal::SOURCE_WHATSAPP)
+                ->where('matched_customer_id', $customerId)
+                ->whereIn('status', [PaymentSignal::STATUS_AMOUNT_MISMATCH, PaymentSignal::STATUS_UNMATCHED])
+                ->where('extracted_amount', '>', 0)
+                ->where(function ($q) {
+                    $q->whereNull('match_reason')
+                      ->orWhereNotIn('match_reason', PaymentSignal::TERMINAL_REASONS);
+                })
+                ->where('created_at', '>=', now()->subDays(max(1, $days)))
+                ->orderByDesc('id')
+                ->limit(10)
+                ->get();
+
+            $out['candidates'] = $signals->count();
+            foreach ($signals as $signal) {
+                $before = (int) $signal->matched_order_id;
+                $result = $this->rematch($signal->fresh());
+                $out['rematched']++;
+                if ($result && $result->status === PaymentSignal::STATUS_MATCHED) {
+                    $out['now_matched']++;
+                }
+                if ($result && (int) $result->matched_order_id !== $before) {
+                    Log::info('PaymentSignalMatcher: customer proof re-matched', [
+                        'trigger'     => $trigger,
+                        'customer_id' => $customerId,
+                        'signal_id'   => $signal->id,
+                        'from_order'  => $before ?: null,
+                        'to_order'    => $result->matched_order_id,
+                        'status'      => $result->status,
+                        'reason'      => $result->match_reason,
+                    ]);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('rematchCustomerProofs failed', [
+                'trigger' => $trigger, 'customer_id' => $customerId, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $out;
+    }
+
+    /**
      * READ-ONLY dry-run of the match for a given customer + amount. Mirrors
      * doMatch's decision (steps 2–6) using the SAME candidateOrders +
      * findCombinedSet, but saves NOTHING. Drives the assistant's confirmation
@@ -199,8 +273,11 @@ class PaymentSignalMatcher
     public function preview(int $customerId, float $amount, ?Carbon $anchor = null, ?array $onlyOrderIds = null): array
     {
         // A throwaway signal purely to carry the anchor time into candidateOrders.
+        // The amount rides along too, so preferUnspokenFor()'s twin test reads
+        // the same here as it will for the real signal at commit time.
         $probe = new PaymentSignal();
         $probe->extracted_txn_datetime = $anchor ?? Carbon::now();
+        $probe->extracted_amount = $amount;
 
         $candidates = $this->candidateOrders($customerId, $probe, $onlyOrderIds);
         $openOrders = $candidates->map(fn ($o) => [
@@ -216,14 +293,19 @@ class PaymentSignalMatcher
         $tolerance = PaymentProofStatusService::amountTolerance();
         $one = fn ($o) => ['id' => (int) $o->id, 'order_number' => $o->order_number, 'balance' => $this->balance($o)];
 
+        // Invoices that already have their answer go to the back of the line,
+        // exactly as in doMatch. `open_orders` above stays the FULL list — the
+        // human may still deliberately pick a settled invoice from the card.
+        $pool = $this->preferUnspokenFor($candidates, $probe);
+
         // Step 2: newest order balance matches.
-        $latest = $candidates->first();
+        $latest = $pool->first();
         if ($latest && $this->within($this->balance($latest), $amount, $tolerance)) {
             return ['status' => 'matched', 'orders' => [$one($latest)], 'reason' => 'last_order_balance', 'open_orders' => $openOrders];
         }
 
         // Step 3/4: other orders whose balance equals the amount.
-        $balanceMatches = $candidates->filter(fn ($o) => $this->within($this->balance($o), $amount, $tolerance))->values();
+        $balanceMatches = $pool->filter(fn ($o) => $this->within($this->balance($o), $amount, $tolerance))->values();
         if ($balanceMatches->count() === 1) {
             return ['status' => 'matched', 'orders' => [$one($balanceMatches->first())], 'reason' => 'single_unpaid_match', 'open_orders' => $openOrders];
         }
@@ -234,7 +316,7 @@ class PaymentSignalMatcher
         // Step 5: combined / bulk — over still-open invoices only, exactly as
         // doMatch does. This preview is used to explain the matcher to a human,
         // so any divergence here would be a lie about what will happen.
-        $openInvoices = $this->unsettledOnly($candidates);
+        $openInvoices = $this->unsettledOnly($pool);
         $combined = $this->findCombinedSet($openInvoices, $amount, $tolerance);
         if (is_array($combined) && !empty($combined['orders'])) {
             return ['status' => 'combined', 'orders' => array_map($one, $combined['orders']), 'reason' => $combined['reason'] ?? 'bulk_combined', 'open_orders' => $openOrders];
@@ -286,14 +368,39 @@ class PaymentSignalMatcher
         $candidates = $this->candidateOrders($customerId, $signal, $onlyOrderIds);
         $tolerance = PaymentProofStatusService::amountTolerance();
 
+        // ⭐⭐ ALREADY ANSWERED (Sep-2026) — an invoice that already carries the
+        // payer's own proof goes to the back of the line, for the exact-fit
+        // steps too.
+        //
+        // Until now only the speculative steps narrowed the pool; steps 2-4 were
+        // allowed the FULL list because "the amount EQUALS a balance" felt
+        // self-proving. At a 10 PKR tolerance it was. At the 100 the owner runs,
+        // "equals" means "within 100" — and an invoice paid weeks ago can
+        // out-compete the invoice the customer is actually paying:
+        //   • 5-Sep, Hashmi Rs 5,426 → his open SH-22626 was 299.5 away, but
+        //     SH-22158 (paid 21-Aug, VERIFIED, invoice approved 24-Aug) was 87
+        //     away, so step 3 gave it a SECOND "Verified" and SH-22626 read
+        //     "No proof yet" — the customer was chased for money he had sent.
+        //   • 6-Sep, Ghulam Mustafa Rs 2,873 → landed on SH-22613, which his
+        //     Rs 2,880 of the previous day had already paid (7 away), instead of
+        //     NF-19519 (300.5 away) — the invoice he was answering. It even drew
+        //     a phantom "discount needed · Rs 7".
+        //
+        // So invoices already carrying a matched proof are moved to the back —
+        // and the pool FALLS BACK to the full list when that leaves nothing, so
+        // a customer re-sending the same screenshot still lands exactly where it
+        // does today. Approval status is deliberately not part of the test; see
+        // preferUnspokenFor() for why that would break late payments.
+        $pool = $this->preferUnspokenFor($candidates, $signal);
+
         // Step 2: most-recent order balance match.
-        $latest = $candidates->first();
+        $latest = $pool->first();
         if ($latest && $this->within($this->balance($latest), $amount, $tolerance)) {
             return $this->link($signal, $latest, 0.95, 'last_order_balance');
         }
 
         // Step 3/4: other orders whose balance equals the amount.
-        $balanceMatches = $candidates->filter(
+        $balanceMatches = $pool->filter(
             fn ($o) => $this->within($this->balance($o), $amount, $tolerance)
         )->values();
 
@@ -320,10 +427,13 @@ class PaymentSignalMatcher
         // and it is what let a combined search consider nine of Naveed
         // Solaija's invoices when only three were genuinely owed.
         //
-        // Exact matches keep the FULL pool on purpose: a proof landing on a
+        // Exact matches still keep the settled invoices — a proof landing on a
         // settled invoice by exact balance is late record-keeping, harmless and
-        // right (5 such matches in history). Only guesswork is restricted.
-        $openInvoices = $this->unsettledOnly($candidates);
+        // right (5 such matches in history), and preferUnspokenFor() only ever
+        // demotes invoices that are ALREADY ANSWERED, never merely approved.
+        // unsettledOnly() below is unchanged: from here the pool narrows to what
+        // is genuinely still open, because everything after this line is a guess.
+        $openInvoices = $this->unsettledOnly($pool);
 
         // Step 5: combined / bulk payment — ONE transfer that settles SEVERAL
         // open invoices. Anchored on the NEWEST invoice (the customer pays the
@@ -758,6 +868,156 @@ class PaymentSignalMatcher
     }
 
     /**
+     * ⭐⭐ Prefer the invoices that do NOT already have their answer.
+     *
+     * "Answered" means ONE thing: the invoice already carries a MATCHED proof
+     * for a DIFFERENT payment. Nothing else.
+     *
+     * ⚠⚠ APPROVAL IS DELIBERATELY *NOT* PART OF THIS — it looks like the
+     * obvious second test and it is a trap. Invoices are posted at DELIVERY and
+     * approved one to five days later, while the customer pays within minutes of
+     * delivery: measured over all 1,164 WhatsApp proofs, the invoice was still
+     * pending_l1 at payment time in every single case, so the test would almost
+     * never fire when it is right. When it DID fire it would be the one case it
+     * must not touch — a customer paying LATE against an already-approved
+     * invoice — and it would shove that proof onto whatever stale never-approved
+     * invoice the customer still has lying around (a Rs 6.3 gap traded for a
+     * Rs 8,367 one, in the replay). The Hashmi case is caught by the proof test
+     * alone, which is the honest signal: SH-22158 was not merely approved, it was
+     * VERIFIED by his own Aug-21 screenshot.
+     *
+     * ⚠⚠ FALLS BACK TO THE FULL LIST when nothing is left. This is the other
+     * half of the safety: the rule can only ever REORDER a choice the customer
+     * already had, never remove their last candidate. Fail-open on any error —
+     * a matching decision must not be lost to bookkeeping.
+     */
+    private function preferUnspokenFor($candidates, PaymentSignal $signal)
+    {
+        if ($candidates->count() < 2) {
+            return $candidates; // nothing to prefer between — same answer either way
+        }
+
+        try {
+            $free = $this->withoutAnsweredOrders($candidates, $signal);
+            return $free->isNotEmpty() ? $free : $candidates;
+        } catch (\Throwable $e) {
+            Log::warning('preferUnspokenFor failed — using the full candidate list', [
+                'signal_id' => $signal->id, 'error' => $e->getMessage(),
+            ]);
+            return $candidates;
+        }
+    }
+
+    /**
+     * Drop candidates that already carry a MATCHED proof belonging to a
+     * DIFFERENT payment. Three deliberate exclusions:
+     *
+     * ⚠⚠ THE SIGNAL'S OWN TWIN IS NOT A RIVAL. One transfer produces a
+     * screenshot AND a bank SMS/email; whichever lands first matches the order,
+     * and the second must be free to land on the SAME order or the pair binds
+     * pointing at two different invoices (the failure retractAmountGuess()
+     * exists for). describesSamePayment() keeps the twin out of the way.
+     *
+     * ⚠⚠ A GUESS DOES NOT ANSWER AN INVOICE. Blocking on one would stop the
+     * payer's own screenshot from ever reaching the order a stranger's credit is
+     * squatting on — and displaceGuessesOn() would then never fire.
+     *
+     * ⚠ AMOUNT_MISMATCH DOES NOT COUNT EITHER: "we could not fit it" is not an
+     * answer, and a corrected second screenshot must still be able to land there.
+     */
+    private function withoutAnsweredOrders($candidates, PaymentSignal $signal)
+    {
+        if ($candidates->isEmpty()) {
+            return $candidates;
+        }
+
+        $proofs = PaymentSignal::query()
+            ->whereIn('matched_order_id', $candidates->pluck('id')->all())
+            ->where('status', PaymentSignal::STATUS_MATCHED)
+            ->where('id', '!=', (int) $signal->id)
+            ->where(function ($q) {
+                // Guesses never answer an invoice — see the note above.
+                $q->whereNull('match_reason')
+                  ->orWhereNotIn('match_reason', PaymentSignal::GUESS_REASONS);
+            })
+            ->get([
+                'id', 'source', 'matched_order_id', 'extracted_amount', 'extracted_ref',
+                'extracted_txn_datetime', 'email_received_at', 'created_at', 'paired_signal_id',
+            ]);
+
+        if ($proofs->isEmpty()) {
+            return $candidates;
+        }
+
+        $answered = [];
+        foreach ($proofs as $proof) {
+            if ($this->describesSamePayment($signal, $proof)) {
+                continue; // our own twin
+            }
+            $answered[(int) $proof->matched_order_id] = true;
+        }
+
+        if (empty($answered)) {
+            return $candidates;
+        }
+
+        // ⭐⭐ AN EXACT FIGURE STILL WINS. An answered invoice is only moved to
+        // the back when the amount merely LANDS NEAR it; if the transfer equals
+        // its balance to the rupee, that is overwhelming evidence and no
+        // stale neighbouring proof may displace it. Jul-2026: a Rs 10,043
+        // transfer sat exactly on NF-18967's Rs 10,043 balance while an
+        // unrelated Rs 8,217 proof was wrongly parked on the same invoice —
+        // without this guard the exact match would have been pushed onto an
+        // invoice Rs 2,148 away. Bound to the TIGHT pairing tolerance, never the
+        // loose invoice one: the bugs this rule exists for sit at Rs 7 (Ghulam
+        // Mustafa) and Rs 87 (Hashmi), both far outside it.
+        $exact  = PaymentProofStatusService::pairAmountTolerance();
+        $amount = (float) $signal->extracted_amount;
+
+        return $candidates->reject(function ($o) use ($answered, $amount, $exact) {
+            if (!isset($answered[(int) $o->id])) {
+                return false;
+            }
+            return !($amount > 0 && $this->within($this->balance($o), $amount, $exact));
+        })->values();
+    }
+
+    /**
+     * Do these two signals describe the SAME bank transfer? Bound to the tight
+     * pairing tolerance (never the loose invoice one) plus the pairing window,
+     * so it answers the same question pair() does. Deliberately errs towards
+     * TRUE: a false "same payment" only means we keep today's behaviour, while a
+     * false "different payment" would split a pair across two invoices.
+     */
+    private function describesSamePayment(PaymentSignal $signal, $other): bool
+    {
+        // Already bound as a pair, in either direction — decisive.
+        if ((int) ($signal->paired_signal_id ?? 0) === (int) $other->id
+            || (int) ($other->paired_signal_id ?? 0) === (int) $signal->id) {
+            return true;
+        }
+
+        // One bank reference = one transaction.
+        if ($signal->extracted_ref && $other->extracted_ref
+            && (string) $signal->extracted_ref === (string) $other->extracted_ref) {
+            return true;
+        }
+
+        if ($signal->extracted_amount === null || $other->extracted_amount === null) {
+            return false;
+        }
+        if (abs((float) $signal->extracted_amount - (float) $other->extracted_amount)
+            > PaymentProofStatusService::pairAmountTolerance()) {
+            return false;
+        }
+
+        $windowDays = (int) config('payment_signals.pair_window_days', 3);
+        // abs(): Carbon 3 diffs are signed.
+        return abs($this->paymentTime($signal)->diffInSeconds($this->paymentTime($other)))
+            <= $windowDays * 86400;
+    }
+
+    /**
      * Every non-empty subset of $orders whose balances sum to $target (±$tol).
      * Bounded by the caller to a small N, so the 2^N scan is cheap.
      *
@@ -950,10 +1210,86 @@ class PaymentSignalMatcher
         // screenshot's ref-certain order flows onto the bank signal.
         $this->retractAmountGuess($signal, $opposite);
 
+        // ⭐ THE TWIN (Sep-2026). One bank credit routinely produces TWO
+        // bank-side signals — the bank's SMS and its email alert, seconds apart.
+        // The screenshot pairs with only the nearest of them, so the retract
+        // above reaches that one alone; the other twin kept whatever stranger's
+        // invoice it had amount-guessed onto. Zahida's Rs 8,007 (3-Sep): the
+        // screenshot paired with the email (0 s) and the SMS twin (39 s) stayed
+        // "Bank confirmed" on Kashif Nazir's NF-19297. The pair proves whose
+        // money this is, so every guess about this same credit must go.
+        $this->retractTwinGuesses(
+            $signal->source === PaymentSignal::SOURCE_WHATSAPP ? $opposite : $signal,
+            $signal->source === PaymentSignal::SOURCE_WHATSAPP ? $signal : $opposite
+        );
+
         // The email side usually carries no customer/order — push this
         // screenshot's link onto it (or vice versa) before binding the pair.
         $this->propagateLink($signal, $opposite);
         $this->bindPair($signal, $opposite);
+    }
+
+    /**
+     * Release every OTHER bank-side GUESS that describes the same credit as
+     * $bankSide — same amount (tight pairing tolerance), the same receiving
+     * bank when both sides know it, and a transaction time within minutes.
+     * Only inferred matches (GUESS_REASONS) on unpaired signals are touched:
+     * a paired signal is a verification in its own right, and anything a
+     * human ruled on is not a guess. Non-fatal — pairing must never fail on
+     * this bookkeeping.
+     */
+    private function retractTwinGuesses(PaymentSignal $bankSide, PaymentSignal $evidence): void
+    {
+        if ($bankSide->extracted_amount === null) {
+            return;
+        }
+
+        try {
+            $tol    = PaymentProofStatusService::pairAmountTolerance();
+            $time   = $this->paymentTime($bankSide);
+            $myBank = $this->receivingBankKey($bankSide);
+            $windowSeconds = 5 * 60;
+
+            $twins = PaymentSignal::query()
+                ->whereIn('source', PaymentSignal::BANK_SIDE_SOURCES)
+                ->whereNotIn('id', [(int) $bankSide->id, (int) $evidence->id])
+                ->whereNull('paired_signal_id')
+                ->whereIn('match_reason', PaymentSignal::GUESS_REASONS)
+                ->whereBetween('extracted_amount', [
+                    (float) $bankSide->extracted_amount - $tol,
+                    (float) $bankSide->extracted_amount + $tol,
+                ])
+                ->get()
+                // abs(): Carbon 3 diffs are signed.
+                ->filter(fn ($s) => abs($this->paymentTime($s)->diffInSeconds($time)) <= $windowSeconds)
+                // Same-bank gate, as in findOppositeByAmountDate(): block only on
+                // a CONFIDENT mismatch, never on an unread bank.
+                ->filter(function ($s) use ($myBank) {
+                    $theirBank = $this->receivingBankKey($s);
+                    return !($myBank !== null && $theirBank !== null && $myBank !== $theirBank);
+                });
+
+            foreach ($twins as $twin) {
+                // Same one-strike unlearn rule as retractAmountGuess(): only a
+                // guess that named a DIFFERENT customer disproves its alias.
+                if ($twin->matched_customer_id
+                    && $evidence->matched_customer_id
+                    && (int) $twin->matched_customer_id !== (int) $evidence->matched_customer_id) {
+                    app(CustomerBankAliasService::class)->unlearnFromSignal($twin);
+                }
+                $this->releaseGuess($twin, 'amount_guess_retracted');
+                Log::info('PaymentSignalMatcher: twin guess retracted', [
+                    'twin_signal_id' => $twin->id,
+                    'paired_bank_signal_id' => $bankSide->id,
+                    'evidence_signal_id' => $evidence->id,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('retractTwinGuesses failed', [
+                'signal_id' => $bankSide->id,
+                'error'     => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

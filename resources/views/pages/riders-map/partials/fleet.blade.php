@@ -1630,12 +1630,20 @@ function flForm(spec) {
     document.getElementById('flFormBody').innerHTML = (spec.fields || []).map(f => {
         const id = 'flF_' + f.key;
         const hint = f.hint ? '<div style="font-size:11px;color:#9ca3af;margin-top:3px;">' + esc(f.hint) + '</div>' : '';
+        /**
+         * ⭐ 6-Sep: `showIf: {key, value}` — a field that appears only when another field
+         *   holds a given value. Added for "➕ Add a new workshop", which the team asked to
+         *   be fillable WITHOUT LEAVING THE FORM: a second modal would throw away everything
+         *   already typed, and three always-visible extra boxes would clutter the common case.
+         *   Purely presentational — `flFormValues()` still reads every field, and the submit
+         *   handler decides what to do with a hidden one.
+         */
+        let inner;
         if (f.type === 'checkbox') {
-            return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#111827;margin-top:12px;cursor:pointer;">'
+            inner = '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#111827;margin-top:12px;cursor:pointer;">'
                  + '<input type="checkbox" id="' + id + '"' + (f.value ? ' checked' : '') + '> ' + esc(f.label) + '</label>' + hint;
-        }
-        if (f.type === 'radio') {
-            return '<div style="' + lab + '">' + esc(f.label) + '</div>'
+        } else if (f.type === 'radio') {
+            inner = '<div style="' + lab + '">' + esc(f.label) + '</div>'
                  + '<div style="display:flex;flex-direction:column;gap:6px;">'
                  + (f.options || []).map((o, i) =>
                      '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#111827;cursor:pointer;">'
@@ -1643,24 +1651,49 @@ function flForm(spec) {
                    + ((f.value !== undefined ? String(f.value) === String(o.value) : i === 0) ? ' checked' : '') + '> '
                    + esc(o.label) + '</label>').join('')
                  + '</div>' + hint;
-        }
-        if (f.type === 'select') {
-            return '<label style="' + lab + '">' + esc(f.label) + '</label>'
+        } else if (f.type === 'select') {
+            inner = '<label style="' + lab + '">' + esc(f.label) + '</label>'
                  + '<select id="' + id + '" style="' + inp + '">'
                  + (f.options || []).map(o => '<option value="' + esc(String(o.value)) + '"'
                      + (String(f.value) === String(o.value) ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('')
                  + '</select>' + hint;
-        }
-        if (f.type === 'textarea') {
-            return '<label style="' + lab + '">' + esc(f.label) + '</label>'
+        } else if (f.type === 'textarea') {
+            inner = '<label style="' + lab + '">' + esc(f.label) + '</label>'
                  + '<textarea id="' + id + '" rows="3" placeholder="' + esc(f.placeholder || '') + '" style="' + inp + 'resize:vertical;">'
                  + esc(f.value || '') + '</textarea>' + hint;
+        } else if (f.type === 'note') {
+            // Not an input at all — a line of guidance that belongs inside the flow of the
+            // form (e.g. "these are the only workshops that can pin his check-in").
+            inner = '<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e5e7eb;'
+                 + 'border-radius:8px;font-size:12px;color:#475569;line-height:1.5;">' + esc(f.label) + '</div>';
+        } else {
+            inner = '<label style="' + lab + '">' + esc(f.label) + (f.required ? ' <span style="color:#b91c1c;">*</span>' : '') + '</label>'
+                 + '<input type="' + (f.type || 'text') + '" id="' + id + '" value="' + esc(f.value || '') + '"'
+                 + ' placeholder="' + esc(f.placeholder || '') + '"' + (f.min !== undefined ? ' min="' + esc(String(f.min)) + '"' : '')
+                 + ' style="' + inp + '">' + hint;
         }
-        return '<label style="' + lab + '">' + esc(f.label) + (f.required ? ' <span style="color:#b91c1c;">*</span>' : '') + '</label>'
-             + '<input type="' + (f.type || 'text') + '" id="' + id + '" value="' + esc(f.value || '') + '"'
-             + ' placeholder="' + esc(f.placeholder || '') + '"' + (f.min !== undefined ? ' min="' + esc(String(f.min)) + '"' : '')
-             + ' style="' + inp + '">' + hint;
+        return '<div id="flFW_' + f.key + '"' + (f.showIf ? ' style="display:none;"' : '') + '>' + inner + '</div>';
     }).join('');
+    /**
+     * ⭐ 6-Sep: `showIf: {key, value}` — a field shown only while another field holds a
+     *   given value. Added for "➕ Add a new workshop", which the team asked to be fillable
+     *   WITHOUT LEAVING THE FORM: a second modal would throw away everything already typed,
+     *   and three permanently visible extra boxes would clutter the ordinary case.
+     * ⚠ Presentation only. `flFormValues()` still reads every field and `flFormSubmit`
+     *   still validates only what `required` says — so a hidden field is never demanded
+     *   (see the `required` guard below, which skips anything currently hidden).
+     */
+    (spec.fields || []).filter(f => f.showIf).forEach(f => {
+        const box = document.getElementById('flFW_' + f.key);
+        const src = f.showIf.key;
+        const sync = () => {
+            const v = flFieldValue(src);
+            box.style.display = (String(v) === String(f.showIf.value)) ? '' : 'none';
+        };
+        document.querySelectorAll('[name="flF_' + src + '"], #flF_' + src)
+            .forEach(el => el.addEventListener('change', sync));
+        sync();
+    });
     const r = document.getElementById('flFormResult');
     r.style.display = 'none'; r.innerHTML = '';
     const ok = document.getElementById('flFormOk');
@@ -1677,17 +1710,23 @@ function flFormClose() {
     flFormSpec = null;
 }
 
+/** One field's current value, by key — used by flFormValues and by showIf. */
+function flFieldValue(key) {
+    const id = 'flF_' + key;
+    const radio = document.querySelector('input[name="' + id + '"]:checked');
+    if (radio) return radio.value;
+    if (document.querySelector('input[name="' + id + '"]')) return null;  // radio group, none picked
+    const el = document.getElementById(id);
+    if (!el) return '';
+    if (el.type === 'checkbox') return !!el.checked;
+    return String(el.value || '').trim();
+}
+
 function flFormValues() {
     const out = {};
     (flFormSpec.fields || []).forEach(f => {
-        const id = 'flF_' + f.key;
-        if (f.type === 'checkbox') { out[f.key] = !!document.getElementById(id).checked; return; }
-        if (f.type === 'radio') {
-            const c = document.querySelector('input[name="' + id + '"]:checked');
-            out[f.key] = c ? c.value : null; return;
-        }
-        const el = document.getElementById(id);
-        out[f.key] = el ? String(el.value || '').trim() : '';
+        if (f.type === 'note') return;
+        out[f.key] = flFieldValue(f.key);
     });
     return out;
 }
@@ -1696,6 +1735,10 @@ function flFormSubmit() {
     if (!flFormSpec) return;
     const v = flFormValues();
     for (const f of (flFormSpec.fields || [])) {
+        if (f.type === 'note') continue;
+        // ⚠ A hidden showIf field is not required — it is not part of what is being asked.
+        const box = document.getElementById('flFW_' + f.key);
+        if (box && box.style.display === 'none') continue;
         if (f.required && !v[f.key]) { flFormShow(false, (f.label || 'This') + ' is required.'); return; }
     }
     const ok = document.getElementById('flFormOk');
@@ -1726,14 +1769,27 @@ function flFormShow(good, message, warnings) {
             : '');
 }
 
-/* Small helper: the ticked workshops, fetched once per page and reused by the scheduler. */
-let flWorkshopList = null;
+/**
+ * Small helper: the ticked workshops AND who this person is, fetched once per page and
+ * reused by the scheduler.
+ * ⭐ 6-Sep: also carries `can_approve` (is he a shift planner?) and the shift templates —
+ *   the two things the booking form needs to decide whether to ASK him "assign now, or
+ *   send for approval?".
+ * ⚠ `flWorkshopsRefresh()` drops the cache after a workshop is added inline, so the picker
+ *   redraws with the new one.
+ */
+let flWsMeta = null;
+function flWorkshopsRefresh() { flWsMeta = null; }
 function flWorkshopsThen(cb) {
-    if (flWorkshopList !== null) { cb(flWorkshopList); return; }
+    if (flWsMeta !== null) { cb(flWsMeta); return; }
     fetch('/orders/riders-map/fleet/workshop?limit=1', { headers: { 'Accept': 'application/json' } })
         .then(r => r.ok ? r.json() : null)
-        .then(j => { flWorkshopList = (j && j.workshops) || []; cb(flWorkshopList); })
-        .catch(() => { flWorkshopList = []; cb([]); });
+        .then(j => {
+            flWsMeta = { list: (j && j.workshops) || [], canApprove: !!(j && j.can_approve),
+                         approvalOn: !!(j && j.approval_on), shifts: (j && j.shifts) || [] };
+            cb(flWsMeta);
+        })
+        .catch(() => { flWsMeta = { list: [], canApprove: false, approvalOn: false, shifts: [] }; cb(flWsMeta); });
 }
 
 /**
@@ -1745,7 +1801,8 @@ function flWorkshopsThen(cb) {
 function flScheduleWorkshop(uid, ticketId, vehicleId) {
     const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate() + 1);
         return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
-    flWorkshopsThen(function (list) {
+    flWorkshopsThen(function (meta) {
+        const list = meta.list || [];
         const fields = [
             { key: 'date', label: 'Which day', type: 'date', value: tomorrow, required: true,
               hint: 'He still works that day as normal — this is an errand, not a day off. Booking again on the same bike MOVES the existing date.' },
@@ -1754,15 +1811,52 @@ function flScheduleWorkshop(uid, ticketId, vehicleId) {
               options: [{ value: 'service', label: 'Service' }, { value: 'repair', label: 'Repair' },
                         { value: 'inspection', label: 'Inspection' }, { value: 'other', label: 'Other' }] },
         ];
-        if (list.length) {
-            fields.push({ key: 'location_id', label: 'Which workshop', type: 'radio',
-                options: list.map(w => ({ value: w.id, label: w.name })).concat([{ value: '', label: 'Somewhere else (type it below)' }]),
-                hint: 'A registered workshop becomes his shift location that day — he checks in THERE, so no lateness lands on him.' });
-        }
-        fields.push({ key: 'workshop', label: list.length ? 'Other workshop (only if "somewhere else")' : 'Workshop name (optional)', type: 'text',
-            placeholder: 'e.g. Bilal Auto',
-            hint: list.length ? '' : 'No location is ticked as a workshop yet — tick them on the Locations page to pick from a list and pin his check-in there.' });
+        /**
+         * 📍 THE WORKSHOP PICKER, WITH A WAY OUT OF AN EMPTY LIST (owner + team, 6-Sep).
+         *   Nothing was ticked as a workshop on prod, so this list was empty and every
+         *   booking pinned nothing — silently. "➕ Add a new workshop" is therefore always
+         *   offered, and it is filled in RIGHT HERE rather than sending the manager off to
+         *   the Locations page and losing the date he already typed.
+         */
+        fields.push({ key: 'location_id', label: 'Which workshop', type: 'radio',
+            options: list.map(w => ({ value: w.id, label: w.name }))
+                .concat([{ value: '__new', label: '➕ Add a new workshop' },
+                         { value: '', label: 'Somewhere else (type the name below — pins nothing)' }]),
+            value: list.length ? list[0].id : '__new',
+            hint: 'A registered workshop becomes his shift location that day — he checks in THERE, so no lateness lands on him.' });
+
+        fields.push({ key: 'new_name', label: 'New workshop — name', type: 'text', required: true,
+            placeholder: 'e.g. Bilal Auto, Ghauri Town', showIf: { key: 'location_id', value: '__new' } });
+        fields.push({ key: 'new_coords', label: 'Where is it? (required)', type: 'text', required: true,
+            placeholder: '33.6867, 73.0331  — or a Google Maps pin link',
+            showIf: { key: 'location_id', value: '__new' },
+            hint: '⚠ A Maps link that just names the business carries NO coordinates and cannot be used. '
+                + 'In Maps, press and hold the exact spot to drop a pin, then share THAT link — or type the numbers.' });
+        fields.push({ key: 'new_radius', label: 'How close must he be? (metres)', type: 'number', min: 100,
+            value: '300', showIf: { key: 'location_id', value: '__new' } });
+
+        fields.push({ key: 'workshop', label: 'Workshop name (not on the list)', type: 'text',
+            placeholder: 'e.g. Bilal Auto', showIf: { key: 'location_id', value: '' },
+            hint: '⚠ A typed name is only a label — his check-in place will NOT move, so he can be marked remote that morning.' });
         fields.push({ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'Anything the rider or the mechanic should know' });
+
+        /**
+         * ⏳ THE 6-SEP RULING, in one question. A booking now goes to the shift planners for
+         *   approval before the rider hears anything. A planner booking it HIMSELF is asked
+         *   whether to just assign it — everyone else is not asked, because they have no
+         *   choice to make, and the server decides this again from his rights either way.
+         */
+        if (meta.approvalOn && meta.canApprove) {
+            fields.push({ key: 'route', label: 'And then?', type: 'radio', value: 'now',
+                options: [{ value: 'now',      label: '✓ Assign it now — he is told straight away' },
+                          { value: 'approval', label: '⏳ Send it to the shift planners for approval' }],
+                hint: 'You plan the shifts, so you may assign it yourself.' });
+        } else if (meta.approvalOn) {
+            fields.push({ key: 'note_approval', type: 'note',
+                label: '⏳ This goes to the shift planners (Shabib, Farooq, Taimur) for approval. '
+                     + 'The rider is told nothing until one of them approves it.' });
+        }
+
         flForm({
             title: '🔧 Schedule a workshop visit',
             fields: fields,
@@ -1770,16 +1864,43 @@ function flScheduleWorkshop(uid, ticketId, vehicleId) {
             onSubmit: function (v, done) {
                 if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date)) { done(false, 'Give the date as YYYY-MM-DD.'); return; }
                 if (v.time && !/^\d{2}:\d{2}$/.test(v.time)) { done(false, 'Give the time as HH:MM, e.g. 11:00.'); return; }
-                const payload = vehicleId ? { vehicle_id: vehicleId, visit_date: v.date } : { user_id: uid, visit_date: v.date };
-                if (v.time) payload.visit_time = v.time;
-                if (v.purpose) payload.purpose = v.purpose;
-                if (v.location_id) payload.location_id = parseInt(v.location_id, 10);
-                else if (v.workshop) payload.workshop = v.workshop;
-                if (v.note) payload.note = v.note;
-                if (ticketId) payload.ticket_id = ticketId;
-                flPostWorkshop('', payload, function (res) {
-                    done(true, res.message || 'Booked.', res.warnings || []);
-                }, function (msg) { done(false, msg); });
+
+                const book = function (locationId) {
+                    const payload = vehicleId ? { vehicle_id: vehicleId, visit_date: v.date } : { user_id: uid, visit_date: v.date };
+                    if (v.time) payload.visit_time = v.time;
+                    if (v.purpose) payload.purpose = v.purpose;
+                    if (locationId) payload.location_id = locationId;
+                    else if (v.workshop) payload.workshop = v.workshop;
+                    if (v.note) payload.note = v.note;
+                    if (ticketId) payload.ticket_id = ticketId;
+                    if (v.route === 'approval') payload.send_for_approval = 1;
+                    flPostWorkshop('', payload, function (res) {
+                        done(true, res.message || 'Booked.', res.warnings || []);
+                    }, function (msg) { done(false, msg); });
+                };
+
+                if (v.location_id === '__new') {
+                    // ⭐ Create the workshop, THEN book against it — one press, no lost typing.
+                    const body = { location_name: v.new_name, radius_meters: parseInt(v.new_radius || '300', 10) };
+                    const m = String(v.new_coords || '').match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+                    if (m) { body.latitude = parseFloat(m[1]); body.longitude = parseFloat(m[2]); }
+                    else { body.maps_url = v.new_coords; }
+                    fetch('/orders/riders-map/fleet/workshop/locations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+                        body: JSON.stringify(body)
+                    })
+                    .then(r => r.json())
+                    .then(res => {
+                        if (!res.success) { done(false, res.message || 'Could not add that workshop.'); return; }
+                        flWorkshopsRefresh();
+                        book(parseInt(res.location.id, 10));
+                    })
+                    .catch(() => done(false, 'Could not add that workshop. Please try again.'));
+                    return;
+                }
+                book(v.location_id ? parseInt(v.location_id, 10) : null);
             }
         });
     });
@@ -1793,6 +1914,63 @@ function flWorkshopAccept(id) {
         okLabel: 'Accept for him',
         onSubmit: function (v, done) {
             flPostWorkshop('/' + id + '/accept', {}, function (res) { done(true, res.message || 'Accepted.'); },
+                           function (msg) { done(false, msg); });
+        }
+    });
+}
+
+/**
+ * ⏳ APPROVE A PROPOSED WORKSHOP DAY (owner + team ruling, 6-Sep) — from the machine's page.
+ *
+ * ⭐ The planner may change three things on the way through, and the third is the one nothing
+ *   else in the flow could fix: the rider's START TIME that day. Danish's visit was booked for
+ *   09:00 while his shift still began 09:30 at LaCarne, so even a correct pin would have
+ *   measured him against the wrong hour.
+ * ⚠ Approving is what tells the rider. Until then he has heard nothing at all.
+ */
+function flWorkshopApprove(id) {
+    flWorkshopsThen(function (meta) {
+        const list = meta.list || [];
+        flForm({
+            title: '✓ Approve this workshop day',
+            intro: 'Approving pins the workshop to his day and tells him — in Roman Urdu — that the '
+                 + 'PLACE has changed, not the time. Change anything below first if it needs fixing.',
+            fields: [
+                { key: 'location_id', label: 'Which workshop', type: 'select',
+                  options: [{ value: '', label: '— none (his check-in place will NOT move) —' }]
+                      .concat(list.map(w => ({ value: w.id, label: w.name }))),
+                  hint: list.length ? '' : '⚠ No location is ticked as a workshop yet, so nothing can be pinned. '
+                      + 'Add one from the booking form (🔧 Schedule workshop → ➕ Add a new workshop) or on the Locations page.' },
+                { key: 'time', label: 'Appointment time (optional)', type: 'time' },
+                { key: 'shift_template_id', label: 'His shift that day', type: 'select',
+                  options: [{ value: '', label: '— keep his usual shift —' }]
+                      .concat((meta.shifts || []).map(s => ({ value: s.id, label: s.name + (s.start ? ' · ' + s.start : '') }))),
+                  hint: 'Only change this if the appointment does not fit the hours he already works that day.' },
+            ],
+            okLabel: 'Approve and tell him',
+            onSubmit: function (v, done) {
+                const body = { location_id: v.location_id ? parseInt(v.location_id, 10) : null,
+                               visit_time: v.time || null };
+                if (v.shift_template_id) body.shift_template_id = parseInt(v.shift_template_id, 10);
+                flPostWorkshop('/' + id + '/approve', body,
+                               function (res) { done(true, res.message || 'Approved.'); },
+                               function (msg) { done(false, msg); });
+            }
+        });
+    });
+}
+
+function flWorkshopDecline(id) {
+    flForm({
+        title: '✖ Decline this workshop day',
+        intro: 'The person who asked for it is told, with your reason. The rider was never told '
+             + 'anything, so there is nothing to undo.',
+        fields: [{ key: 'reason', label: 'Why not?', type: 'text',
+                   placeholder: 'e.g. He is on the Faizabad run that morning' }],
+        okLabel: 'Decline it',
+        onSubmit: function (v, done) {
+            flPostWorkshop('/' + id + '/decline', { reason: v.reason || null },
+                           function (res) { done(true, res.message || 'Declined.'); },
                            function (msg) { done(false, msg); });
         }
     });
@@ -1844,13 +2022,13 @@ function flWorkshopDone(id) {
  */
 function flvReportProblem(vehicleId) {
     flForm({
-        title: '🎫 Report a problem with this bike',
+        title: '🎫 Open an issue on this bike',
         fields: [
             { key: 'title', label: 'What is wrong (one line)', type: 'text', required: true, placeholder: 'e.g. Front brake is loose' },
             { key: 'urgent', label: 'Not rideable right now (urgent)', type: 'checkbox' },
             { key: 'body', label: 'Details (optional)', type: 'textarea', placeholder: 'What you noticed, since when…' },
         ],
-        okLabel: 'Raise the ticket',
+        okLabel: 'Open the issue',
         onSubmit: function (v, done) {
             fetch('/orders/riders-map/fleet/tickets', {
                 method: 'POST',
@@ -1883,6 +2061,21 @@ function flPostWorkshop(suffix, payload, onOk, onErr) {
     })
     .then(r => r.json())
     .then(res => {
+        /**
+         * ⏳ NOT AN ERROR — A QUESTION (owner ruling 7-Sep). The booking would change a
+         * workshop day the rider has ALREADY been told about, so the server refused the first
+         * attempt and told us exactly what would change. Ask, and only then send it again
+         * carrying the confirmation.
+         * ⚠ Asked ONCE: the retry already carries `confirm_replace`, so it cannot loop.
+         */
+        if (!res.success && res.needs_confirmation && !payload.confirm_replace) {
+            if (!confirm(res.message + '\n\nChange it?')) {
+                if (onErr) onErr('Nothing was changed.');
+                return;
+            }
+            flPostWorkshop(suffix, Object.assign({}, payload, { confirm_replace: 1 }), onOk, onErr);
+            return;
+        }
         if (!res.success) { if (onErr) onErr(res.message || 'Could not save.'); else alert(res.message || 'Could not save.'); return; }
         if (onOk) onOk(res); else if (res.message) alert(res.message);
         if (flSelected) flLoadWorkshop(flSelected);
@@ -2035,7 +2228,7 @@ function flOpenTicket(id) {
                 + (j.can_manage
                     ? '<button class="fl-btn" onclick="flScheduleWorkshop(null, ' + id + ', ' + (parseInt(t.vehicle_id, 10) || 0) + ')">🔧 Schedule workshop</button>'
                     : '')
-                + (j.can_close ? '<button class="fl-btn" onclick="flCloseTicket(' + id + ')">Close ticket</button>' : '')
+                + (j.can_close ? '<button class="fl-btn" onclick="flCloseTicket(' + id + ')">Close issue</button>' : '')
                 + '</span>'
                 + '</div>'
                 + '<div style="max-height:280px;overflow:auto;margin-top:8px;">' + msgs + '</div>'
@@ -2090,10 +2283,11 @@ function flReplyTicket(id) {
 
 function flCloseTicket(id) {
     flForm({
-        title: '✅ Close this ticket',
+        // ⭐ "issue", to match the phone and the Open-an-issue button (owner, 6-Sep).
+        title: '✅ Close this issue',
         intro: 'The rider holding the bike sees your note.',
         fields: [{ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. Chain replaced, tension checked' }],
-        okLabel: 'Close the ticket',
+        okLabel: 'Close issue',
         onSubmit: function (v, done) {
             fetch('/orders/riders-map/fleet/tickets/' + id + '/close', {
                 method: 'POST',
@@ -4380,7 +4574,9 @@ function flvLoadVisits(vehicleId) {
         .then(j => {
             if (seq !== flvVisitSeq || !j || !j.success) return;
             if (flvOpenId !== vehicleId) return;
-            flvVisits = { vehicleId: vehicleId, list: j.visits || [], canSchedule: !!j.can_schedule };
+            flvVisits = { vehicleId: vehicleId, list: j.visits || [], canSchedule: !!j.can_schedule,
+                          // ⏳ 6-Sep: a planner can decide a proposal right here on the machine's page.
+                          canApprove: !!j.can_approve };
             if (flvLastRes) flvRenderDetail(flvLastRes.vehicle, flvLastRes.can_manage, flvLastRes);
         })
         .catch(() => {});
@@ -4934,7 +5130,7 @@ function flvRenderDetail(v, canManage, res) {
           +   '<button type="button" class="fl-vchipbtn' + (flvTicketsAll ? ' on' : '') + '" onclick="flvToggleTicketHistory()">'
           +     (flvTicketsAll ? 'Hide closed' : 'Show history') + '</button>'
           +   (tkCanManage
-                 ? '<button type="button" class="fl-vchipbtn" style="margin-left:auto;" onclick="flvReportProblem(' + v.id + ')">🎫 Report a problem</button>'
+                 ? '<button type="button" class="fl-vchipbtn" style="margin-left:auto;" onclick="flvReportProblem(' + v.id + ')">🎫 Open an issue</button>'
                  : '')
           + '</div>'
           + (tks.length
@@ -4949,6 +5145,7 @@ function flvRenderDetail(v, canManage, res) {
          rider drawer's own; nothing is decided twice. */
     const vs = (flvVisits && flvVisits.vehicleId === v.id) ? flvVisits.list : null;
     const wsCan = !!(flvVisits && flvVisits.vehicleId === v.id && flvVisits.canSchedule);
+    const wsApprove = !!(flvVisits && flvVisits.vehicleId === v.id && flvVisits.canApprove);
     const wsBtn = wsCan
         ? '<button type="button" class="fl-vchipbtn" onclick="flScheduleWorkshop(null, null, ' + v.id + ')">🔧 '
           + (vs && vs.length ? 'Move' : 'Schedule workshop') + '</button>'
@@ -4966,14 +5163,33 @@ function flvRenderDetail(v, canManage, res) {
                   +   '<b style="min-width:110px;">' + flEsc(w.visit_date) + (w.visit_time ? ' ' + flEsc(w.visit_time) : '') + '</b>'
                   +   '<span style="color:#374151;">' + flEsc(w.rider_name || v.keeper_name || 'rider') + ' takes it'
                   +     (w.workshop ? ' · ' + flEsc(w.workshop) : '') + (w.purpose ? ' · ' + flEsc(w.purpose) : '') + '</span>'
-                  +   '<span class="fl-vchip ' + (w.accepted ? 'ok' : 'unk') + '">' + (w.accepted ? 'accepted' : 'not yet accepted') + '</span>'
-                  +   (wsCan
+                  /**
+                   * ⏳ 6-Sep: say plainly WHERE in the flow this day is, because "booked" and
+                   *   "the rider knows about it" stopped being the same thing.
+                   */
+                  +   '<span class="fl-vchip ' + (w.is_declined ? 'over' : w.is_proposed ? 'due' : (w.accepted ? 'ok' : 'unk')) + '">'
+                  /* ⚠ A DECLINED request is in this list too (a manager should see that Qasim
+                       asked and a planner said no). Without its own branch it drew as
+                       "scheduled, rider told" — the exact opposite of what happened. */
+                  +     (w.is_declined
+                          ? '✖ declined' + (w.declined_by_name ? ' by ' + flEsc(w.declined_by_name) : ' — nobody approved it in time')
+                            + (w.decline_reason ? ' · ' + flEsc(w.decline_reason) : '')
+                          : w.is_proposed ? '⏳ awaiting a shift planner — rider NOT told'
+                                          : (w.accepted ? '✓✓ accepted' : '✓ scheduled, rider told')) + '</span>'
+                  +   (w.is_declined ? '' : (wsCan || wsApprove
                         ? '<span style="margin-left:auto;display:flex;gap:4px;">'
-                          + (!w.accepted ? '<button type="button" class="fl-vbtn" onclick="flWorkshopAccept(' + w.id + ')">Accept for him</button>' : '')
-                          + '<button type="button" class="fl-vbtn" onclick="flWorkshopDone(' + w.id + ')">Mark done</button>'
-                          + '<button type="button" class="fl-vbtn" onclick="flWorkshopCancel(' + w.id + ')">Cancel</button>'
+                          + (w.is_proposed
+                              // A proposal has one question on it, and only a planner may answer.
+                              ? (wsApprove
+                                  ? '<button type="button" class="fl-vbtn" onclick="flWorkshopApprove(' + w.id + ')">✓ Approve</button>'
+                                    + '<button type="button" class="fl-vbtn" onclick="flWorkshopDecline(' + w.id + ')">✖ Decline</button>'
+                                  : '')
+                                + (wsCan ? '<button type="button" class="fl-vbtn" onclick="flWorkshopCancel(' + w.id + ')">Withdraw</button>' : '')
+                              : (!w.accepted && wsCan ? '<button type="button" class="fl-vbtn" onclick="flWorkshopAccept(' + w.id + ')">Accept for him</button>' : '')
+                                + (wsCan ? '<button type="button" class="fl-vbtn" onclick="flWorkshopDone(' + w.id + ')">Mark done</button>'
+                                         + '<button type="button" class="fl-vbtn" onclick="flWorkshopCancel(' + w.id + ')">Cancel</button>' : ''))
                           + '</span>'
-                        : '')
+                        : ''))
                   + '</div>').join('')
                 : '<div style="font-size:12px;color:#9ca3af;">Nothing booked for this machine.</div>')
           + '</div>';

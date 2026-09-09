@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Services\HR\PayrollService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 /**
  * Mobile payroll API (Sanctum). Manager endpoints reuse the SAME PayrollService as the web
@@ -209,6 +210,13 @@ class PayrollController extends Controller
             'items.*.late_deduction' => 'nullable|numeric|min:0',
             'items.*.skip_overtime' => 'nullable|boolean',
             'items.*.skip_late_leave' => 'nullable|boolean',
+            // ⭐ Sep-7 2026 — the phone sends the SAME item shape as the web pay dialog, because
+            // both land in the same PayrollService::payMany(). Before this, the two fields below
+            // simply did not exist on mobile: a manager paying from his phone got the silent
+            // default for both, so a shortfall was written off with nobody asked (the exact
+            // thing the web dialog was built to stop) and leave actions were always applied.
+            'items.*.defer_leave_actions' => 'nullable|boolean',
+            'items.*.shortfall' => ['nullable', Rule::in(PayrollService::SHORTFALL_MODES)],
         ]);
         if ($v->fails()) {
             return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
@@ -281,6 +289,30 @@ class PayrollController extends Controller
             $row['paid_net'] = $last ? (float) $pays->sum('net_salary') : null;
             $row['paid_at'] = $last ? (string) $last->paid_at : null;
             $row['paid_funding'] = $last ? $last->funding : null;
+
+            // ⭐⭐ WHAT A RIDER MAY SEE OF HIS OWN OVERTIME (owner ruling, Sep-6 2026).
+            // He sees the same MINUTES management sees — that is the point of showing him any
+            // of this. But the bonus DAYS those minutes might earn stay hidden until management
+            // has actually granted them: `bonus_leaves` off computeRow is a RECOMMENDATION that
+            // a manager can still skip, and a rider told "+2 bonus leaves" who then receives
+            // none has been promised something nobody agreed to.
+            // ⚠ The recommendation is OVERWRITTEN here rather than merely supplemented, so an
+            // APK already in the field stops showing the ungranted figure without needing a
+            // rebuild. `bonus_leaves` keeps its meaning everywhere else; this is the rider's
+            // own endpoint only.
+            $granted = null;
+            $otStatus = 'pending';
+            try {
+                foreach ($svc->leaveActionsForRow($row, $month) as $a) {
+                    if (($a['kind'] ?? '') !== 'overtime') { continue; }
+                    $otStatus = (string) ($a['status'] ?? 'pending');
+                    if ($otStatus === 'applied') { $granted = (float) ($a['applied_days'] ?? 0); }
+                }
+            } catch (\Throwable $e) { /* undecided → nothing granted */ }
+            $row['bonus_leaves_recommended'] = (int) ($row['bonus_leaves'] ?? 0);
+            $row['bonus_leaves'] = $granted !== null ? $granted : 0;
+            $row['bonus_leaves_status'] = $otStatus;   // pending | applied | waived
+
             return response()->json([
                 'success' => true,
                 'month' => $month,
@@ -291,5 +323,51 @@ class PayrollController extends Controller
             \Log::error('Mobile mySalary failed', ['user_id' => $user->id, 'month' => $month, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not load your salary.'], 500);
         }
+    }
+
+    // ── Day review (Sep-2026) ────────────────────────────────────────────────────────────
+    // The same queue and the same verdicts as the web bulb, through the SAME service — a day
+    // checked on the phone is checked everywhere. ⚠ An unreviewed day still counts in full.
+
+    /** Manager: the days waiting to be checked. */
+    public function dayReviewsPending(Request $request)
+    {
+        if ($deny = $this->denyIfNotManager($request)) return $deny;
+        try {
+            $svc = app(\App\Services\HR\DayReviewService::class);
+            return response()->json([
+                'success' => true,
+                'enabled' => $svc->enabled(),
+                'items'   => $svc->pending(['limit' => min(100, max(1, (int) $request->input('limit', 40)))]),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('Mobile day reviews failed', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not load the list.'], 500);
+        }
+    }
+
+    /** Manager: record one verdict. Every rule lives in the service, not here. */
+    public function dayReviewRecord(Request $request)
+    {
+        if ($deny = $this->denyIfNotManager($request)) return $deny;
+        $v = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+            'date'    => 'required|date_format:Y-m-d',
+            'kind'    => 'required|in:overtime,late',
+            'verdict' => 'required|in:verified,adjusted,waived',
+            'minutes' => 'nullable|integer|min:0',
+            'waived'  => 'nullable|integer|min:0',
+            'reason'  => 'nullable|string|max:200',
+        ]);
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first()], 422);
+        }
+        $d = $v->validated();
+        $res = app(\App\Services\HR\DayReviewService::class)->record(
+            (int) $d['user_id'], $d['date'], $d['kind'], $d['verdict'],
+            (int) ($request->user()->id ?? 0),
+            ['minutes' => $d['minutes'] ?? null, 'waived' => $d['waived'] ?? null, 'reason' => $d['reason'] ?? null]
+        );
+        return response()->json($res, $res['success'] ? 200 : 422);
     }
 }

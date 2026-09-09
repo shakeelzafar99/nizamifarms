@@ -171,7 +171,12 @@ class CouponModel extends BaseModel
      */
     public function isValid(): bool
     {
-        if (!$this->is_active || $this->status !== 'active') {
+        // ⚠ getAttribute, NOT $this->status — BaseModel declares a real
+        // `protected string $status = "Success"`, which shadows the DB column INSIDE
+        // this class. Reading $this->status here made isValid() return false for every
+        // coupon, so a perfectly good code was rejected as "not valid or has expired".
+        // Same reason RequestModel::isPending() reads the attribute explicitly.
+        if (!$this->is_active || $this->getAttribute('status') !== 'active') {
             return false;
         }
 

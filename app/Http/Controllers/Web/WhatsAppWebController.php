@@ -904,6 +904,11 @@ class WhatsAppWebController extends Controller
         }
         $messages = $messagesDesc->reverse()->values();
 
+        // Sep-2026 — resolve what each reaction on this page was reacting to.
+        // Shared implementation (API\WhatsAppController::getMessages calls the
+        // same method) so the web chat and the phone quote it identically.
+        $reactionCtx = app(WhatsAppService::class)->reactionContextFor($messages, (int) $conversationId);
+
         $totalOrders = $conversation->customer_id
             ? \App\Models\CRM\OrderModel::where('customer_id', $conversation->customer_id)->count()
             : 0;
@@ -1007,9 +1012,12 @@ class WhatsAppWebController extends Controller
                 'seen_by' => $seenBy,
                 'labels' => $convLabels,
             ],
-            'messages' => $messages->map(function ($msg) {
+            'messages' => $messages->map(function ($msg) use ($reactionCtx) {
                 return [
                     'id' => $msg->id,
+                    // Sep-2026 — the message this reaction was stuck onto (null
+                    // for everything else). Same shared resolver the phone uses.
+                    'reacted_to' => $reactionCtx[$msg->id] ?? null,
                     'direction' => $msg->direction,
                     'type' => $msg->type,
                     'content' => $msg->content,

@@ -846,9 +846,16 @@ class WhatsAppController extends Controller
 
             $messages = $query->limit($limit)->get();
 
-            $result = $messages->map(function ($msg) {
+            // Sep-2026 — what each reaction on this page was reacting to.
+            // Shared with the web chat (Web\WhatsAppWebController::getMessages)
+            // so both surfaces quote the original message identically. One
+            // extra query, and none at all when the page holds no reactions.
+            $reactionCtx = $this->whatsapp->reactionContextFor($messages, (int) $conversationId);
+
+            $result = $messages->map(function ($msg) use ($reactionCtx) {
                 return [
                     'id' => $msg->id,
+                    'reacted_to' => $reactionCtx[$msg->id] ?? null,
                     'wa_message_id' => $msg->wa_message_id,
                     'direction' => $msg->direction,
                     'type' => $msg->type,

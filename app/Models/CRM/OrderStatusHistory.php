@@ -80,7 +80,13 @@ class OrderStatusHistory extends BaseModel
 
     public function getStatusDisplayAttribute(): string
     {
-        return $this->status ? $this->status->status_name : ucfirst(str_replace('_', ' ', $this->status_code));
+        // ⚠ getRelationValue, NOT $this->status — `status` here is a RELATION, but
+        // BaseModel declares a real `protected string $status = "Success"` which
+        // shadows it INSIDE this class. $this->status returned the string "Success"
+        // (truthy), so this then read ->status_name on a string.
+        $status = $this->getRelationValue('status');
+
+        return $status ? $status->status_name : ucfirst(str_replace('_', ' ', $this->status_code));
     }
 
     public static function getCurrentStatusForOrder(int $orderId): ?self

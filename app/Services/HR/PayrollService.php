@@ -138,6 +138,32 @@ class PayrollService
     public const ABSENCE_DECISIONS = ['cut', 'park', 'excuse'];
 
     /**
+     * What Pay does when a month's deductions come to more than the salary (see payRow).
+     *
+     *   CARRY     ⭐ the DEFAULT (owner, Sep-7 2026: "an advance is always a deduction from
+     *             the salary" — nobody ever pays cash back, so a month that cannot absorb the
+     *             whole advance moves the rest to NEXT month's deduction). The advance stays
+     *             open with `settled_amount` = what this month took and `carry_month` = the
+     *             month that takes the rest. Needs payroll_advance_carry_sep2026.sql; before
+     *             it, this mode is refused and the dialog cannot offer it.
+     *   WRITEOFF  deductions apply as normal; the part of the advance the salary could not
+     *             cover is never recovered. Payroll's only behaviour until Sep-2026.
+     *   WAIVE     this month's absent/late CUT is dropped first, so that money recovers more
+     *             of the advance instead. Whatever is still short is written off. No screen
+     *             offers it since Sep-7 (the owner wanted two questions, not three); it stays
+     *             accepted so the API contract never shrinks under a client.
+     *
+     * ⚠⚠ Both controllers validate against THIS list. They used to carry a hand-typed copy
+     * (`in:carry,writeoff`) that had drifted from the values the pay dialog actually sends,
+     * so the waive option 422'd for every manager who picked it and the whole batch failed.
+     * One list, referenced everywhere — never re-type these strings.
+     */
+    public const SHORTFALL_CARRY    = 'carry';
+    public const SHORTFALL_WRITEOFF = 'writeoff';
+    public const SHORTFALL_WAIVE    = 'waive_deductions';
+    public const SHORTFALL_MODES    = [self::SHORTFALL_CARRY, self::SHORTFALL_WRITEOFF, self::SHORTFALL_WAIVE];
+
+    /**
      * The deterministic reason payroll writes for a month. Part of the dedupe key, so it
      * must stay byte-identical to what payRow() has always written — a manager's own bonus
      * adjustment also lands in source='overtime' but carries free text, and that difference
@@ -225,18 +251,77 @@ class PayrollService
     {
         $signed = $kind === 'overtime' ? $recommended : -$recommended;
         $status = $decision['status'] ?? 'pending';
+        $applied = $decision ? (float) $decision['days'] : null;
+
+        // ⭐⭐ ONE VOCABULARY (Sep-6 2026). Every surface — payroll panel, grid, Employee tab,
+        //   the attendance page and the phone — renders THESE strings. Before this the same
+        //   outcome was called four different things depending on where you were standing
+        //   ("Skip" / "Keep leave" / "Park" / "Use his leave"), and each screen owned its own
+        //   copy of the wording, so a change to a rule left stale sentences behind on three of
+        //   them. The server now says what the buttons are called and what a decision reads as.
+        $choices = $kind === 'overtime'
+            ? [
+                ['value' => 'apply', 'label' => 'Give ' . ($detail['headline'] ?? 'the bonus'), 'tone' => 'good',
+                 'hint' => ((int) ($detail['will_cover'] ?? 0)) > 0
+                     ? ((int) $detail['will_cover']) . ' of these settle parked absences instead of becoming leave'
+                     : 'adds the bonus leave to his balance'],
+                ['value' => 'waive', 'label' => 'Skip', 'tone' => 'muted',
+                 'hint' => ((int) ($detail['carry_forfeited'] ?? 0)) > 0
+                     ? 'no bonus — and the ' . $this->fmtMins((int) $detail['carry_forfeited']) . ' carried forward is forfeited'
+                     : 'no bonus leave for this month'],
+            ]
+            : [
+                ['value' => 'apply', 'label' => 'Deduct ' . ($detail['headline'] ?? 'the penalty'), 'tone' => 'danger',
+                 'hint' => 'takes the leave off his balance'],
+                ['value' => 'waive', 'label' => 'Waive penalty', 'tone' => 'muted',
+                 'hint' => 'he keeps the leave — a waived late costs nothing'],
+            ];
+
+        [$decidedLabel, $decidedTone] = $this->decidedLabelFor($kind, $status, $applied, $detail);
+
         return [
             'kind'             => $kind,
             'recommended_days' => $signed,
             'status'           => $status,
-            'applied_days'     => $decision ? (float) $decision['days'] : null,
+            'applied_days'     => $applied,
             'decided_by'       => $decision['by_name'] ?? null,
             'decided_at'       => $decision['at'] ?? null,
+            // What is in force right now, in the same vocabulary as `choices` — so "change"
+            // can re-open the very buttons that were used, with the current one marked.
+            'current_choice'   => $status === 'pending' ? null : ($status === 'waived' ? 'waive' : 'apply'),
+            'choices'          => $choices,
+            'decided_label'    => $decidedLabel,
+            'decided_tone'     => $decidedTone,
             // The month was decided on a different figure than it now recommends (e.g. it was
             // paid mid-month and more overtime accrued afterwards). Surfaced, never auto-fixed.
             'changed'          => $decision && $status === 'applied'
                 && (float) $decision['days'] !== (float) $signed,
         ] + $detail;
+    }
+
+    /**
+     * How a settled overtime / late month reads once the buttons are gone. Returns
+     * [label, tone]; tone is one of good | danger | hold | muted and only names a colour.
+     */
+    private function decidedLabelFor(string $kind, string $status, ?float $applied, array $detail): array
+    {
+        if ($status === 'pending') {
+            return ['', 'muted'];
+        }
+        if ($status === 'waived') {
+            if ($kind === 'overtime') {
+                $lost = (int) ($detail['carry_forfeited'] ?? 0);
+                return ['✕ Bonus skipped'
+                    . ($lost > 0 ? ' · ' . $this->fmtMins($lost) . ' carried forfeited' : ''), 'muted'];
+            }
+            return ['✕ Penalty waived · leave kept', 'muted'];
+        }
+        $n = abs((float) ($applied ?? 0));
+        $unit = 'leave' . ($n == 1.0 ? '' : 's');
+        $num = (fmod($n, 1.0) == 0.0) ? (string) (int) $n : rtrim(rtrim(number_format($n, 1), '0'), '.');
+        return $kind === 'overtime'
+            ? ['✓ +' . $num . ' ' . $unit . ' given', 'good']
+            : ['✓ −' . $num . ' ' . $unit . ' deducted', 'danger'];
     }
 
     /**
@@ -285,6 +370,9 @@ class PayrollService
                 'headline' => '+' . $otRec . ' bonus leave' . ($otRec === 1 ? '' : 's'),
                 'basis'    => $this->fmtMins($otMin) . ' worked past the daily target',
                 'will_cover' => $willCover,
+                // Skipping the month never writes the carry row, so these minutes reach no
+                // later month — the owner's rule that a skip forfeits them, said out loud.
+                'carry_forfeited' => $carryOut,
                 'formula'  => implode(' · ', $bits),
                 'drill'    => 'month_overtime',
                 'minutes'  => $otMin,
@@ -316,13 +404,35 @@ class PayrollService
         if ($month >= \App\Services\HR\AbsenceDecisionService::START_MONTH && ($absDays > 0 || $absDec !== null)) {
             $rate = (float) ($row['absence_day_rate'] ?? 0);
             $wouldCut = (float) ($row['absence_raw_deduction'] ?? 0);
+            $owedHere = (float) ($row['absence_month_owed'] ?? 0);
+            $absLabel = $absDec === 'park'
+                ? ('🅿 Parked' . ($owedHere > 0 ? ' · ' . $this->fmtDays($owedHere) . ' still owed' : ''))
+                : ($absDec === 'excuse'
+                    ? '✓ Excused · nothing owed'
+                    : ($absDec === 'cut' ? '✕ Deducted Rs ' . number_format($wouldCut) : ''));
             $out[] = [
                 'kind'             => 'absence',
                 'recommended_days' => -1 * $absDays,
                 'status'           => $absDec === null ? 'pending' : $absDec,   // cut | park | excuse
                 'applied_days'     => $absDec === null ? null : $absDays,
-                'decided_by'       => null,
-                'decided_at'       => null,
+                // ⭐ Sep-6 2026 — an absence decision now names its author like every other
+                // decision on the page. The data was always in t_hr_absence_decision; these
+                // two keys were hardcoded null, so a parked month looked like nobody's doing.
+                'decided_by'       => $row['absence_decided_by'] ?? null,
+                'decided_at'       => $row['absence_decided_at'] ?? null,
+                'current_choice'   => $absDec,
+                'choices'          => [
+                    ['value' => 'cut', 'label' => 'Deduct Rs ' . number_format($wouldCut), 'tone' => 'danger',
+                     'hint' => 'takes it out of this month\'s salary'],
+                    ['value' => 'park', 'label' => 'Park', 'tone' => 'hold',
+                     'hint' => 'no cut now — the days stay owed and overtime days settle them later'],
+                    ['value' => 'excuse', 'label' => 'Excuse', 'tone' => 'good',
+                     'hint' => 'no cut, and nothing stays owed'],
+                ],
+                'decided_label'    => $absLabel,
+                'decided_tone'     => $absDec === null
+                    ? 'muted'
+                    : ($absDec === 'park' ? 'hold' : ($absDec === 'excuse' ? 'good' : 'danger')),
                 'changed'          => false,
                 'headline'         => $this->fmtDays($absDays) . ' absent',
                 'basis'            => 'Rs ' . number_format($rate) . ' per day',
@@ -1057,6 +1167,11 @@ class PayrollService
         $carry = $this->carry->preview($userId, $month, $otMinutes);
         $bonusLeaves = $carry['days'];
 
+        // How much of this month has actually been LOOKED AT. Purely informational — it moves
+        // no number here; the adjustments themselves already landed inside the overtime and
+        // late figures above. Empty and cheap until the day-review table exists on prod.
+        $dayReview = app(DayReviewService::class)->summary($userId, $month);
+
         // ── Open salary advances (unsettled) — auto-deducted at pay, settled on pay.
         // Scoped to THIS month: an advance given for August is recovered from August, never
         // from whichever month happens to be paid first.
@@ -1107,6 +1222,15 @@ class PayrollService
             'absent_deduction' => $absentDeduction,
             // Absence decision for this month: null = undecided = will be CUT.
             'absence_decision'      => $absDecided,
+            // ⭐ Sep-6 2026 — WHO parked/excused/cut this month and WHEN. The table has stored
+            // both since the decisions shipped, but no surface ever showed them, so a parked
+            // month was the one decision on the page with no name against it.
+            'absence_decided_by'    => $absDecision['decided_by_name'] ?? null,
+            'absence_decided_at'    => $absDecision['decided_at'] ?? null,
+            // ⚠ THIS month's unsettled days. Not `absence_outstanding`, which is the debt across
+            // every parked month — printing that against one month would over-state it whenever
+            // two months are parked at once.
+            'absence_month_owed'    => (float) ($absDecision['outstanding'] ?? 0),
             'absence_raw_deduction' => $absentRawDeduction,   // what a cut would take
             'absence_frozen_days'   => $absFrozen,           // what the decision covers
             'absence_undecided_days' => $absUndecidedDays,   // absent since the decision → cut
@@ -1118,6 +1242,13 @@ class PayrollService
             'held_absence_days'      => $heldCut['days'],
             'held_absence_months'    => $heldCut['months'],
             'late_minutes'     => $lateMinutes,
+            // ⭐ Sep-6 2026 — the day-review split. `late_minutes` is what COUNTS (already net
+            // of waives, so the buffer rule above judged the right figure); these say what the
+            // month actually was and what a manager forgave, so the grid and the payslip can
+            // show "6h 40m late · 1h waived" rather than a smaller number with no explanation.
+            'late_waived_minutes' => (int) ($att['late_waived_minutes'] ?? 0),
+            'late_raw_minutes'    => (int) ($att['late_raw_minutes'] ?? $lateMinutes),
+            'day_review'          => $dayReview,
             'late_leave_deduct' => $lateLeaveDeduct,       // leaves removed (ledger) on approve
             'late_leave_recommended' => $lateLeaveRecommended, // raw rule output, ignores any decision
             'late_computed_cut' => $lateComputedCut,       // suggested salary cut
@@ -1144,6 +1275,13 @@ class PayrollService
             'advance_total'     => $advanceTotal,
             // Open advances tagged to other months — display only, never part of net pay.
             'other_open_advance_total' => max(0, $otherOpenAdvanceTotal),
+            // ⭐ Sep-7 2026 — the give-advance CAP: how much more can still be advanced against
+            // this month's salary (base less what is already open against it). The server
+            // enforces it in giveAdvance(); this is so the modal can say "up to Rs N" first.
+            'advance_room'      => round(max(0, $base - $advanceTotal), 2),
+            // Whether Pay may move an uncovered remainder to next month (needs the carry SQL).
+            // The pay dialog offers "move to next month" only when this is true.
+            'carry_available'   => \App\Services\HR\SalaryCostService::hasCarryColumns(),
             'pending_requests'      => $pendingRequests,      // asked for, NOT given (no money)
             'pending_request_total' => $pendingRequestTotal,  // never part of deductions/net
             'bonuses'           => $bonuses,
@@ -1163,6 +1301,20 @@ class PayrollService
 
     /** user|month => computed row (per-request; dropped whenever an input changes). */
     private static array $rowMemo = [];
+
+    /**
+     * Drop EVERY cached row, for every month and employee.
+     *
+     * ⭐ Sep-6 2026 — a day review changes one DAY, and a day belongs to a month this class
+     * may have already memoised in this request. The reviewer does not know which months are
+     * cached (nor should it), so it clears the lot. This is a per-request cache; dropping it
+     * costs one recompute on the next read.
+     */
+    public function forgetAll(): void
+    {
+        self::$rowMemo = [];
+        self::$leaveDecisionMemo = [];
+    }
 
     /** Drop every cached row for a month (a decision or a payment changed the inputs). */
     private function forgetMonth(string $month): void
@@ -1248,6 +1400,12 @@ class PayrollService
         if ($this->isBalanceTracked($userId)) {
             return ['success' => false, 'message' => 'This employee is on a running balance — record a payment instead of an advance.'];
         }
+        // ⭐ THE CAP (owner, Sep-7 2026): an advance may not exceed what is left of that
+        // month's salary. Anything more is recorded against a later month, so every rupee
+        // given always has a salary that will deduct it.
+        if ($cap = $this->advanceCapMessage($userId, $when['payroll_month'], $amount)) {
+            return ['success' => false, 'message' => $cap];
+        }
         try {
             $category = \App\Models\Request\RequestCategoryModel::where('category_code', 'salary_advance')->firstOrFail();
             $fundingAcct = $funding === 'online'
@@ -1311,6 +1469,52 @@ class PayrollService
         } catch (\Throwable $e) {
             \Log::error('giveAdvance failed', ['error' => $e->getMessage()]);
             return ['success' => false, 'message' => 'Could not give advance: ' . $e->getMessage()];
+        }
+    }
+
+    /**
+     * ⭐ The give-advance CAP (owner, Sep-7 2026). Returns a refusal message, or null when the
+     * amount fits.
+     *
+     * Room = base salary − advances already open against that month (including a remainder
+     * carried INTO it). Deductions for absence or lateness are not known when the money is
+     * handed over, so the cap is the salary itself; if the month then falls short at pay
+     * time, the pay dialog moves the rest forward — the cap keeps that rare, not impossible.
+     *
+     * Skipped when no salary is set (nothing to measure against) and for custom-schedule
+     * staff, whose rate is not a monthly figure.
+     */
+    private function advanceCapMessage(int $userId, string $month, float $amount): ?string
+    {
+        try {
+            $profile = DB::table('t_hr_employee_profile')->where('user_id', $userId)->first();
+            $base = (float) ($profile->base_salary ?? 0);
+            if ($base <= 0) {
+                return null;
+            }
+            if ($this->profileHasScheduleCols() && ($profile->pay_schedule ?? 'monthly') === 'custom') {
+                return null;
+            }
+            $open = round(array_sum(array_column($this->openAdvances($userId, $month), 'amount')), 2);
+            $room = round(max(0, $base - $open), 2);
+            if ($amount <= $room + 0.005) {
+                return null;
+            }
+            $label = date('F Y', strtotime($month . '-01'));
+            $next  = date('F Y', strtotime($month . '-01 +1 month'));
+            if ($room <= 0) {
+                return $label . "'s salary (Rs " . number_format($base) . ') is already fully advanced'
+                    . ($open > 0 ? ' — Rs ' . number_format($open) . ' is open against it' : '')
+                    . '. Record this against ' . $next . ' instead.';
+            }
+            return 'Rs ' . number_format($amount) . ' is more than what is left of ' . $label
+                . "'s salary — Rs " . number_format($room)
+                . ($open > 0 ? ' after the Rs ' . number_format($open) . ' already given' : '')
+                . '. Give up to Rs ' . number_format($room) . ' for ' . $label
+                . ' and record the rest against ' . $next . '.';
+        } catch (\Throwable $e) {
+            \Log::warning('advanceCapMessage failed', ['user_id' => $userId, 'error' => $e->getMessage()]);
+            return null;   // never block money on a lookup failure; the cap is a guard, not a gate
         }
     }
 
@@ -1717,14 +1921,61 @@ class PayrollService
         // when he truly owes Rs 2,671. Honest partial recovery needs a `settled_amount` on the
         // request, which does not exist yet.
         $shortNotes = [];
-        $shortfallMode = ($opts['shortfall'] ?? 'writeoff') === 'waive_deductions'
-            ? 'waive_deductions' : 'writeoff';
+        $carryOk = \App\Services\HR\SalaryCostService::hasCarryColumns();
+        // ⭐ Default = CARRY (owner's rule; also what an old APK that sends nothing gets).
+        // Before the carry SQL the only honest default is the write-off payroll always did.
+        $shortfallMode = in_array($opts['shortfall'] ?? null, self::SHORTFALL_MODES, true)
+            ? $opts['shortfall']
+            : ($carryOk ? self::SHORTFALL_CARRY : self::SHORTFALL_WRITEOFF);
+        // Was this month's absent cut actually waived? It decides how the absence is RECORDED
+        // further down: excusing days nobody charged, instead of the "cut" the default writes.
+        $waivedAbsence = false;
+        // What this month can put towards its advances once the other deductions are taken.
+        // Only meaningful on a shortfall; on a normal month every advance settles in full.
+        $carryTo = null;        // the month that inherits the uncovered remainder
+        $advanceBudget = null;  // null = settle everything in full (no shortfall)
         $netRaw = (float) ($row['net_raw'] ?? 0);
-        if ($manualNet === null && $netRaw < 0) {
-            $otherDed = round((float) ($row['absent_deduction'] ?? 0)
-                            + (float) ($row['late_deduction'] ?? 0), 2);
+        if ($manualNet === null && $netRaw < 0 && $shortfallMode === self::SHORTFALL_CARRY) {
+            if (!$carryOk) {
+                return ['success' => false, 'message' => 'Moving an advance to next month needs the '
+                    . 'database update (payroll_advance_carry_sep2026.sql) — until then choose "write it off".'];
+            }
+            $advanceTotal = round((float) ($row['advance_total'] ?? 0), 2);
+            // Salary + add-ons − absent/late/held = what is left for the advances. Never below 0.
+            $advanceBudget = max(0, round($netRaw + $advanceTotal, 2));
+            $carried = round(min($advanceTotal, $advanceTotal - $advanceBudget), 2);
+            // ⚠ A shortfall with NO advance (a held charge bigger than the salary) has nothing to
+            // move; that part is written off exactly as before and the note says so.
+            $lostAnyway = round(max(0, -1 * $netRaw - $carried), 2);
+            if ($carried > 0) {
+                // Next month, or the first month after it that is not already paid (paying a
+                // late August after September already went out must not strand the money on
+                // a month that will never be paid again).
+                $carryTo = $this->nextUnpaidMonthFor($userId, date('Y-m', strtotime($month . '-01 +1 month')),
+                    date('Y-m', strtotime($month . '-01 +13 month')))
+                    ?: date('Y-m', strtotime($month . '-01 +1 month'));
+                $shortNotes[] = 'advance remainder of ' . number_format($carried) . ' moved to '
+                    . date('M Y', strtotime($carryTo . '-01'));
+            }
+            if ($lostAnyway > 0) {
+                $shortNotes[] = 'shortfall of ' . number_format($lostAnyway) . ' written off';
+            }
+            \Log::info('Payroll shortfall carried', [
+                'user_id' => $userId, 'month' => $month, 'net_raw' => $netRaw,
+                'advance_budget' => $advanceBudget, 'carried' => $carried, 'carry_to' => $carryTo,
+            ]);
+        } elseif ($manualNet === null && $netRaw < 0) {
+            // ⚠ Only an UNDECIDED month's absent cut is waivable. When a manager has already
+            // pressed Deduct / Park / Excuse, that decision owns the money: silently zeroing
+            // it here would leave the decision row saying one thing and the payslip another,
+            // and re-deciding a parked month whose days another month's overtime already
+            // covered is the unwind the absence engine refuses outright. The late cut has no
+            // such record, so it is always waivable.
+            $absDecided = $this->absence->enabled() ? $this->absence->decisionFor($userId, $month) : null;
+            $waivableAbsent = $absDecided === null ? (float) ($row['absent_deduction'] ?? 0) : 0.0;
+            $otherDed = round($waivableAbsent + (float) ($row['late_deduction'] ?? 0), 2);
             $lost = round(-1 * $netRaw, 2);
-            if ($shortfallMode === 'waive_deductions' && $otherDed > 0) {
+            if ($shortfallMode === self::SHORTFALL_WAIVE && $otherDed > 0) {
                 // The owner's "change the deductions to 0": remove the CAUSE rather than
                 // forgive the advance. Anything still short is written off and said so.
                 $net = max(0, round($netRaw + $otherDed, 2));
@@ -1733,9 +1984,19 @@ class PayrollService
                 // cut is a zero on the receipt, or the history page would show Rs 2,671
                 // deducted beside a note saying it was waived. ($row is captured by value
                 // into the pay transaction below, so this must happen here.)
-                $row['absent_deduction'] = 0;
-                $row['late_deduction']   = 0;
-                $shortNotes[] = 'absent/late deductions of ' . number_format($otherDed)
+                $waivedAbsence = $waivableAbsent > 0;
+                $waivedLate    = (float) ($row['late_deduction'] ?? 0) > 0;
+                if ($waivedAbsence) {
+                    $row['absent_deduction'] = 0;
+                }
+                $row['late_deduction'] = 0;
+                // Name what was actually dropped. A receipt reading "absent/late waived" on a
+                // month where only the late cut moved is a small lie that outlives everyone
+                // who could correct it — and the absent cut may be untouched here precisely
+                // because a manager had already decided it.
+                $what = $waivedAbsence && $waivedLate ? 'absent + late deductions'
+                    : ($waivedAbsence ? 'absent deduction' : 'late deduction');
+                $shortNotes[] = $what . ' of ' . number_format($otherDed)
                     . ' waived to avoid writing off the advance';
             }
             if ($lost > 0) {
@@ -1763,7 +2024,7 @@ class PayrollService
         $deferLeave = !empty($opts['defer_leave_actions']);
 
         try {
-            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet, $deferLeave, $shortNotes) {
+            return DB::transaction(function () use ($userId, $month, $row, $net, $funding, $bankId, $actorId, $appliedLateLeave, $appliedBonusLeaves, $manualNet, $deferLeave, $shortNotes, $waivedAbsence, $advanceBudget, $carryTo, $carryOk) {
                 // Funding (source) account — NF Cash, or the single ONLINE ledger account tagged per bank.
                 if ($funding === 'online') {
                     $source = \App\Models\FIN\ConfigModel::getOnlineBankAccount();
@@ -1822,6 +2083,7 @@ class PayrollService
                 // wrong, so we abort the whole payment rather than settle a cancelled advance or
                 // double-deduct one.
                 $settledIds = [];
+                $absorbed = 0.0;   // what THIS payment actually deducted — goes on the receipt
                 if ($manualNet === null) {
                     // ⭐ SHORTFALL (Sep-2026). When deductions exceed the salary, net clamps to
                     // 0 and every advance is still marked FULLY settled — so whatever the salary
@@ -1838,28 +2100,67 @@ class PayrollService
                     // applying this month's absent/late deductions (which is the owner's own
                     // "change the deductions to 0"). Anything still short after that is written
                     // off, and the receipt says so.
+                    //
+                    // ⭐ Sep-7 2026 — CARRY. With `settled_amount` the honest answer exists:
+                    // oldest first, each advance takes what is left of this month's budget;
+                    // an advance the budget cannot finish keeps the rest OPEN with
+                    // `carry_month` = next month, and that month's grid deducts it. The advance
+                    // is stamped `settled` only once salaries have taken all of it.
+                    $budget = $advanceBudget;   // null = no shortfall → everything in full
+                    $carryLabel = $carryTo ? date('M Y', strtotime($carryTo . '-01')) : null;
                     foreach ($row['advances'] as $a) {
                         if (empty($a['request_id'])) {
                             continue;
                         }
-                        $affected = DB::table('t_req_master')
+                        $open = round((float) $a['amount'], 2);                 // still open now
+                        $take = $budget === null ? $open : round(min($open, $budget), 2);
+                        if ($budget !== null) { $budget = round($budget - $take, 2); }
+                        $full = $take >= $open - 0.005;
+                        $fields = [
+                            'settled_by' => $actorId,
+                            'updated_at' => now(),
+                        ];
+                        if ($full) {
+                            $fields += [
+                                'settlement_status' => 'settled',
+                                'settled_at'        => now(),
+                                'settlement_notes'  => 'Recovered from ' . date('M Y', strtotime($month . '-01')) . ' salary'
+                                    . ((float) ($a['settled_amount'] ?? 0) > 0
+                                        ? ' (Rs ' . number_format($a['settled_amount']) . ' taken by earlier months)' : ''),
+                                'settlement_transaction_id' => $ledgerId,
+                            ];
+                            if ($carryOk) { $fields['settled_amount'] = (float) ($a['original_amount'] ?? $open); }
+                        } else {
+                            // Part-recovered: stays open, moves on. `settlement_transaction_id`
+                            // is left for the payment that finally closes it.
+                            $fields += [
+                                'settlement_status' => 'pending',   // explicitly still owed
+                                'settled_amount'   => round((float) ($a['settled_amount'] ?? 0) + $take, 2),
+                                'carry_month'      => $carryTo,
+                                // A second advance behind one that used the whole budget takes
+                                // nothing here — say that, rather than "Rs 0 recovered".
+                                'settlement_notes' => ($take > 0
+                                        ? 'Rs ' . number_format($take) . ' recovered from '
+                                            . date('M Y', strtotime($month . '-01')) . ' salary; '
+                                        : date('M Y', strtotime($month . '-01')) . ' salary could not cover it; ')
+                                    . 'Rs ' . number_format($open - $take) . ' moved to ' . $carryLabel,
+                            ];
+                        }
+                        $q = DB::table('t_req_master')
                             ->where('id', $a['request_id'])
                             ->where('status', 'approved')
                             ->where(function ($q) {
                                 $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
-                            })
-                            ->update([
-                                'settlement_status' => 'settled',
-                                'settled_at'        => now(),
-                                'settled_by'        => $actorId,
-                                'settlement_notes'  => 'Recovered from ' . date('M Y', strtotime($month . '-01')) . ' salary',
-                                'settlement_transaction_id' => $ledgerId,
-                                'updated_at'        => now(),
-                            ]);
+                            });
+                        // Optimistic lock on what was already taken — a stale grid must not
+                        // re-take a slice another payment took a moment ago.
+                        if ($carryOk) { $q->where('settled_amount', (float) ($a['settled_amount'] ?? 0)); }
+                        $affected = $q->update($fields);
                         if ($affected !== 1) {
                             throw new \RuntimeException('the advances changed while this page was open — refresh payroll and pay again');
                         }
-                        $settledIds[] = $a['request_id'];
+                        $absorbed = round($absorbed + $take, 2);
+                        if ($full) { $settledIds[] = $a['request_id']; }
                     }
                 }
 
@@ -1910,11 +2211,23 @@ class PayrollService
                 // Paying with no decision IS the decision: it takes the cut, exactly as
                 // payroll always has. Recording it stops the month nagging afterwards and
                 // leaves an auditable row saying who let the default stand.
+                //
+                // ⚠⚠ Unless the shortfall answer WAIVED that cut, in which case no money was
+                // taken for these days and recording a "cut" would book Rs N of absence money
+                // this payment never collected (`amount_cut_now` = days × rate). The days were
+                // forgiven so the salary could recover more of the advance, and EXCUSE is the
+                // decision that means exactly that — nothing charged, nothing owed. Recording
+                // "park" instead would let the company collect the same days twice: once here
+                // through the extra advance recovery, and again as a later charge.
                 if ($manualNet === null && (float) ($row['absent_days'] ?? 0) > 0
                     && $this->absence->enabled()
                     && $this->absence->decisionFor($userId, $month) === null) {
-                    $this->absence->commit($userId, $month, (float) $row['absent_days'], 'cut',
-                        (float) ($row['absence_day_rate'] ?? 0), $actorId, 'Cut by default at payment');
+                    $this->absence->commit($userId, $month, (float) $row['absent_days'],
+                        $waivedAbsence ? 'excuse' : 'cut',
+                        (float) ($row['absence_day_rate'] ?? 0), $actorId,
+                        $waivedAbsence
+                            ? 'Excused at payment — the cut was waived to recover more of the advance'
+                            : 'Cut by default at payment');
                 }
                 // A held charge that rode on this pay is now actually paid.
                 if ($manualNet === null && (float) ($row['held_absence_deduction'] ?? 0) > 0) {
@@ -1959,7 +2272,10 @@ class PayrollService
                     'late_deduction'   => $manualNet !== null ? 0 : $row['late_deduction'],
                     'late_leave_deduct' => $appliedLateLeave,
                     'bonus_leaves'     => $appliedBonusLeaves,
-                    'advance_total'    => $manualNet !== null ? 0 : $row['advance_total'],
+                    // ⭐ What this payment DEDUCTED, not what was open: after a carry the two
+                    // differ, and HQ's gross = net + advance_total must book only the part
+                    // this month absorbed (the rest is booked by the month that inherits it).
+                    'advance_total'    => $manualNet !== null ? 0 : $absorbed,
                     'net_salary'       => $net,
                     'funding'          => $funding,
                     'bank_id'          => $bankId,
@@ -2144,13 +2460,26 @@ class PayrollService
                 // whichever month was paid FIRST — so paying September before August silently
                 // moved August's advance onto September. Uses the same month expression as the
                 // reporting engine, so what a month is charged is exactly what it recovers.
+                // ⭐ RECOVERY month (Sep-7 2026): a remainder carried forward at pay time is
+                // recovered from `carry_month`, not from the month the cash left. Same
+                // expression the accrual cost engine keys on, so what a month recovers is
+                // exactly what it is charged.
                 ->when($month !== null, fn ($q) => $q->whereRaw(
-                    \App\Services\HR\SalaryCostService::monthExpr('t_req_master') . ' = ?', [$month]
+                    \App\Services\HR\SalaryCostService::recoveryMonthExpr('t_req_master') . ' = ?', [$month]
                 ))
                 ->orderBy('created_at', 'asc')
-                ->get(['id', 'amount', 'request_number', 'created_at', 'description',
-                       'payment_source_account_id', 'receiving_account_id', 'created_by',
-                       'ledger_transaction_id']);
+                ->get(array_merge(
+                    ['id', 'amount', 'request_number', 'created_at', 'expense_date', 'description',
+                     'payment_source_account_id', 'receiving_account_id', 'created_by',
+                     'ledger_transaction_id'],
+                    \App\Services\HR\SalaryCostService::hasCarryColumns()
+                        ? ['settled_amount', 'carry_month']
+                        : [],
+                    \App\Services\HR\SalaryCostService::hasMonthColumn() ? ['payroll_month'] : []
+                ));
+            // What is still open. Before the carry SQL every row is untouched (settled 0).
+            $rows = $rows->filter(fn ($r) => round((float) $r->amount - (float) ($r->settled_amount ?? 0), 2) > 0)
+                         ->values();
             if ($rows->isEmpty()) {
                 return [];
             }
@@ -2183,7 +2512,17 @@ class PayrollService
             return $rows->map(fn ($r) => [
                 'request_id' => $r->id,
                 'request_number' => $r->request_number,
-                'amount' => (float) ($r->amount ?? 0),
+                // ⚠ `amount` is what is STILL OPEN — every caller deducts, settles, sums or
+                // displays this figure, and after a carry it is smaller than the advance given.
+                'amount' => round((float) ($r->amount ?? 0) - (float) ($r->settled_amount ?? 0), 2),
+                'original_amount' => (float) ($r->amount ?? 0),
+                'settled_amount'  => (float) ($r->settled_amount ?? 0),
+                // The month the cash was given for, when the remainder was moved on from it —
+                // so a grid row can say "Rs 16,529 · carried from Aug" instead of a bare figure.
+                'carried_from' => !empty($r->carry_month)
+                    ? (string) (!empty($r->payroll_month) ? $r->payroll_month
+                        : substr((string) ($r->expense_date ?: $r->created_at), 0, 7))   // legacy row
+                    : null,
                 'date' => $r->created_at ? substr((string) $r->created_at, 0, 10) : null,
                 'source' => $r->payment_source_account_id
                     ? ($accts[$r->payment_source_account_id]->account_name ?? null) : null,
@@ -2387,6 +2726,14 @@ class PayrollService
                     }
                     $req->payroll_month = $approveMonth;
                 }
+                // ⭐ Same CAP as "+ advance": the ask may be bigger than the month can deduct.
+                // Refused rather than trimmed — the amount is the employee's, not ours to edit;
+                // the manager rejects it and gives what fits from the grid.
+                $capMonth = $req->payroll_month ?? now()->format('Y-m');
+                if ($cap = $this->advanceCapMessage((int) $req->requester_user_id, $capMonth, (float) $req->amount)) {
+                    return ['success' => false, 'message' => $cap
+                        . ' Reject this request and give the amount that fits from the payroll grid.'];
+                }
                 // postSalaryAdvanceFromRequest copies updated_by into ledger.approved_by.
                 $req->updated_by = $actorId;
                 $req->save();
@@ -2501,6 +2848,14 @@ class PayrollService
                 if ((string) $req->settlement_status === 'settled') {
                     return ['success' => false, 'message' => 'This advance was already settled ('
                         . ($req->settlement_notes ?: 'recovered from salary') . ') — it can no longer be voided.'];
+                }
+                // Part of it has already come off a salary (carried forward at pay time). That
+                // salary is paid and its receipt shows the deduction — restoring the whole
+                // amount here would hand back money a payslip already took.
+                if ((float) ($req->settled_amount ?? 0) > 0) {
+                    return ['success' => false, 'message' => 'Rs ' . number_format((float) $req->settled_amount)
+                        . ' of this advance was already deducted from a salary ('
+                        . ($req->settlement_notes ?: 'see payroll') . ') — it can no longer be voided.'];
                 }
                 // Defensive: a settlement row exists even though the flag doesn't say 'settled'.
                 // Never unwind that here (it may be a shared salary row) — refuse and let a human look.
@@ -3033,14 +3388,18 @@ class PayrollService
                         ->where(function ($q) {
                             $q->whereNull('settlement_status')->orWhere('settlement_status', '!=', 'settled');
                         })
-                        ->update([
+                        ->update(array_merge([
                             'settlement_status' => 'settled',
                             'settled_at'        => now(),
                             'settled_by'        => $actorId,
                             'settlement_notes'  => 'Recovered from ' . $label . ' salary',
                             'settlement_transaction_id' => $ledgerId,
                             'updated_at'        => now(),
-                        ]);
+                        ], \App\Services\HR\SalaryCostService::hasCarryColumns()
+                            // A custom period only ever takes an advance whole, so "settled"
+                            // means all of it — keep the ledger of what-was-taken consistent.
+                            ? ['settled_amount' => (float) ($a['original_amount'] ?? $a['amount'])]
+                            : []));
                     if ($affected !== 1) {
                         throw new \RuntimeException('the advances changed while this page was open — refresh payroll and pay again');
                     }

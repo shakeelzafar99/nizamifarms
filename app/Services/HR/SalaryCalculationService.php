@@ -239,6 +239,12 @@ class SalaryCalculationService
             'absent_days' => $absentDays, // subtract leave + not-needed
             'leave_days' => $leaveDays,
             'late_minutes' => $lateOt['late_minutes'],
+            // ⭐ Sep-6 2026 — `late_minutes` above is already NET of anything a manager waived,
+            // so the buffer rule downstream meets the right figure. These two carry the split
+            // through so a payslip can say "400 min late, 200 waived" instead of quietly
+            // showing the smaller number and looking like the engine changed its mind.
+            'late_waived_minutes' => $lateOt['late_waived_minutes'] ?? 0,
+            'late_raw_minutes' => $lateOt['late_raw_minutes'] ?? $lateOt['late_minutes'],
             'overtime_minutes' => $lateOt['overtime_minutes'],
             'overtime_hours' => round($lateOt['overtime_minutes'] / 60, 2)
         ];
@@ -499,6 +505,13 @@ class SalaryCalculationService
 
         return [
             'late_minutes' => $lateMinutes,
+            // ⚠⚠ Sep-6 2026 — `late_minutes` above is NET of anything a manager waived, and a
+            // salary slip FREEZES it forever. Without these two the receipt would record "120
+            // minutes late" for a month the engine measured at 400, and the 280 forgiven
+            // minutes would be unrecoverable from the slip. The deduction is right either way;
+            // this is about the slip still being able to explain itself a year later.
+            'late_waived_minutes' => (int) ($attendanceData['late_waived_minutes'] ?? 0),
+            'late_raw_minutes' => (int) ($attendanceData['late_raw_minutes'] ?? $lateMinutes),
             'late_deduction' => $lateDeduction,
             'late_deduction_overridden' => $lateDeductionOverridden,
             'absent_days' => $absentDays,

@@ -34,33 +34,69 @@
         @endif
     </div>
 
-    {{-- Period selector --}}
+    {{-- Period selector + 🔍 search.
+         Searching is a MODE, not a filter on the window: it looks at all history and drops the
+         running balance (see bankDetail()). The period chips stay visible but are disabled while
+         a search is up, because they no longer decide anything. --}}
     <div class="filter-bar">
         <div class="row-actions">
             @php
                 // NB: not array_filter() — days=0 ("All") is falsy and would be silently dropped.
                 $navBase = ['id' => $isUnassigned ? 'unassigned' : $bank['id'], 'scope' => $scope]
-                    + ($showHistory ? ['history' => 1] : []);
+                    + (($showHistory && !$isSearch) ? ['history' => 1] : []);
             @endphp
             @foreach(['30' => '30d', '90' => '90d', '365' => '1yr', '0' => 'All'] as $d => $lbl)
-                <a class="mini-btn {{ (string)$days === $d ? 'on' : '' }}" href="{{ route('fin.hub.bank', $navBase + ['days' => $d]) }}">{{ $lbl }}</a>
+                <a class="mini-btn {{ (!$isSearch && (string)$days === $d) ? 'on' : '' }}"
+                   @if($isSearch) style="opacity:.45;pointer-events:none" aria-disabled="true" @endif
+                   href="{{ route('fin.hub.bank', $navBase + ['days' => $d]) }}">{{ $lbl }}</a>
             @endforeach
         </div>
-        <span class="stmt-tot" style="margin-left:auto"><span class="g">In Rs. {{ number_format($totalIn, 0) }}</span> · <span class="r">Out Rs. {{ number_format($totalOut, 0) }}</span> · <span>Net Rs. {{ number_format($totalIn - $totalOut, 0) }}</span></span>
+        <form method="GET" action="{{ route('fin.hub.bank', ['id' => $isUnassigned ? 'unassigned' : $bank['id']]) }}"
+              style="display:flex;gap:6px;align-items:center;margin-left:auto">
+            <input type="hidden" name="scope" value="{{ $scope }}">
+            <input type="hidden" name="days" value="{{ $days }}">
+            <input type="search" name="q" value="{{ $search }}" class="stmt-search"
+                   placeholder="🔍 amount, name, order #, bank ref…"
+                   title="Searches all history — amount (±1), description, customer or vendor name, order number, and the bank's own reference or payer name">
+            <button class="mini-btn solid" type="submit">Search</button>
+            @if($isSearch)
+                <a class="mini-btn" href="{{ route('fin.hub.bank', ['id' => $isUnassigned ? 'unassigned' : $bank['id'], 'scope' => $scope, 'days' => $days]) }}">Clear</a>
+            @endif
+        </form>
+        <span class="stmt-tot" style="width:100%;justify-content:flex-end">
+            <span class="g">In Rs. {{ number_format($totalIn, 0) }}</span> · <span class="r">Out Rs. {{ number_format($totalOut, 0) }}</span> · <span>Net Rs. {{ number_format($totalIn - $totalOut, 0) }}</span>
+            @if($isSearch)<span style="color:var(--ink3);font-weight:600">· of the matches</span>@endif
+        </span>
     </div>
 
     <div class="card">
         <div class="card-head">
-            <h3>Statement</h3>
+            <h3>{{ $isSearch ? 'Search results' : 'Statement' }}</h3>
             <span class="meta">
-                {{ $days == 0 ? 'all history' : 'last '.$days.' days' }} · {{ $count }} counted {{ \Illuminate\Support\Str::plural('entry', $count) }}
-                @if($resetDate)
-                    · running balance from the {{ \Carbon\Carbon::parse($resetDate)->format('M d, Y') }} reset
+                @if($isSearch)
+                    {{ $count }} {{ \Illuminate\Support\Str::plural('match', $count) }} for “{{ $search }}” · all history · no running balance
+                    @if($searchCapped)· <b style="color:var(--owe)">only the newest 1,000 shown — narrow the search</b>@endif
                 @else
-                    · running balance from opening + tagged movements
+                    {{ $days == 0 ? 'all history' : 'last '.$days.' days' }} · {{ $count }} counted {{ \Illuminate\Support\Str::plural('entry', $count) }}
+                    @if($resetDate)
+                        · running balance from the {{ \Carbon\Carbon::parse($resetDate)->format('M d, Y') }} reset
+                    @else
+                        · running balance from opening + tagged movements
+                    @endif
+                    @if($bankDated > 0)· 🏦 {{ $bankDated }} with the bank's own date @endif
                 @endif
             </span>
         </div>
+        @if($isSearch)
+            {{-- Said plainly, because the Balance column vanishing is the kind of thing that reads
+                 as a bug unless the screen owns it. --}}
+            <div class="note-card" style="margin:0 14px 12px">
+                Searching <b>all history</b> for “{{ $search }}” — the period buttons and the reset
+                baseline are ignored, so hits from before the reset show here too. There is
+                <b>no running balance</b> on a search: a balance is only true over an unbroken run
+                of entries, and these are picked out of the middle. Clear the search to get it back.
+            </div>
+        @endif
         @forelse($groups as $g)
             @php
                 // A day made up entirely of pre-reset rows contributes nothing to the balance, so it
@@ -76,7 +112,12 @@
             <div class="day-group">
                 <div class="day-head">
                     <b>{{ $g['date'] === 'unknown' ? 'Undated' : \Carbon\Carbon::parse($g['date'])->format('D, M d, Y') }}</b>
-                    @if($isHistoricDay)
+                    @if($isSearch)
+                        {{-- Deliberately NOT the day's In/Out/Net. These rows are the matches, not
+                             the day — printing a day total here would state a figure for a day the
+                             screen is only showing part of. --}}
+                        <span style="color:var(--ink3)">{{ count($g['items']) }} {{ \Illuminate\Support\Str::plural('match', count($g['items'])) }} on this day</span>
+                    @elseif($isHistoricDay)
                         <span style="opacity:.6">In Rs. {{ number_format($g['pre_in'], 0) }} · Out Rs. {{ number_format($g['pre_out'], 0) }}</span>
                         <span class="day-net historic">before reset — not counted</span>
                     @else
@@ -92,7 +133,7 @@
                 <div class="table-wrap">
                     <table>
                         <thead><tr>
-                            <th class="col-time">Time</th><th>Type</th><th>Description</th><th class="r">In</th><th class="r">Out</th><th class="r">Balance</th>
+                            <th class="col-time">Time</th><th>Type</th><th>Description</th><th class="r">In</th><th class="r">Out</th>@if(!$isSearch)<th class="r">Balance</th>@endif
                             @if($isUnassigned && $isTaimur)<th class="r">Assign</th>@endif
                         </tr></thead>
                         <tbody>
@@ -133,12 +174,30 @@
                                 <td><span class="type-chip">{{ $typeLabel }}</span></td>
                                 <td class="desc" title="{{ $it['description'] }}">{{ \Illuminate\Support\Str::limit($it['description'], 48) ?: '—' }}@if($it['counterparty']) <span class="bank-tag">{{ $it['counterparty'] }}</span>@endif
                                     @if($isPre)<span class="bank-tag" style="background:var(--surface2);color:var(--ink3)">{{ !empty($it['pre_same_day']) ? 'already included in the reset figure' : 'before reset — not counted' }}</span>@endif
+                                    {{-- 🏦 The bank's OWN date/reference for this row, read off the SMS,
+                                         bank email or screenshot behind it. The row above is filed under
+                                         the day we RECORDED it; this is the line to match against a real
+                                         bank statement. Amber when the two are different days. --}}
+                                    @if(!empty($it['bank_at']))
+                                        @php
+                                            $bankAt = \Carbon\Carbon::parse($it['bank_at']);
+                                            $bankDrift = substr((string) $it['bank_at'], 0, 10) !== (string) $it['date'];
+                                            $srcLabel = ['bank_sms' => 'bank SMS', 'email' => 'bank email', 'whatsapp' => 'customer screenshot'][$it['bank_src'] ?? ''] ?? 'proof';
+                                        @endphp
+                                        <div class="bank-date {{ $bankDrift ? 'drift' : '' }}"
+                                             title="From the {{ $srcLabel }} behind this payment — the bank's own date and time{{ $bankDrift ? '. It is NOT the day this row is filed under.' : '' }}">
+                                            🏦 {{ $bankAt->format('M d') }} · {{ $bankAt->format('g:i A') }}@if(!empty($it['bank_ref'])) · ref <span class="mono">{{ \Illuminate\Support\Str::limit($it['bank_ref'], 18) }}</span>@endif
+                                            @if($bankDrift)<span class="bd-flag">bank's date</span>@endif
+                                        </div>
+                                    @endif
                                 </td>
                                 <td class="r">@if(!$isReset && $it['direction'] === 'in')<span class="amt in num">{{ number_format($it['amount'], 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
                                 <td class="r">@if(!$isReset && $it['direction'] === 'out')<span class="amt out num">{{ number_format($it['amount'], 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
+                                @if(!$isSearch)
                                 <td class="r num" style="color:{{ $it['running'] !== null && $it['running'] < 0 ? 'var(--out)' : 'var(--ink2)' }}">
                                     {{ $it['running'] === null ? '—' : number_format($it['running'], 2) }}
                                 </td>
+                                @endif
                                 @if($isUnassigned && $isTaimur)
                                 <td class="r" onclick="event.stopPropagation()">
                                     @if(!$isReset && !$isPre)
@@ -159,11 +218,35 @@
                 </div>
             </div>
         @empty
-            <div class="empty">No movements in this period.</div>
+            @if($isSearch)
+                <div class="empty">
+                    <div>Nothing on {{ $isUnassigned ? 'the untagged bucket' : $bank['name'] }} matches “{{ $search }}”.</div>
+                    @if(count($elsewhere))
+                        {{-- The whole point of the search: the money IS in the ledger, just filed
+                             against another bank. Say so, and offer the jump. --}}
+                        <div class="found-elsewhere">
+                            <b>Found on {{ count($elsewhere) === 1 ? 'another bank' : 'other banks' }}:</b>
+                            <div class="fe-list">
+                                @foreach($elsewhere as $e)
+                                    <a class="mini-btn" href="{{ route('fin.hub.bank', ['id' => $e['id'], 'scope' => $scope, 'days' => $days, 'q' => $search]) }}">
+                                        {{ $e['label'] }} · {{ $e['count'] }} {{ \Illuminate\Support\Str::plural('match', $e['count']) }}@if($e['last']) · latest {{ $e['last'] }}@endif
+                                    </a>
+                                @endforeach
+                            </div>
+                        </div>
+                    @else
+                        <div style="font-size:12px;margin-top:6px">It isn't on any other bank either. Try the amount on its own, the customer or vendor name, the order number, or the bank's reference.</div>
+                    @endif
+                </div>
+            @else
+                <div class="empty">No movements in this period.</div>
+            @endif
         @endforelse
 
-        {{-- Pre-reset history is never deleted — just excluded from the balance and folded away. --}}
-        @if($resetDate && ($preCount > 0 || $showHistory))
+        {{-- Pre-reset history is never deleted — just excluded from the balance and folded away.
+             Never shown during a search: a search already reads all history, so the show/hide
+             toggle would be offering something it has already done. --}}
+        @if(!$isSearch && $resetDate && ($preCount > 0 || $showHistory))
             <div class="hist-bar">
                 @if($showHistory)
                     <span>Showing {{ $preShown }} earlier {{ \Illuminate\Support\Str::plural('row', $preShown) }} from before the {{ \Carbon\Carbon::parse($resetDate)->format('M d, Y') }} reset. They are greyed out because they do not count towards this balance.</span>

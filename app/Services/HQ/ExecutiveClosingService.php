@@ -1719,6 +1719,7 @@ class ExecutiveClosingService
         // into "Expenses", which stays the request-based expense ledger).
         $netProfit   = $grossProfit - $expense - $salary;
         $assets      = $this->monthAssetPurchases($unit, $start, $ledgerEnd ?? $end);
+        $supplies    = $this->monthSupplyPurchases($unit, $start, $ledgerEnd ?? $end);
 
         return [
             'revenue'          => round($revenue, 0),
@@ -1742,6 +1743,11 @@ class ExecutiveClosingService
             // net profit so "assets bought this month" reconciles with Reports.
             'asset_purchases'       => round($assets['amount'], 0),
             'asset_purchases_count' => $assets['count'],
+            // 📦 Packaging stock bought this month — money out, but NOT part of the P&L
+            // (it becomes an expense packet by packet, as it is used). Own box beside
+            // asset purchases so the month's cash still reconciles.
+            'supplies_bought'       => round($supplies['amount'], 0),
+            'supplies_bought_count' => $supplies['count'],
         ];
     }
 
@@ -1763,12 +1769,31 @@ class ExecutiveClosingService
         return ['amount' => (float) $row->amt, 'count' => (int) $row->n];
     }
 
+    /**
+     * 📦 Storage stock bought in the window. Money left the accounts, but it is NOT an
+     * expense yet — it becomes one, one packet at a time, as the stock is used. So it is
+     * deliberately outside revenue − vendor − expenses, and gets its own box beside
+     * asset purchases, exactly like capital spending. Same shape and same unit scoping.
+     */
+    private function monthSupplyPurchases(string $unit, Carbon $start, Carbon $end): array
+    {
+        $row = $this->ledgerTypeBase(LedgerModel::TYPE_SUPPLY_PURCHASE, $unit, $start, $end)
+            ->selectRaw('COALESCE(SUM(l.amount),0) amt, COUNT(*) n')->first();
+        return ['amount' => (float) $row->amt, 'count' => (int) $row->n];
+    }
+
     /** Shared base for the asset-purchase total + its drill list. */
     private function assetPurchaseBase(string $unit, Carbon $start, Carbon $end)
     {
+        return $this->ledgerTypeBase('asset_purchase', $unit, $start, $end);
+    }
+
+    /** One ledger type, one window, scoped to the selected unit. */
+    private function ledgerTypeBase(string $type, string $unit, Carbon $start, Carbon $end)
+    {
         $kh = (int) ($this->khaasBusinessUnitId() ?: -1);
         $q = DB::table('t_fin_ledger as l')
-            ->where('l.transaction_type', 'asset_purchase')
+            ->where('l.transaction_type', $type)
             ->whereIn('l.approval_status', self::POSTED_STATUSES)
             ->whereBetween('l.transaction_date', [$start, $end]);
         if ($unit === self::UNIT_NF) {
@@ -2436,9 +2461,12 @@ class ExecutiveClosingService
             'gross_profit'     => round($revenue, 0),
             'expenses'         => round($expense, 0),
             'net_profit'       => round($revenue - $expense, 0),
-            // Qurbani assets are tracked under NF / Frozen, not here.
+            // Qurbani assets are tracked under NF / Frozen, not here. Same for Storage
+            // stock — packaging is bought against NF, never against a Qurbani season.
             'asset_purchases'       => 0,
             'asset_purchases_count' => 0,
+            'supplies_bought'       => 0,
+            'supplies_bought_count' => 0,
             // secondary — delivered so far this season
             'delivered_revenue' => round((float) $deliv->rev, 0),
             'delivered_orders'  => (int) $deliv->ord,

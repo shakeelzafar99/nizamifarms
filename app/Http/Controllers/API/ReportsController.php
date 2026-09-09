@@ -331,6 +331,21 @@ class ReportsController extends Controller
                       AND approval_status = ?
                 ", [$startDate, $endDate, LedgerModel::STATUS_APPROVED]);
 
+                // 📦 Storage stock bought this month. Cash left the accounts NOW, but it
+                // is NOT an expense yet — it becomes one packet at a time, as the stock
+                // is used, so it must stay out of `expenses` and out of profit. Reported
+                // on its own line (like asset purchases) so the month still reconciles
+                // and a big packaging purchase is never invisible.
+                $supplyData = DB::selectOne("
+                    SELECT
+                        COALESCE(SUM(amount), 0) as total,
+                        COUNT(*) as count
+                    FROM t_fin_ledger
+                    WHERE transaction_date >= ? AND transaction_date <= ?
+                      AND transaction_type = ?
+                      AND approval_status = ?
+                ", [$startDate, $endDate, LedgerModel::TYPE_SUPPLY_PURCHASE, LedgerModel::STATUS_APPROVED]);
+
                 // Salaries paid this month (payroll payments + legacy slips), split by BU.
                 // A real cost, tracked on its own line (not inside the expense figure).
                 [$salariesNf, $salariesKhaasRaw] = $this->salariesForWindow($nfBuId, $khaasBuId, $startDate, $endDate);
@@ -386,6 +401,9 @@ class ReportsController extends Controller
                     'salaries_khaas'         => $salariesKhaas,
                     'asset_purchases'        => $assetPurchases,
                     'asset_purchase_count'   => (int) ($assetData->count ?? 0),
+                    // 📦 Storage stock bought — money out, deliberately NOT in profit.
+                    'supplies_bought'        => round($supplyData->total ?? 0, 2),
+                    'supplies_bought_count'  => (int) ($supplyData->count ?? 0),
                     'profit'                 => $profit,
                 ];
 

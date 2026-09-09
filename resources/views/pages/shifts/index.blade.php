@@ -278,15 +278,23 @@ function renderShifts() {
   grid.classList.remove('hidden');
   emptyState.classList.add('hidden');
   
+  /* ⏳ A type still WAITING for approval cannot be assigned to anybody, so it is drawn
+     amber and says so. Only its proposer and the top of the ladder are sent one at all
+     (see ShiftController::list), so this branch is invisible to everyone else.
+     ⚠ A JS comment, deliberately — a Blade {{-- --}} comment inside this template literal
+       is the shape that once leaked onto the orders page. */
   grid.innerHTML = allShifts.map(shift => `
-    <div class="bg-white border border-gray-200 rounded-lg p-5 hover:shadow-lg transition ${shift.is_default ? 'ring-2 ring-blue-500' : ''}">
+    <div class="bg-white border ${shift.pending ? 'border-amber-300 bg-amber-50' : 'border-gray-200'} rounded-lg p-5 hover:shadow-lg transition ${shift.is_default ? 'ring-2 ring-blue-500' : ''}">
       <div class="flex justify-between items-start mb-3">
         <div>
           <h3 class="font-semibold text-lg text-gray-900">${shift.shift_name}</h3>
           <p class="text-xs text-gray-500 mt-1">${shift.shift_code}</p>
         </div>
-        ${shift.is_default ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full font-medium">DEFAULT</span>' : ''}
+        ${shift.pending
+          ? '<span class="px-2 py-1 bg-amber-100 text-amber-800 text-xs rounded-full font-bold">⏳ WAITING</span>'
+          : (shift.is_default ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full font-medium">DEFAULT</span>' : '')}
       </div>
+      ${shift.pending ? '<p class="text-xs text-amber-800 font-semibold mb-3">Waiting for approval — nobody can be put on this shift yet.</p>' : ''}
       
       <div class="space-y-2 mb-4">
         <div class="flex items-center text-sm">

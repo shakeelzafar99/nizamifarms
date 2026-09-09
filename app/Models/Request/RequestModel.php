@@ -67,6 +67,11 @@ class RequestModel extends BaseModel
         'settlement_transaction_id',
         'settlement_destination_account_id',
         'settlement_notes',
+        // ⭐ Storage (Supplies): the take-out this expense was raised for. It is what
+        // approve / reject / cancel / delete key on to put the packet back on the shelf,
+        // and what stops an approver's payment-source override taking the cash a SECOND
+        // time (it already left when the stock was bought).
+        'supply_takeout_id',
         'created_by',
         'updated_by'
     ];
@@ -348,6 +353,22 @@ class RequestModel extends BaseModel
             // directly. Guards inside make non-maintenance requests a no-op.
             if ($this->getAttribute('status') === self::STATUS_APPROVED) {
                 \App\Services\Riders\BikeServiceClock::onRequestApproved($this);
+            }
+
+            // ⭐ Storage (Supplies): settle the take-out this request belongs to —
+            // approved marks it used, rejected puts the packet back on the shelf.
+            // Hooked here (after commit, non-fatal, idempotent) so BOTH branches and
+            // every caller of processApproval() are covered by one line. A no-op on
+            // any request that is not a take-out.
+            if ($this->supply_takeout_id) {
+                try {
+                    app(\App\Services\FIN\SupplyStockService::class)->syncWithRequest($this);
+                } catch (\Throwable $e) {
+                    \Log::error('Storage take-out sync failed after approval', [
+                        'request_id' => $this->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             return true;
