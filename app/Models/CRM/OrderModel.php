@@ -1248,7 +1248,14 @@ class OrderModel extends BaseModel
             'partially_paid' => 'processing',
             'paid' => 'completed',
             'partially_refunded' => 'completed',
-            'refunded' => 'refunded',
+            // ⚠ Sep-2026: `refunded` is now OUR "Returned" status, and a Returned
+            // order is supposed to carry a return record saying what happened to
+            // the money and the goods. A Shopify-side refund knows none of that,
+            // so importing one straight into that status would mint a Returned
+            // order with no record behind it and no stock decision ever taken.
+            // A refunded/voided order that arrives from Shopify is simply dead to
+            // us, which is what `cancelled` already means.
+            'refunded' => 'cancelled',
             'voided' => 'cancelled'
         ];
 
@@ -1281,6 +1288,15 @@ class OrderModel extends BaseModel
             'delivered' => 'delivered',
             'completed' => 'delivered',
             'cancelled' => 'cancelled',
+            // ⚠⚠ DO NOT map this to 'cancelled' the way mapShopifyStatus() now
+            // does. It looks like the same guard, but here the value is fed
+            // straight into the `$incomingNormalized === 'cancelled'` test above,
+            // which is what DECIDES whether a Woo edit may move an existing
+            // order's status at all. Re-pointing it would turn every incoming Woo
+            // refund into a real cancellation — reversing ledger rows and
+            // restoring stock on 6,800+ orders that today are simply left alone.
+            // A Woo order that arrives already refunded just sits in Returned
+            // with no return record, which is exactly what it did before Sep-2026.
             'refunded' => 'refunded',
         ];
         return $map[$s] ?? $s; // fallback to normalized underscores
@@ -1469,10 +1485,43 @@ class OrderModel extends BaseModel
      */
     public ?float $creditReleasedOnCancel = null;
 
+    /**
+     * RETURNS (Sep-2026) — transient IN, same non-persisted contract as the
+     * cancellation properties above. The manager's answers from the return form:
+     * money_action, goods_action, meat_section, return_tip, reason, notes.
+     *
+     * ⭐⭐ NULL is the safe default and it MATTERS. A status change to `refunded`
+     * that did not come through the return form (an old client, a script, a door
+     * we have not thought of) does exactly what it does today — nothing — instead
+     * of silently guessing at somebody's money. The four real doors all gate on
+     * the `return_orders` permission and always set this.
+     */
+    public ?array $returnOptions = null;
+
+    /** Transient OUT: the return record this status change created, if any. */
+    public $returnRecord = null;
+
+    /**
+     * Transient OUT: a refusal message the USER should see.
+     *
+     * changeStatus() catches everything and returns false, so until now the
+     * reason a status change failed never reached the screen — the caller could
+     * only say "Failed to update status". A return has real reasons to refuse
+     * ("this invoice has already been settled — refund it instead"), and hiding
+     * them would leave the manager with no idea what to do next.
+     *
+     * ⚠ Only OrderReturnException messages land here. Everything else — a
+     * QueryException above all — stays in the log where it belongs, so a
+     * database error can never paint schema detail onto a toast.
+     */
+    public ?string $lastStatusError = null;
+
     public function changeStatus(string $statusCode, ?string $notes = null, ?int $changedBy = null): bool
     {
         $this->lastInvoicePostError = null;
         $this->lastInvoiceNote = null;
+        $this->returnRecord = null;
+        $this->lastStatusError = null;
         $this->strandedPaymentCredited = null;
         $this->strandedPaymentCreditStatus = null;
         $this->creditReleasedOnCancel = null;
@@ -1489,6 +1538,20 @@ class OrderModel extends BaseModel
             $newStatus = OrderStatusMaster::getByCode($statusCode);
             if (!$newStatus) {
                 throw new \InvalidArgumentException("Invalid status code: {$statusCode}");
+            }
+
+            // ⭐⭐ RETURNED IS FINAL (Sep-2026). A returned order carries a return record
+            // whose refund row / credit grant stands as the counter-entry to an invoice
+            // that was deliberately LEFT in place. Every transition out of it — cancel,
+            // re-deliver, back to processing — would reverse or re-post that invoice on
+            // top of the counter-entry: the till debited twice, the customer credited
+            // twice, chiller packets counted in store stock as well. So the status is a
+            // one-way door once the record exists. Refused here, at the one choke point,
+            // and surfaced to the screen through $lastStatusError.
+            if ($previousNfStatus === \App\Services\CRM\OrderReturnService::STATUS_CODE
+                && $statusCode !== $previousNfStatus
+                && app(\App\Services\CRM\OrderReturnService::class)->isLocked((int) $this->id)) {
+                throw new \App\Exceptions\OrderReturnException(\App\Services\CRM\OrderReturnService::LOCK_MESSAGE);
             }
 
             // No transition enforcement - allow any status change
@@ -1799,6 +1862,31 @@ class OrderModel extends BaseModel
                     }
                 }
 
+                // 4d. RETURNED (Sep-2026). A delivered order came back.
+                //
+                // ⭐⭐ Why this is not just "cancel with a different word":
+                //   · cancel REFUSES once the cash has been settled — but a
+                //     return most often happens exactly then, so it must be able
+                //     to hand money back instead of unwinding it;
+                //   · cancel restores stock immediately — a return restores it
+                //     only when the store physically SCANS it back, because the
+                //     goods may be spoiled, short, or never actually returned.
+                //
+                // The whole decision (money + goods) lives in OrderReturnService,
+                // called here so it shares this transaction: if the money cannot
+                // be posted, the status change dies with it and the order stays
+                // delivered. A half-returned order is the one outcome nobody can
+                // unpick later.
+                //
+                // ⚠ No $returnOptions ⇒ do nothing at all (see the property's
+                // docblock). That is deliberate, and it is what keeps every
+                // existing caller's behaviour byte-identical.
+                if ($statusCode === \App\Services\CRM\OrderReturnService::STATUS_CODE
+                    && is_array($this->returnOptions)) {
+                    $this->returnRecord = app(\App\Services\CRM\OrderReturnService::class)
+                        ->applyOnStatusChange($this, $this->returnOptions, $changedBy ?? (auth()->check() ? auth()->id() : null));
+                }
+
                 // 5. If this status is an "out the door" status (auto_prepares in the Status Hub),
                 // auto-prepare all unprepared items and deduct their inventory. Items already marked
                 // as prepared will be skipped (their inventory_deducted flag is already 1).
@@ -2043,6 +2131,11 @@ class OrderModel extends BaseModel
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
+            // Deliberate, user-facing refusals travel back to the caller; nothing
+            // else does. See $lastStatusError.
+            if ($e instanceof \App\Exceptions\OrderReturnException) {
+                $this->lastStatusError = $e->getMessage();
+            }
             return false;
         }
     }

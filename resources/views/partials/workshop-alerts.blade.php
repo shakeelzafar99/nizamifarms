@@ -120,11 +120,39 @@
       ? '<div style="margin-top:6px;padding:6px 8px;background:rgba(252,211,77,.2);border:1px solid rgba(252,211,77,.6);border-radius:7px;font-size:12px;">'
         + (v.warnings||[]).map(function(w){ return '⚠ ' + esc(w); }).join('<br>') + '</div>'
       : '';
-    /* ⚠ Say plainly when nothing CAN be pinned — a workshop day with no registered
-       workshop leaves the rider measured against his usual place and marked remote. */
-    var noPin = v.location_id ? '' :
+    /**
+     * 📍 WHERE DOES HE CHECK IN THAT DAY? (owner ask, 10-Sep-2026)
+     *
+     * ⭐⭐ ASKED, NOT INFERRED. The old rule was "a registered workshop was picked ⇒ his day
+     *    is pinned there", which quietly fused two different decisions: WHICH workshop, and
+     *    WHETHER his day starts there. A planner who wanted "check in at LaCarne as usual,
+     *    ride over at 11" had no way to say so — and the rider was told his place had moved
+     *    when it had not. Now the card states which of the two will happen, and the approver
+     *    can change it before he presses ✓.
+     *
+     * ⚠ `att` is absent on a server whose trip columns have not been applied yet: the old
+     *   inference then applies and the old sentence is shown instead, unchanged.
+     */
+    var att     = v.attendance || null;
+    var attPick = att ? att.value : null;    /* what ✓ will do, mutated by the two buttons */
+    var attLoc  = v.location_id || null;     /* mutated by Adjust — it decides can_pin      */
+
+    var noPin = (att || v.location_id) ? '' :
       '<div style="margin-top:6px;font-size:12px;opacity:.9;">📍 No registered workshop chosen — '
       + 'approving will not move his check-in place. Use <b>Adjust</b> to pick one.</div>';
+
+    var attBox = !att ? ''
+      : (att.asked
+          ? '<div data-att style="margin-top:6px;padding:6px 8px;border-radius:7px;background:rgba(0,0,0,.22);">'
+            + '<div style="font-size:11.5px;font-weight:700;">📍 That day he marks attendance…</div>'
+            + '<div data-att-btns style="display:flex;gap:6px;margin-top:5px;"></div>'
+            + '<div data-att-note style="font-size:11px;opacity:.9;margin-top:5px;"></div>'
+            + '</div>'
+          /* ⚠ TODAY is not a question. He has already started his day somewhere, and moving
+               his check-in place backwards would mark him late — or remote — for a place
+               nobody had told him to go to. `approve()` forces `regular` for today too. */
+          : '<div style="margin-top:6px;font-size:12px;opacity:.9;">📍 He is already at work today — '
+            + 'his check-in place stays ' + esc(att.regular_label) + '.</div>');
 
     el.innerHTML = '<div><b>⏳ Workshop day needs your approval</b><br>'
       + esc(v.rider_name || 'A rider') + ' → ' + esc(v.vehicle_name || 'a bike')
@@ -146,7 +174,7 @@
             + (v.replaces.accepted ? ' — he has confirmed it' : '')
             + '<br><span style="opacity:.9;">Approve karenge to usko dobara bataya jayega.</span></div>'
           : '')
-      + warn + noPin + '</div>'
+      + warn + attBox + noPin + '</div>'
       + '<div data-say style="display:none;margin-top:8px;padding:6px 8px;border-radius:7px;font-size:12px;"></div>'
       + '<div data-panel style="display:none;margin-top:8px;"></div>'
       + '<div data-btns style="margin-top:9px;display:flex;gap:6px;flex-wrap:wrap;">'
@@ -157,6 +185,48 @@
 
     var panel = el.querySelector('[data-panel]');
     var btns  = el.querySelector('[data-btns]');
+
+    /**
+     * Draw the two answers. Re-drawn whenever Adjust changes the workshop, because
+     * "at the workshop" is only an option once there IS a registered one — a typed name has
+     * no coordinates to measure his arrival against, which is why the server refuses that
+     * pair outright rather than pinning him to nothing.
+     */
+    function drawAtt(){
+      if (!att || !att.asked) return;
+      var row  = el.querySelector('[data-att-btns]');
+      var note = el.querySelector('[data-att-note]');
+      if (!row) return;
+      var canPin = !!attLoc;
+      if (!canPin) attPick = 'regular';
+      var opts = [
+        {v:'regular',  t:'at ' + (att.regular_label || 'his usual place'), on:true},
+        {v:'workshop', t:'at the workshop',                               on:canPin}
+      ];
+      row.innerHTML = opts.map(function(o){
+        var sel = (attPick === o.v);
+        return '<button data-att-v="' + o.v + '"' + (o.on ? '' : ' disabled')
+          + ' style="flex:1;border:0;border-radius:7px;padding:6px 8px;font-size:12px;font-weight:700;'
+          + 'cursor:' + (o.on ? 'pointer' : 'not-allowed') + ';'
+          + (sel ? 'background:#fff;color:#4C1D95;' : 'background:rgba(255,255,255,.16);color:#fff;')
+          + (o.on ? '' : 'opacity:.45;') + '">' + (sel ? '● ' : '○ ') + esc(o.t) + '</button>';
+      }).join('');
+      Array.prototype.forEach.call(row.querySelectorAll('[data-att-v]'), function(b){
+        b.addEventListener('click', function(){
+          if (this.disabled) return;
+          attPick = this.getAttribute('data-att-v');
+          drawAtt();
+        });
+      });
+      note.innerHTML = !canPin
+        ? '⚠ No registered workshop chosen yet, so his check-in place cannot move. '
+          + 'Use <b>Adjust</b> to pick one.'
+        : (attPick === 'workshop'
+            ? 'His day is pinned to ' + esc(att.workshop_label) + ' — he will not be marked late or remote there, '
+              + 'and he is told the PLACE has changed.'
+            : 'He checks in as usual and rides over afterwards. Nothing about his day moves.');
+    }
+    drawAtt();
     var fld   = 'width:100%;box-sizing:border-box;border:0;border-radius:7px;padding:6px 8px;font-size:12.5px;color:#111827;margin-top:4px;';
     var lbl   = 'display:block;font-size:11px;font-weight:700;opacity:.85;margin-top:8px;';
 
@@ -176,7 +246,10 @@
 
     el.querySelector('[data-a="ok"]').addEventListener('click', function(){
       this.disabled = true;
-      post('/orders/riders-map/fleet/workshop/' + v.id + '/approve', {}, finish);
+      /* ⚠ Only sent when the question was ASKED. Omitting the key means "as proposed",
+           which is exactly what an untouched card should mean. */
+      var body = (att && att.asked) ? {attendance_at: attPick} : {};
+      post('/orders/riders-map/fleet/workshop/' + v.id + '/approve', body, finish);
     });
 
     el.querySelector('[data-a="adj"]').addEventListener('click', function(){
@@ -187,7 +260,7 @@
         + '<select data-f="loc" style="'+fld+'">'
         + '<option value="">— none (his check-in place will NOT move) —</option>'
         + WS_LOC.map(function(w){ return '<option value="'+w.id+'"'
-              + (String(w.id)===String(v.location_id||'')?' selected':'')+'>'+esc(w.name)+'</option>'; }).join('')
+              + (String(w.id)===String(attLoc||'')?' selected':'')+'>'+esc(w.name)+'</option>'; }).join('')
         + '</select>'
         + (WS_LOC.length ? '' : '<div style="font-size:11px;opacity:.85;margin-top:4px;">'
               + 'No location is ticked as a workshop yet — add one on the Locations page, or from the booking form on Bikes.</div>')
@@ -201,6 +274,12 @@
         + WS_SHIFTS.map(function(s){ return '<option value="'+s.id+'">'+esc(s.name)+(s.start?' · '+esc(s.start):'')+'</option>'; }).join('')
         + '</select>'
         + '<button data-f="go" style="width:100%;margin-top:10px;background:#16A34A;color:#fff;border:0;border-radius:7px;padding:8px;font-weight:700;font-size:12.5px;cursor:pointer;">✓ Approve with these changes</button>';
+      /* ⭐ Picking a workshop here is what makes "at the workshop" answerable above, so the
+           choice redraws live rather than after a save the planner has to undo. */
+      panel.querySelector('[data-f="loc"]').addEventListener('change', function(){
+        attLoc = this.value ? parseInt(this.value,10) : null;
+        drawAtt();
+      });
       panel.querySelector('[data-f="go"]').addEventListener('click', function(){
         this.disabled = true;
         var body = {};
@@ -210,6 +289,8 @@
         body.location_id = L ? parseInt(L,10) : null;
         body.visit_time  = T || null;
         if (P) body.shift_template_id = parseInt(P,10);
+        /* Same rule as the plain ✓ — the answer travels with whichever button approves. */
+        if (att && att.asked) body.attendance_at = attPick;
         post('/orders/riders-map/fleet/workshop/' + v.id + '/approve', body, function(good,msg){
           if (!good) panel.querySelector('[data-f="go"]').disabled = false;
           finish(good, msg);

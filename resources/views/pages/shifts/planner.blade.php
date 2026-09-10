@@ -7,7 +7,7 @@
   /* The modals live OUTSIDE #planWrap, so define the palette on them too — without
      this, var(--brand) resolves to nothing there and the Save button renders
      white-on-white (invisible). */
-  #planWrap, #assignModal, #historyModal, #newLocModal, #newShiftModal { --brand:#B91C1C; --brand-soft:#FBECEC; --line:#E3E8F0; }
+  #planWrap, #assignModal, #historyModal, #newLocModal, #newShiftModal, #rosterModal { --brand:#B91C1C; --brand-soft:#FBECEC; --line:#E3E8F0; }
   .plan-scroll { overflow-x:auto; }
   .plan-table { border-collapse:separate; border-spacing:0; width:100%; min-width:860px; }
   .plan-table th, .plan-table td { border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }
@@ -65,22 +65,22 @@
   .pm-day-chip.off { background:#EEF2F7; color:#94a3b8; text-decoration:line-through; }
   /* Self-contained modal — scoped under #assignModal so the Metronic theme's
      component CSS can't override the width or hide the buttons. */
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-card{ background:#fff; border-radius:14px; box-shadow:0 25px 60px rgba(15,23,42,.35); width:100%; max-width:440px; margin:auto; max-height:calc(100vh - 32px); overflow-y:auto; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-head{ display:flex; justify-content:space-between; align-items:center; padding:16px 18px; border-bottom:1px solid var(--line); }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-head h2{ font-size:17px; font-weight:600; margin:0; color:#0f172a; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-x{ background:none; border:0; font-size:24px; line-height:1; color:#94a3b8; cursor:pointer; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-body{ padding:18px; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#64748b; margin:14px 0 6px; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-body > .pm-label:first-child{ margin-top:0; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-input{ width:100%; padding:9px 11px; font-size:13px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#0f172a; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-card{ background:#fff; border-radius:14px; box-shadow:0 25px 60px rgba(15,23,42,.35); width:100%; max-width:440px; margin:auto; max-height:calc(100vh - 32px); overflow-y:auto; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-head{ display:flex; justify-content:space-between; align-items:center; padding:16px 18px; border-bottom:1px solid var(--line); }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-head h2{ font-size:17px; font-weight:600; margin:0; color:#0f172a; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-x{ background:none; border:0; font-size:24px; line-height:1; color:#94a3b8; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-body{ padding:18px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-label{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#64748b; margin:14px 0 6px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-body > .pm-label:first-child{ margin-top:0; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-input{ width:100%; padding:9px 11px; font-size:13px; border:1px solid var(--line); border-radius:8px; background:#fff; color:#0f172a; }
   #assignModal .mode-opt{ margin-bottom:7px; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-dates{ display:flex; gap:12px; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-dates > div{ flex:1; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-effect{ font-size:12px; color:#37485f; background:#F1F5FB; border:1px solid #E1E8F2; border-radius:8px; padding:9px 11px; margin:14px 0 0; line-height:1.5; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-actions{ display:flex; gap:10px; margin-top:16px; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-save{ flex:1; background:var(--brand); color:#fff; border:0; border-radius:9px; padding:11px; font-size:14px; font-weight:600; cursor:pointer; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-save:hover{ background:#a11818; }
-  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal) .pm-cancel{ padding:11px 16px; background:#fff; color:#475569; border:1px solid var(--line); border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-dates{ display:flex; gap:12px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-dates > div{ flex:1; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-effect{ font-size:12px; color:#37485f; background:#F1F5FB; border:1px solid #E1E8F2; border-radius:8px; padding:9px 11px; margin:14px 0 0; line-height:1.5; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-actions{ display:flex; gap:10px; margin-top:16px; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-save{ flex:1; background:var(--brand); color:#fff; border:0; border-radius:9px; padding:11px; font-size:14px; font-weight:600; cursor:pointer; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-save:hover{ background:#a11818; }
+  :is(#assignModal,#newLocModal,#newShiftModal,#historyModal,#rosterModal) .pm-cancel{ padding:11px 16px; background:#fff; color:#475569; border:1px solid var(--line); border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; }
 </style>
 
 <div id="planWrap" class="p-4 md:p-6">
@@ -108,10 +108,11 @@
       <button onclick="stepWeek(1)" class="w-8 h-8 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-100">›</button>
       <button onclick="goThisWeek()" class="px-2.5 py-1.5 text-xs text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-100">This week</button>
     </div>
-    <div class="seg">
-      <button id="fltRiders" class="on" onclick="setFilter('riders')">Riders</button>
-      <button id="fltAll" onclick="setFilter('all')">All staff</button>
-    </div>
+    {{-- 👥 ONE COMMON LIST (owner ruling Sep-2026): the roster IS the attendance list.
+         The Riders/Everyone chips were removed on 9-Sep — *"no need to differentiate"* —
+         and replaced by the button that edits the list itself. --}}
+    <button id="rosterBtn" style="display:none;" onclick="openRoster()"
+            class="px-3 py-1.5 text-xs font-semibold text-slate-700 border border-slate-300 bg-white rounded-lg hover:bg-slate-50">👥 Users list</button>
     <input id="searchBox" oninput="debouncedSearch()" placeholder="Search name…" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-200 w-44">
     <span id="awaitChip">⏳ <span id="awaitCount">0</span> awaiting confirmation</span>
     {{-- A SECOND count, deliberately not merged with the one beside it: "awaiting
@@ -268,10 +269,31 @@
   </div>
 </div>
 
+{{-- 👥 USERS LIST — who appears on the Shift Planner AND Attendance (one list, owner
+     ruling 9-Sep-2026). Only Shabib and Taimur see the button that opens this.
+     ⚠ #rosterModal is registered in the scoped CSS at the top of this file; without that
+       the .pm-* classes resolve to nothing and it renders unstyled at the foot of the page. --}}
+<div id="rosterModal" class="modal-bg" onclick="closeRoster()">
+  <div class="pm-card" onclick="event.stopPropagation()" style="max-width:520px;">
+    <div class="pm-head">
+      <h2>👥 Users list</h2>
+      <button class="pm-x" onclick="closeRoster()">&times;</button>
+    </div>
+    <div class="pm-body">
+      <div class="pm-effect" style="margin:0 0 12px;">
+        Ticked people appear on <b>both</b> the Shift Planner and Attendance. Untick someone
+        who has left or does not work shifts. Changes save as you tick.
+      </div>
+      <input id="rosterSearch" oninput="renderRoster()" placeholder="Search name…" class="pm-input" style="margin-bottom:10px;">
+      <div id="rosterBody" style="max-height:50vh;overflow-y:auto;"></div>
+      <div id="rosterNote" style="font-size:12px;color:#9A3412;margin-top:10px;display:none;"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const CSRF = document.querySelector('meta[name="csrf-token"]').content;
 let WEEK = null;         // current week_start (Y-m-d)
-let FILTER = 'riders';
 let SEARCH = '';
 let DATA = null;
 let SEL = new Set();     // selected user ids
@@ -314,10 +336,71 @@ async function openHistory(id){
   } catch(e){ body.innerHTML = '<div style="color:#ef4444;font-size:13px;padding:16px;">Failed to load history.</div>'; }
 }
 function closeHistory(){ document.getElementById('historyModal').style.display='none'; }
+
+/* 👥 ─── USERS LIST ───────────────────────────────────────────────────────────────────
+   The one roster the Shift Planner and Attendance share. Ticking somebody on makes them
+   appear on BOTH; unticking takes them off both. Only Shabib and Taimur get the button,
+   and the write is refused server-side for anyone else, so this is UI convenience only. */
+let ROSTER = [];
+async function openRoster(){
+  document.getElementById('rosterModal').style.display='flex';
+  document.getElementById('rosterBody').innerHTML = '<div style="padding:18px;color:#94a3b8;font-size:13px;">Loading…</div>';
+  document.getElementById('rosterNote').style.display='none';
+  try {
+    const j = await fetch('/shift-planner/users-list').then(r=>r.json());
+    if (!j.success) { document.getElementById('rosterBody').innerHTML =
+      '<div style="padding:18px;color:#B42318;font-size:13px;">'+escapeHtml(j.message||'Not allowed')+'</div>'; return; }
+    ROSTER = j.users || [];
+    renderRoster();
+  } catch(e){ document.getElementById('rosterBody').innerHTML =
+    '<div style="padding:18px;color:#B42318;font-size:13px;">Could not load the users list.</div>'; }
+}
+function closeRoster(){
+  const wasOpen = document.getElementById('rosterModal').style.display === 'flex';
+  document.getElementById('rosterModal').style.display='none';
+  // The grid is drawn from the roster, so a change here changes who is on the page.
+  if (wasOpen && ROSTER._dirty) { ROSTER._dirty = false; clearSel(); loadWeek(WEEK); }
+}
+function renderRoster(){
+  const q = (document.getElementById('rosterSearch').value||'').trim().toLowerCase();
+  const rows = ROSTER.filter(u => !q || (u.name||'').toLowerCase().includes(q));
+  const on = ROSTER.filter(u=>u.on_list).length;
+  document.getElementById('rosterBody').innerHTML =
+    '<div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">'
+    + on + ' of ' + ROSTER.length + ' on the list</div>'
+    + (rows.length ? rows.map(u => `
+      <label style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid #EEF1F6;cursor:pointer;">
+        <input type="checkbox" ${u.on_list?'checked':''} onchange="toggleRoster(${u.user_id}, this.checked, this)">
+        <span style="flex:1;">
+          <span style="font-size:13.5px;font-weight:600;color:#0f172a;">${escapeHtml(u.name||'')}</span>
+          <span style="display:block;font-size:11px;color:#94a3b8;">${escapeHtml(u.role_name||'')}${u.is_rider?' · delivery rider':''}</span>
+        </span>
+      </label>`).join('')
+      : '<div style="padding:14px;color:#94a3b8;font-size:13px;">Nobody matches that name.</div>');
+}
+async function toggleRoster(userId, onList, el){
+  const note = document.getElementById('rosterNote');
+  el.disabled = true;
+  try {
+    const j = await fetch('/attendance/update-visibility', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-CSRF-TOKEN':CSRF},
+      body: JSON.stringify({ user_id:userId, is_visible: onList ? 1 : 0 })
+    }).then(r=>r.json());
+    if (!j.success) { el.checked = !onList; alert(j.message || 'Could not change the list.'); return; }
+    const u = ROSTER.find(x=>x.user_id===userId); if (u) u.on_list = onList;
+    ROSTER._dirty = true;
+    // Only shown when taking somebody off who still has an unfinished shift change.
+    if (j.warning) { note.textContent = '⚠ ' + j.warning; note.style.display='block'; }
+    else { note.style.display='none'; }
+    renderRoster();
+  } catch(e){ el.checked = !onList; alert('Could not change the list.'); }
+  finally { el.disabled = false; }
+}
 function fmt(d) { const x = new Date(d+'T00:00:00'); return x.toLocaleDateString(undefined,{day:'numeric',month:'short'}); }
 
 async function loadWeek(start) {
-  const p = new URLSearchParams({ filter:FILTER, search:SEARCH });
+  const p = new URLSearchParams({ search:SEARCH });
   if (start) p.set('start', start);
   const json = await fetch('/shift-planner/week?'+p.toString()).then(r=>r.json());
   if (!json.success) { alert('Failed to load planner'); return; }
@@ -338,7 +421,6 @@ async function toggleCellTag(uid, date, currentlyNotNeeded, name) {
 }
 function stepWeek(dir){ loadWeek(dir<0 ? DATA.prev_week : DATA.next_week); }
 function goThisWeek(){ loadWeek(DATA.this_week); }
-function setFilter(f){ FILTER=f; document.getElementById('fltRiders').classList.toggle('on',f==='riders'); document.getElementById('fltAll').classList.toggle('on',f==='all'); clearSel(); loadWeek(WEEK); }
 let searchTimer=null;
 function debouncedSearch(){ clearTimeout(searchTimer); searchTimer=setTimeout(()=>{ SEARCH=document.getElementById('searchBox').value.trim(); loadWeek(WEEK); },300); }
 
@@ -447,6 +529,7 @@ function renderGrid() {
           <span>
             <span class="font-semibold text-sm text-gray-900">${r.name}</span>
             <span class="block text-[11px] text-gray-400">${r.role||''}</span>
+            ${r.off_roster ? `<span class="block text-[10px] font-semibold text-amber-600" title="Hidden from the attendance list, but still has a shift change to settle. Cancel it, or put them back on the list in Attendance → People &amp; Rider List.">not in attendance</span>` : ''}
             <span class="pchip mt-1">${r.primary.start}${r.primary.end?'–'+r.primary.end:'+'} · ${r.primary.shift_name}${r.primary.location_name?' · 📍'+r.primary.location_name:''}</span>
             ${locked
               ? `<span class="text-[11px] text-gray-400 ml-1" title="${escapeHtml(r.lock_reason||'')}">${escapeHtml(r.lock_reason||'Locked')}</span>`
@@ -469,6 +552,9 @@ function renderGrid() {
   // ⚙ Only the shift-rules owner learns the page exists.
   const rb = document.getElementById('rulesBtn');
   if (rb) rb.style.display = DATA.can_manage_rules ? 'inline-block' : 'none';
+  // 👥 Users list — Shabib + Taimur only. Advisory; the write is gated server-side too.
+  const rob = document.getElementById('rosterBtn');
+  if (rob) rob.style.display = DATA.can_manage_roster ? 'inline-block' : 'none';
   updateBulkBar();
 }
 
@@ -542,13 +628,13 @@ function renderLocBubbles(){
   const riderDefault = (TARGET.length===1) ? (DATA.riders.find(x=>x.user_id===TARGET[0].id)||{}).default_location_id : null;
   wrap.innerHTML = locs.map(l=>`<span class="loc-bubble ${l.id===SELLOC?'on':''}" onclick="pickLoc(${l.id})">${l.name}${l.id===riderDefault?'<span class="loc-def">default</span>':''}</span>`).join('')
     + `<span class="loc-bubble add" onclick="openNewLoc()">＋ New</span>`;
-  const who = TARGET.length===1 ? (TARGET[0].name.split(' ')[0]+"'s") : "the riders'";
+  const who = TARGET.length===1 ? (TARGET[0].name.split(' ')[0]+"'s") : "the selected people's";
   document.getElementById('setDefaultLbl').textContent = 'Make this '+who+' default location';
 }
 function pickLoc(id){ SELLOC=id; renderLocBubbles(); }
 function openAssignModal(){
   if(!TARGET.length) return;
-  document.getElementById('assignTitle').textContent = TARGET.length===1 ? ('Change shift · '+TARGET[0].name) : ('Change shift · '+TARGET.length+' riders');
+  document.getElementById('assignTitle').textContent = TARGET.length===1 ? ('Change shift · '+TARGET[0].name) : ('Change shift · '+TARGET.length+' people');
   fillTemplates();
   document.getElementById('mFrom').value = DATA.today;
   document.getElementById('mTo').value = DATA.today;
@@ -583,7 +669,7 @@ function closeAssign(){ document.getElementById('assignModal').style.display='no
 function setMode(m){ MODE=m; document.querySelectorAll('.mode-opt').forEach(el=>el.classList.toggle('on', el.dataset.mode===m)); document.getElementById('toWrap').style.display = (m==='date_range')?'block':'none'; document.getElementById('fromLabel').textContent = (m==='one_day')?'Day':'From'; renderEffect(); }
 function renderEffect(){
   const from = document.getElementById('mFrom').value, to=document.getElementById('mTo').value;
-  const who = TARGET.length===1?TARGET[0].name:(TARGET.length+' riders');
+  const who = TARGET.length===1?TARGET[0].name:(TARGET.length+' people');
   if(isNotRequiredSelected()){
     const rangeTxt = (MODE==='date_range') ? `${fmt(from)}–${fmt(to)}` : fmt(from);
     document.getElementById('effectLine').innerHTML = `→ ${who} marked <b>🚫 not needed</b> on <b>${rangeTxt}</b> — paid, not counted absent. Reversible from the day cell or here.`;

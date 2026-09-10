@@ -231,6 +231,13 @@
 /* Abandoned meet-up — same visual weight as a meter / verified-pin bypass. */
 .vp-bypass{background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:8px 11px;
            margin-top:10px;font-size:12px;font-weight:700;color:#991b1b;line-height:1.45;}
+
+/* 🔧 A workshop errand. AMBER, never red: it is a constraint on what may be planned
+   round this man, not something that has gone wrong. Same colour the live rider card
+   and the pinned rider use, so one status reads the same on every screen. */
+.vp-ws{background:#fffbeb;border:1px solid #fcd34d;border-radius:9px;padding:7px 11px;
+       margin-top:8px;font-size:12px;font-weight:700;color:#92400e;line-height:1.45;}
+.vp-wstag{margin-left:auto;font-weight:800;color:#b45309;white-space:nowrap;}
 </style>
 
 <script>
@@ -346,12 +353,17 @@ function vpCard(v) {
                 //   when no meet-up point is set yet, or the fix failed the
                 //   60 km sanity cap. The payload says which; use it.
                 : '<span class="vp-reta approx">' + (r.has_gps ? 'no ETA yet' : 'no GPS') + '</span>';
+            /* 🔧 HE CANNOT COME — he is taking a bike in (Sep-10 2026). Replaces the ETA
+               rather than sitting beside it: a man at Ali Motors has no arrival time at
+               this rendezvous, and printing one would be the board inventing a meeting.
+               The driver and the store both need this before they decide to wait. */
+            const ws = r.workshop_trip;
             return '<div class="vp-rider">'
                  + '<span class="vp-rname">👤 ' + vpEsc(r.name) + '</span>'
                  + '<span class="vp-rmeta">' + r.orders + ' order' + (r.orders === 1 ? '' : 's')
                  + ' · ' + r.packets + ' packet' + (r.packets === 1 ? '' : 's')
                  + (r.handed ? ' · ' + r.handed + ' collected' : '') + '</span>'
-                 + eta + '</div>';
+                 + (ws ? '<span class="vp-wstag">' + vpEsc(ws.label) + '</span>' : eta) + '</div>';
         }).join('') + '</div>';
     } else if (v.mode === 'to_stop') {
         riders = '<div class="vp-riders"><h5>Waiting to collect</h5>'
@@ -383,9 +395,20 @@ function vpCard(v) {
     let bars = '';
     if (v.van_progress) bars += vpBar('🚚 ' + vpEsc(v.driver_name || 'Van'), v.van_progress, vpos, v.driver_user_id);
     (v.inbound || []).forEach(r => {
-        if (r.progress) bars += vpBar('👤 ' + vpEsc(r.name || 'Rider'), r.progress, r.position, v.driver_user_id);
+        // 🔧 No bar for a man on a workshop errand — his "journey to the rendezvous" is not
+        //    happening, and a half-filled bar would say it is nearly done.
+        if (r.progress && !r.workshop_trip) bars += vpBar('👤 ' + vpEsc(r.name || 'Rider'), r.progress, r.position, v.driver_user_id);
     });
     if (bars) bars = '<div class="vp-bars">' + bars + '</div>';
+
+    /* 🔧 THE DRIVER'S OWN ERRAND. A van goes in for service too, and when it does every
+       other line on this card — the meet-up, who is waiting, when he is back — is about to
+       stop meaning what it says. Said once, at the top, before any of it. */
+    const dws = v.driver_trip
+        ? '<div class="vp-ws">' + vpEsc(v.driver_trip.label)
+          + (v.driver_trip.vehicle_name ? ' · ' + vpEsc(v.driver_trip.vehicle_name) : '')
+          + '<br><span style="font-weight:600;">Don’t plan a rendezvous round him until he is back.</span></div>'
+        : '';
 
     /* ⚠️ ABANDONED MEET-UP — the driver drove off while somebody still had boxes
        aboard. Surfaced like a meter / verified-pin bypass so the store learns of
@@ -406,6 +429,7 @@ function vpCard(v) {
          +     '<button type="button" class="vp-gear" onclick="vpOpenStops()">⚙ Meet-up points</button>'
          +   '</div>'
          +   '<div class="vp-strip">' + stats + '</div>'
+         +   dws
          +   forced
          +   bars
          +   vpTimeline(v)
@@ -560,10 +584,14 @@ function vpGroups(v) {
 
     (v.carrying || []).forEach(g => {
         const inb = (v.inbound || []).find(r => Number(r.user_id) === Number(g.user_id));
-        const eta = (!g.complete && inb && inb.eta)
-            ? '<span class="vp-geta' + (inb.eta.source === 'approx' ? ' approx' : '') + '">'
-              + vpEta(inb.eta) + '</span>'
-            : '';
+        /* 🔧 Same rule as the "waiting to collect" list: the errand REPLACES the ETA, it
+           does not sit beside it. A man at the workshop has no arrival time here. */
+        const eta = (!g.complete && g.workshop_trip)
+            ? '<span class="vp-geta approx">' + vpEsc(g.workshop_trip.label) + '</span>'
+            : ((!g.complete && inb && inb.eta)
+                ? '<span class="vp-geta' + (inb.eta.source === 'approx' ? ' approx' : '') + '">'
+                  + vpEta(inb.eta) + '</span>'
+                : '');
         out += vpGrp(vid, 'r' + g.user_id, (g.complete ? '✅ ' : '⏳ ') + vpEsc(g.name),
             (g.handed || 0) + '/' + (g.total || 0), eta, !g.complete,
             (g.orders || []).map(o => vpORow(

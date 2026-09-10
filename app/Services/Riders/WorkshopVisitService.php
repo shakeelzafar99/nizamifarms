@@ -51,6 +51,42 @@ class WorkshopVisitService
      */
     public const APPROVE_PERMISSION = 'manage_shifts';
 
+    /**
+     * ⭐⭐ THE TRIP STATES — a derived view of one visit row, never stored.
+     *
+     * `none` is not "no visit": it is "he has a visit today and has not set off".
+     * Read `NONE` as *booked, not started*; a rider with no visit at all gets `null`
+     * from `tripFor()`, which is a different answer and must stay different.
+     */
+    public const TRIP_NONE       = 'booked_today';   // told, not gone yet
+    public const TRIP_EN_ROUTE   = 'en_route';       // pressed "going", not there yet
+    public const TRIP_AT         = 'at_workshop';    // geofence says he is there
+    public const TRIP_ENDED      = 'ended';          // outcome recorded, or he checked out
+    /** The two states the boards must react to. */
+    public const TRIP_ACTIVE     = [self::TRIP_EN_ROUTE, self::TRIP_AT];
+
+    /**
+     * How close counts as "at the workshop". Deliberately wider than the office radius:
+     * a workshop is a roadside unit, its pin is approximate, and a rider standing across
+     * the street is at the workshop by every measure that matters. Overridable per
+     * location by the location's own radius when it has one.
+     */
+    public const ARRIVE_RADIUS_M = 250;
+
+    private static ?bool $tripCols = null;
+    /**
+     * [userId|date => bool] — the boards ask per rider, so one read each.
+     *
+     * ⚠⚠ INSTANCE-level, not static, and that distinction is load-bearing. As a static it
+     *    survived the request that filled it: a rider whose checkout was cached as `true` kept
+     *    reading "trip over" for the life of the process, and a queue worker or a test running
+     *    several scenarios saw yesterday's answer. Per instance it is exactly as cheap inside
+     *    one board render — which is the only place it is asked twice — and cannot go stale.
+     */
+    private array $checkoutMemo = [];
+    /** [locationId => coords|null] */
+    private static array $coordMemo = [];
+
     public const PURPOSES = ['service', 'repair', 'inspection', 'other'];
     /**
      * Statuses that still expect something to happen.
@@ -126,6 +162,33 @@ class WorkshopVisitService
     }
 
     /**
+     * ⭐⭐ Has the TRIP migration run (`workshop_trip_sep2026.sql`)?
+     *
+     * Same discipline as `approvalEnabled()`: the PHP routinely lands before the SQL on a
+     * hand-deployed system, so every trip reader asks this first and degrades to "no trip
+     * exists" — which is exactly the behaviour before this feature. Nothing 500s, no board
+     * changes, and the START button simply does not appear.
+     */
+    public function tripEnabled(): bool
+    {
+        if (self::$tripCols === null) {
+            try {
+                self::$tripCols = $this->available()
+                    && Schema::hasColumn(self::T_VISIT, 'departed_at');
+            } catch (\Throwable $e) {
+                self::$tripCols = false;
+            }
+        }
+        return self::$tripCols;
+    }
+
+    /** Tests, and anything that changes the schema mid-process. */
+    public static function flushSchemaMemo(): void
+    {
+        self::$tripCols = null;
+    }
+
+    /**
      * ⭐ ONE PREDICATE for "is this person a shift planner?", asked by the booking decision,
      *   the approve/decline doors, the banner and both UIs. Written once for the same
      *   reason `VehicleTicketService::visibilityScope` is: a rule spelled out in four
@@ -178,6 +241,27 @@ class WorkshopVisitService
             }
         }
         if (!$vehicleId) return ['ok' => false, 'message' => 'Choose which bike is going in — the registry has no machine for that rider.'];
+
+        /**
+         * ⭐⭐ COMPANY MACHINES ONLY (owner ruling, 10-Sep-2026): *"we don't care about the
+         *    maintenance and overnight flags for personal bikes — for personal bikes we note
+         *    the meter only for fuel, because that's what we are responsible for."*
+         *
+         * The same rule the maintenance schedule now follows, applied one step earlier: there
+         * is no point booking a workshop day for a machine whose service the company does not
+         * keep. Refused with the reason, not silently.
+         * ⚠ EXISTING visits on a personal bike are left alone — they are history, and rewriting
+         *   history to match a new rule is how audit trails stop being trustworthy.
+         */
+        try {
+            if (!(new VehicleService())->isTrackedId($vehicleId)) {
+                return ['ok' => false, 'message' =>
+                    'That is a personal vehicle. The company does not keep its service schedule, '
+                    . 'so there is no workshop day to book — its meter is recorded for fuel only.'];
+            }
+        } catch (\Throwable $e) {
+            // A registry hiccup must not block a legitimate booking.
+        }
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             return ['ok' => false, 'message' => 'Give the date as YYYY-MM-DD.'];
         }
@@ -235,12 +319,10 @@ class WorkshopVisitService
          * Refuse it at the door instead, and say what to do about it. A PLANNER assigning
          * directly is unaffected — he is not asking anyone, so there is no cut-off to miss.
          */
-        if ($proposed) {
-            $cutoff = $this->approvalCutoffFor([
-                'user_id'    => $riderId,
-                'visit_date' => $date,
-                'visit_time' => $in['visit_time'] ?? null,
-            ]);
+        $cutoffCtx = ['user_id' => $riderId, 'visit_date' => $date,
+                      'visit_time' => $in['visit_time'] ?? null];
+        if ($proposed && $this->hasApprovalCutoff($cutoffCtx)) {
+            $cutoff = $this->approvalCutoffFor($cutoffCtx);
             if (now()->greaterThanOrEqualTo($cutoff)) {
                 return ['ok' => false, 'message' =>
                     'Too late to send this for approval — it had to be decided by '
@@ -281,7 +363,30 @@ class WorkshopVisitService
 
             $visitId = null;
             $replaced = null;
-            DB::transaction(function () use (&$visitId, &$replaced, $vehicleId, $riderId, $date, $purpose, $in, $user, $now, $proposed) {
+            /**
+             * 📍 WHERE HE CHECKS IN THAT DAY — resolved BEFORE the transaction, because both
+             *    halves of this method need the same answer: the row written inside the
+             *    closure, and the shift pin written after it.
+             *
+             * ⚠⚠ It used to live only inside the closure, so the pin below could not see it —
+             *    which is exactly how a SAME-DAY booking came to store "regular" on the row
+             *    and move his check-in place anyway (found driving the real web form,
+             *    10-Sep-2026).
+             * ⚠ A SAME-DAY booking is forced to `regular` whatever the form sends: he has
+             *   already checked in (or not), and pinning a location retrospectively would
+             *   move the goalposts under a man who is already at work.
+             * ⚠ NULL means "not asked" — the pre-10-Sep behaviour, kept for old clients:
+             *   `checkinAtOf()` then falls back to "a registered workshop was chosen ⇒ pin".
+             */
+            $attendanceAt = null;
+            if ($this->tripEnabled()) {
+                $want = (string) ($in['attendance_at'] ?? '');
+                $attendanceAt = ($date === \Carbon\Carbon::today()->format('Y-m-d'))
+                    ? 'regular'
+                    : (in_array($want, ['regular', 'workshop'], true) ? $want : null);
+            }
+
+            DB::transaction(function () use (&$visitId, &$replaced, $vehicleId, $riderId, $date, $purpose, $in, $user, $now, $proposed, $attendanceAt) {
                 /**
                  * ⚠ One open visit per machine — two open instructions for one bike is how a
                  *   rider ends up at the workshop on the wrong day.
@@ -311,7 +416,19 @@ class WorkshopVisitService
                     ->lockForUpdate()
                     ->orderByDesc('id')->first();
 
-                $visitId = (int) DB::table(self::T_VISIT)->insertGetId([
+                /**
+                 * 📍 WHERE HE CHECKS IN THAT DAY (owner ask, 10-Sep). Asked of the booker or the
+                 *    approver instead of inferred from "did you pick a registered workshop".
+                 * ⚠ A SAME-DAY booking is forced to `regular` whatever the form sends: he has
+                 *   already checked in (or not), and pinning a location retrospectively would
+                 *   move the goalposts under a man who is already at work.
+                 * ⚠ NULL means "not asked" — the pre-10-Sep behaviour, kept for old clients:
+                 *   `approve()` then pins if, and only if, a registered workshop was chosen.
+                 */
+                // ⭐ Resolved above the transaction — the pin after it needs the same answer.
+                $visitId = (int) DB::table(self::T_VISIT)->insertGetId(array_filter([
+                    'attendance_at'       => $attendanceAt,
+                ], fn ($v) => $v !== null) + [
                     'vehicle_id'          => $vehicleId,
                     'user_id'             => $riderId,
                     'visit_date'          => $date,
@@ -362,11 +479,34 @@ class WorkshopVisitService
              * ⚠⚠ A PROPOSAL PINS NOTHING. Approval is precisely the gate on this write: until
              *    a planner says yes, the rider's day is untouched and he is measured against
              *    his normal place, exactly as if nobody had booked anything.
+             *
+             * ⚠⚠ …AND NEITHER DOES A DAY THAT HAS ALREADY STARTED (found on the web form,
+             *    10-Sep-2026). This wrote the pin from `location_id` alone, ignoring
+             *    `$attendanceAt` entirely — so a SAME-DAY booking stored "regular" on the row
+             *    and then moved his check-in place anyway. The two halves of one visit said
+             *    opposite things, and the planner was told "he checks in at the workshop"
+             *    about a morning the rider had already spent somewhere else.
+             *
+             * ⭐ `approve()` has always honoured the choice; this is the direct-assign twin
+             *   doing the same, so both doors write a pin only when the answer is 'workshop'.
              */
             if ($replaced) $this->clearShiftLocation($replaced, $riderId);
+            /**
+             * ⚠ Through `checkinAtOf()`, NOT a bare `=== 'workshop'`. `$attendanceAt` is NULL
+             *   whenever nobody was asked — which is every booking form today — and null must
+             *   keep meaning the OLD inference ("a registered workshop was chosen ⇒ pin it"),
+             *   or this would quietly stop pinning future days that have always pinned.
+             *   Today is already forced to 'regular' above, so today alone stops pinning.
+             */
+            $checkinAt = self::checkinAtOf([
+                'attendance_at' => $attendanceAt,
+                'location_id'   => $in['location_id'] ?? null,
+            ]);
+            $pinLocationId = ($checkinAt === 'workshop' && !empty($in['location_id']))
+                ? (int) $in['location_id'] : null;
             // ⚠ $user is passed so the SHIFT RULES apply to this door too — see applyShiftLocation.
             $pinned = !$proposed && $this->applyShiftLocation((int) $visitId, $riderId, $date,
-                                                !empty($in['location_id']) ? (int) $in['location_id'] : null,
+                                                $pinLocationId,
                                                 null, $user);
 
             return [
@@ -390,10 +530,18 @@ class WorkshopVisitService
                         : 'Set. ' . $this->nameOf($riderId) . ' will be asked to accept it.')
                     . ($pinned
                         ? ' That day he checks in at the workshop, so he will not be marked late or remote.'
-                        // ⚠⚠ 6-Sep: this used to say NOTHING when nothing was pinned, which is
-                        //    how Danish was booked into a workshop while his day still pointed
-                        //    at LaCarne and nobody could tell from the confirmation.
-                        : ' ⚠ ' . ($this->lastPinNote ?: 'His check-in place was not changed.'))),
+                        /**
+                         * ⚠⚠ 6-Sep: this used to say NOTHING when nothing was pinned, which is
+                         *    how Danish was booked into a workshop while his day still pointed
+                         *    at LaCarne and nobody could tell from the confirmation.
+                         * ⚠ …but a DELIBERATE "he checks in as usual" is not a failed pin, and
+                         *   a same-day booking is always deliberate — he started his day hours
+                         *   ago. Reporting the rule as a warning is how a planner comes to
+                         *   distrust the warnings that matter.
+                         */
+                        : ($checkinAt === 'regular'
+                            ? ' He checks in as usual and rides over — nothing about that day moves.'
+                            : ' ⚠ ' . ($this->lastPinNote ?: 'His check-in place was not changed.')))),
             ];
         } catch (\Throwable $e) {
             Log::error('WorkshopVisitService::schedule failed', ['error' => $e->getMessage()]);
@@ -801,11 +949,17 @@ class WorkshopVisitService
          *    would move under him and he would read as remote where he actually is. Same clock
          *    as the sweep, so "too late" means one thing.
          */
-        $cutoff = $this->approvalCutoffFor($v);
-        if (\Carbon\Carbon::now()->gte($cutoff)) {
-            return ['ok' => false, 'message' => 'Too late for ' . \Carbon\Carbon::parse($date)->format('D j M')
-                . ' — the cut-off was ' . $cutoff->format('H:i') . ', so he could not have been told in time. '
-                . 'Decline it and book a new date.'];
+        /**
+         * ⭐ 10-Sep: TODAY has no cut-off (see `hasApprovalCutoff`). A same-day request is a
+         *   breakdown, and the check-in decision it used to protect is already settled.
+         */
+        if ($this->hasApprovalCutoff($v)) {
+            $cutoff = $this->approvalCutoffFor($v);
+            if (\Carbon\Carbon::now()->gte($cutoff)) {
+                return ['ok' => false, 'message' => 'Too late for ' . \Carbon\Carbon::parse($date)->format('D j M')
+                    . ' — the cut-off was ' . $cutoff->format('H:i') . ', so he could not have been told in time. '
+                    . 'Decline it and book a new date.'];
+            }
         }
 
         // ── the adjustments ──────────────────────────────────────────────────────
@@ -815,6 +969,40 @@ class WorkshopVisitService
         if ($locationId && !$this->isWorkshopLocation($locationId)) {
             return ['ok' => false, 'message' => 'That place is not ticked as a workshop, so his day could not be pinned to it.'];
         }
+
+        /**
+         * 📍 WHERE DOES HE CHECK IN? (owner ask, 10-Sep) — asked of the approver, never inferred.
+         *
+         * ⚠⚠ The old rule was "pin it if a registered workshop was chosen", which conflated two
+         *    different decisions: WHICH workshop, and WHETHER his day starts there. A planner who
+         *    wanted "check in at LaCarne as usual, ride over at 11" had no way to say so, and the
+         *    rider was told his place had changed when it had not.
+         *
+         * ⚠ Falls back to the visit's own value, then to the old inference — so an approval sent
+         *   by a client that predates this behaves exactly as before.
+         */
+        $attendanceAt = (string) ($in['attendance_at'] ?? ($v['attendance_at'] ?? ''));
+        if (!in_array($attendanceAt, ['regular', 'workshop'], true)) {
+            $attendanceAt = $locationId ? 'workshop' : 'regular';
+        }
+        /**
+         * ⚠⚠ …EXCEPT TODAY, WHATEVER WAS SENT. `book()` forces `regular` on a same-day
+         *    booking because the man has already started his day somewhere; approving one
+         *    an hour later must obey the same rule, or a planner pressing the wrong half of
+         *    the choice would move a check-in place backwards in time and mark him remote —
+         *    or late — for a place nobody had told him to go to when he clocked in.
+         *    The card does not offer the choice for today; this is the server refusing to
+         *    take it from anything that does.
+         */
+        if ($date === $today) $attendanceAt = 'regular';
+        if ($attendanceAt === 'workshop' && !$locationId) {
+            return ['ok' => false, 'message' =>
+                'To have him check in at the workshop, pick a registered workshop first — '
+                . 'a typed name has no place to measure his arrival against.'];
+        }
+        // ⭐ "Check in as usual" means exactly that: no pin is written, whatever workshop was
+        //   picked. The pin is the ONLY thing this choice controls.
+        $pinLocationId = $attendanceAt === 'workshop' ? $locationId : null;
 
         $time = $v['visit_time'];
         if (array_key_exists('visit_time', $in)) {
@@ -836,6 +1024,7 @@ class WorkshopVisitService
                 'status'      => 'scheduled',
                 'location_id' => $locationId,
                 'visit_time'  => $time,
+                'attendance_at' => $this->tripEnabled() ? $attendanceAt : null,
                 'approved_by' => (int) $user->id,
                 'approved_at' => now(),
                 /**
@@ -880,8 +1069,15 @@ class WorkshopVisitService
             }
 
             // NOW the two things a proposal deliberately did not do.
-            $pinned  = $this->applyShiftLocation($visitId, $riderId, $date, $locationId, $templateId, $user);
+            /**
+             * ⚠ `$pinLocationId`, not `$locationId`: "he checks in as usual" must not pin, even
+             *   though a workshop was chosen for the errand itself.
+             */
+            $pinned  = $this->applyShiftLocation($visitId, $riderId, $date, $pinLocationId, $templateId, $user);
             $pinNote = $this->lastPinNote;
+            // A deliberate "check in as usual" is not a failure to pin, so it must not be
+            // reported as one — that note is for when the pin was WANTED and did not happen.
+            if ($attendanceAt === 'regular') $pinNote = null;
             $this->linkTicket($visitId, ['ticket_id' => $v['ticket_id'] ?? null], $user, $date, $time, 'approved for');
 
             return [
@@ -890,10 +1086,21 @@ class WorkshopVisitService
                 'rider_id'   => $riderId,
                 'pinned'     => $pinned,
                 'booked_by'  => (int) ($v['proposed_by'] ?? $v['created_by'] ?? 0),
+                /**
+                 * ⚠⚠ A DECISION IS NOT A WARNING (found on the device, 10-Sep-2026). Choosing
+                 *    "he checks in as usual" fell through to the ⚠ branch, so the planner was
+                 *    told "⚠ His check-in place was not changed" — his own answer, reported
+                 *    back as though something had failed. The ⚠ is for the case where a pin
+                 *    was WANTED and did not happen (no workshop, a hand-made shift row, no
+                 *    shift that day); `$pinNote` carries that reason and is nulled above when
+                 *    the choice was deliberate.
+                 */
                 'message'    => 'Approved. ' . $this->nameOf($riderId) . ' has been told'
                     . ($pinned
                         ? ' — that day he checks in at the workshop, so he will not be marked late or remote.'
-                        : '. ⚠ ' . ($pinNote ?: 'His check-in place was not changed.')),
+                        : ($attendanceAt === 'regular'
+                            ? ' — he checks in as usual and rides over afterwards, so nothing about his day moves.'
+                            : '. ⚠ ' . ($pinNote ?: 'His check-in place was not changed.'))),
             ];
         } catch (\Throwable $e) {
             Log::error('WorkshopVisitService::approve failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
@@ -1055,7 +1262,10 @@ class WorkshopVisitService
         foreach ($rows as &$r) {
             $r['warnings'] = $this->warningsFor((int) $r['vehicle_id'], (int) $r['user_id'], $r['visit_date']);
             // ⏰ So the card can say "decide by 08:30" instead of leaving the planner to guess.
-            $r['approve_by'] = $this->approvalCutoffFor($r)->format('Y-m-d H:i');
+            // ⚠ null for TODAY — there is no deadline to print, and showing yesterday's
+            //   08:00 beside a live request would read as "already dead".
+            $r['approve_by'] = $this->hasApprovalCutoff($r)
+                ? $this->approvalCutoffFor($r)->format('Y-m-d H:i') : null;
             /**
              * ⭐ WHAT APPROVING WOULD REPLACE. The approver must know he is not just saying
              *   yes to a new day — he is retiring one the rider has already been told about,
@@ -1072,9 +1282,54 @@ class WorkshopVisitService
                                 . ($live['visit_time'] ? ' ' . $live['visit_time'] : '')
                                 . ($live['workshop'] ? ' · ' . $live['workshop'] : ''),
             ] : null;
+            // 📍 "Will he mark attendance at his regular place, or at the workshop?" now
+            //    rides on shape() for every proposal (see the note there), so EVERY door that
+            //    can approve asks it — not just this card.
         }
         unset($r);
         return $rows;
+    }
+
+    /**
+     * What the approval card should show for "where does he check in that day?".
+     *
+     * ⭐ `value` is what will happen if the approver presses ✓ without touching anything —
+     *   the proposal's own answer if the booker gave one, else the pre-10-Sep inference
+     *   ("a registered workshop was chosen ⇒ pin it"). So the card never states one thing
+     *   and the server does another.
+     * ⚠ `asked` is false for TODAY: he has already started his day where he started it, and
+     *   moving his check-in place retrospectively would mark a man late for a place he was
+     *   never told to go to. `book()` forces `regular` for today, and `approve()` does too.
+     * ⚠ `can_pin` is false with no registered workshop — a typed name has no coordinates to
+     *   measure an arrival against, which is exactly why `approve()` refuses that pair.
+     */
+    private function attendanceChoiceFor(array $r): array
+    {
+        $isToday  = substr((string) $r['visit_date'], 0, 10) === \Carbon\Carbon::today()->format('Y-m-d');
+        $canPin   = !empty($r['location_id']);
+        // ⭐ ONE rule for "where would he check in", shared with the push and every card.
+        $value    = self::checkinAtOf($r);
+        if ($isToday || !$canPin) $value = 'regular';
+
+        $regular = null;
+        try {
+            $shift = (new ShiftResolutionService())->getUserShift((int) $r['user_id'],
+                substr((string) $r['visit_date'], 0, 10));
+            $regular = $shift['location_name'] ?? null;
+        } catch (\Throwable $e) {
+            // The name is a courtesy on a label — never a reason the card fails to draw.
+        }
+
+        return [
+            'asked'          => $this->tripEnabled() && !$isToday,
+            'value'          => $value,
+            'can_pin'        => $canPin,
+            'is_today'       => $isToday,
+            'regular_label'  => $regular ?: 'his usual place',
+            // ⚠ `location_name` rides on the row now (see listVisits), so this costs no query.
+            'workshop_label' => $r['workshop']
+                ?: ($r['location_name'] ?? ($this->locationNameFor($r['location_id'] ?? null) ?: 'the workshop')),
+        ];
     }
 
     /**
@@ -1144,7 +1399,35 @@ class WorkshopVisitService
                 ->where('status', 'proposed')
                 ->whereDate('visit_date', '<=', $today->format('Y-m-d'))
                 ->get(['id', 'user_id', 'visit_date', 'visit_time']);
+            $todayStr = $today->format('Y-m-d');
             foreach ($candidates as $c) {
+                $cd = substr((string) $c->visit_date, 0, 10);
+
+                /**
+                 * ⚠⚠ THE DAY IS GONE. A proposal for a date already past cannot be gone on by
+                 *    anybody, so it is closed with a reason. Before 10-Sep the cut-off sweep
+                 *    happened to catch these on the way through; now that TODAY has no cut-off
+                 *    (below) they would otherwise sit in the planners' queue for ever.
+                 */
+                if ($cd < $todayStr) {
+                    if ($this->declineRow((int) $c->id, null,
+                            'The day passed and nobody approved it.')) {
+                        $out['declined'][] = (int) $c->id;
+                    }
+                    continue;
+                }
+
+                /**
+                 * ⚠⚠ A TODAY PROPOSAL IS NEVER AUTO-DECLINED (owner ruling, 10-Sep). It has no
+                 *    cut-off any more, so there is no moment at which it "expired" — killing it
+                 *    on this sweep would delete a live breakdown request out from under the
+                 *    planners. It stays in their queue until somebody answers; if he goes home
+                 *    without going, `alertNotGoneAtCheckout()` tells them once and it ends there.
+                 */
+                if (!$this->hasApprovalCutoff((array) $c)) continue;
+
+                // A future day CAN still pass its cut-off when the lead time is long enough to
+                // put it on the previous evening — that is the case this branch still serves.
                 if ($now->lt($this->approvalCutoffFor((array) $c))) continue;
                 if ($this->declineRow((int) $c->id, null,
                         'Not approved in time — nobody approved it before his shift.')) {
@@ -1180,6 +1463,28 @@ class WorkshopVisitService
      *   pressing Approve after the cut-off is refused for the same reason the sweep declines.
      *   Two clocks here would let the answer depend on which one ran first.
      */
+    /**
+     * ⭐⭐ IS THERE A CUT-OFF AT ALL? (owner ruling, 10-Sep-2026: *"for same day bookings no
+     *    need for cut off time"*.)
+     *
+     * The cut-off exists to protect ONE thing: the rider must hear about a change to where
+     * he checks in BEFORE he leaves home. For a booking made for TODAY that decision is
+     * already behind us — he has checked in, or he has not, and no approval can change it.
+     * Holding a same-day breakdown to "should have been decided by 08:00" simply meant the
+     * bike could not be sent in on the day it broke, which is the case this whole round is
+     * about.
+     *
+     * ⚠ What replaces it is not silence: if he checks out having never set off, the managers
+     *   are told once (`alertNotGoneAtCheckout`) and it ends there.
+     *
+     * A FUTURE day keeps its cut-off exactly as before — there, the promise is real.
+     */
+    public function hasApprovalCutoff(array $v): bool
+    {
+        return substr((string) ($v['visit_date'] ?? ''), 0, 10)
+            > \Carbon\Carbon::today()->format('Y-m-d');
+    }
+
     public function approvalCutoffFor(array $v): \Carbon\Carbon
     {
         $date  = substr((string) $v['visit_date'], 0, 10);
@@ -1452,6 +1757,14 @@ class WorkshopVisitService
                     'accepted_at'  => null,
                     'accepted_by'  => null,
                     'accepted_via' => null,
+                    /**
+                     * ⚠⚠ THE MACHINE HAS A KEEPER AGAIN, so clear the flag (10-Sep-2026).
+                     *    Without this a bike that lost its rider in the morning and was given
+                     *    to someone else in the afternoon stayed marked "nobody has it" — and
+                     *    the rider-facing surfaces, which now skip a no-keeper visit, would
+                     *    have hidden the errand from the very man who had just been handed it.
+                     */
+                    ...($this->tripEnabled() ? ['no_keeper_since' => null] : []),
                     'note'         => trim((string) $v->note . "\n" . $line),
                     'updated_at'   => now(),
                 ]);
@@ -1521,6 +1834,18 @@ class WorkshopVisitService
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'v.user_id')
                 ->leftJoin('t_sys_user as c', 'c.id', '=', 'v.created_by')
                 ->leftJoin('t_sys_user as ab', 'ab.id', '=', 'v.accepted_by');
+            /**
+             * 📍 THE REGISTERED WORKSHOP'S NAME, in the same query (10-Sep-2026).
+             * ⚠ A visit booked at a registered workshop has NO free-text `workshop`, so every
+             *   sentence built from that column alone said "workshop" where it meant "Ali
+             *   Motors" — including the one telling the rider where to clock in. One join
+             *   beats a lookup per row, and beats a vague instruction.
+             * ⚠ Guarded: the locations table is its own migration.
+             */
+            $hasLocs = $this->locationsEnabled();
+            if ($hasLocs) {
+                $q->leftJoin('t_ops_company_locations as loc', 'loc.id', '=', 'v.location_id');
+            }
 
             if (!empty($opts['user_id']))    $q->where('v.user_id', (int) $opts['user_id']);
             if (!empty($opts['vehicle_id'])) $q->where('v.vehicle_id', (int) $opts['vehicle_id']);
@@ -1545,8 +1870,9 @@ class WorkshopVisitService
 
             $rows = $q->orderBy('v.visit_date')->orderBy('v.id')
                 ->limit(min(500, max(1, (int) ($opts['limit'] ?? 200))))
-                ->get(['v.*', 'u.fullname as rider_name', 'c.fullname as created_by_name',
-                       'ab.fullname as accepted_by_name']);
+                ->get(array_merge(['v.*', 'u.fullname as rider_name', 'c.fullname as created_by_name',
+                                   'ab.fullname as accepted_by_name'],
+                                  $hasLocs ? ['loc.location_name as location_name'] : []));
             if ($rows->isEmpty()) return [];
 
             $labels = [];
@@ -1614,9 +1940,763 @@ class WorkshopVisitService
              */
             if ($v['visit_date'] === $today && !$v['accepted']) continue;
 
+            /**
+             * ⚠⚠ AND NOT WHILE HE IS STILL ON THE ROAD (Sep-10, the trip round).
+             *
+             *    Setting off now ACCEPTS the visit — which is right, it is plainly a yes — but
+             *    it also made this question qualify the moment he pressed the button. He would
+             *    have had "Ali Motors ki taraf" and "workshop aaj — ho gaya?" on screen at the
+             *    same time, ten minutes before he got there. That is the identical failure the
+             *    Sep-3 device round fixed for the accept/outcome pair, reintroduced one step
+             *    later in the flow.
+             *
+             * ⭐ So on the day itself the question waits until he has ARRIVED — proved by his
+             *   own GPS, since there is no arrival button. A day that has PASSED still asks
+             *   regardless: a missed visit needs an answer whether he ever set off or not.
+             * ⚠ Free-text workshops never geofence, so `departed` alone qualifies there —
+             *   otherwise those visits could never be answered on the day at all.
+             */
+            if ($v['visit_date'] === $today && $this->tripEnabled()
+                && !empty($v['departed_at']) && empty($v['arrived_at']) && !empty($v['location_id'])) {
+                continue;
+            }
+
+            /**
+             * ⚠⚠ AND NOT FOR A BIKE HE NO LONGER HAS (10-Sep-2026). Same rule as
+             *    `nextForUser`: the question still needs answering, but not by the man who
+             *    handed the machine back — he cannot know what the workshop did to it. It
+             *    stays live for the managers, who were told the moment the keeper was lost.
+             */
+            if (!empty($v['no_keeper_since'])) continue;
+
             return $v;
         }
         return null;
+    }
+
+    /**
+     * ⭐⭐ "WORKSHOP JAA RAHA HOON" — the rider sets off (owner ask, 10-Sep-2026).
+     *
+     * This is the only manual step in the trip. Arrival is the geofence's job (there is no
+     * arrival button by ruling), and the end is the outcome prompt that already exists.
+     *
+     * ⚠⚠ THE ORDERS GATE, and why it refuses rather than warns. A rider who leaves with
+     *    DISPATCHED orders on his name strands those orders: they are out for delivery, the
+     *    board counts them, the customer is waiting, and nobody else can take them because
+     *    they are assigned to him. So the press is refused and the sentence tells him the
+     *    remedy in his own words — ask the manager to take them off his name — and the same
+     *    press tells the STORE what to do, because he cannot do it himself.
+     * ⭐ Orders merely ASSIGNED (not dispatched) do not strand: the store can reassign them
+     *   at leisure. Those let him go and raise a notice instead (owner ruling).
+     *
+     * @param array $in  ['force' => bool] — a MANAGER pressing it for him after moving the
+     *                   orders himself; never available to the rider.
+     */
+    public function depart($user, int $visitId, array $in = [], bool $mobile = false): array
+    {
+        if (!$this->available())   return ['ok' => false, 'message' => 'Workshop visits are not set up yet.'];
+        if (!$this->tripEnabled()) return ['ok' => false, 'message' => 'This app is newer than the server — ask for the workshop update to be installed.'];
+
+        $v = $this->find($visitId);
+        if (!$v) return ['ok' => false, 'message' => 'That visit no longer exists.'];
+
+        $uid       = (int) ($user->id ?? 0);
+        $isRider   = (int) $v['user_id'] === $uid;
+        $isManager = $this->canSchedule($user, $mobile);
+        if (!$isRider && !$isManager) {
+            return ['ok' => false, 'message' => 'You cannot start this workshop trip.'];
+        }
+        if (!in_array((string) $v['status'], self::LIVE_STATUSES, true)) {
+            return ['ok' => false, 'message' => 'That visit is no longer active.'];
+        }
+        $today = \Carbon\Carbon::today()->format('Y-m-d');
+        if ($v['visit_date'] !== $today) {
+            return ['ok' => false, 'message' => $v['visit_date'] > $today
+                ? 'That day has not come round yet.'
+                : 'That day has passed — tell the manager what happened to it.'];
+        }
+        if (!empty($v['departed_at'])) {
+            return ['ok' => false, 'message' => 'Already on the way.'];
+        }
+
+        $riderId = (int) $v['user_id'];
+
+        // ── the orders gate ──────────────────────────────────────────────────────
+        /**
+         * ⭐⭐ THE REGISTRY DECIDES WHETHER THIS IS STILL HIS ERRAND (owner principle,
+         *    10-Sep-2026: *"whoever is assigned the vehicle… this registry and comparison
+         *    between the rider and vehicle is very important"*).
+         *
+         * ⚠⚠ Setting off arms a trip, moves the live board and silences his "left without
+         *    dispatch" flag. Doing that for a machine he no longer holds — because it was
+         *    handed on, or he was moved onto a spare while it waits for the workshop — puts
+         *    a false errand on every board at once. The visit itself is not wrong; it simply
+         *    is not his any more, and `onHandover()` re-points it the moment somebody takes
+         *    the bike.
+         *
+         * ⚠ Refused ONLY on a definite disagreement. A registry that answers NULL (a lookup
+         *   failure, a machine between keepers) leaves this alone — a guard must never be the
+         *   reason a real trip cannot start.
+         */
+        try {
+            /**
+             * ⚠ Asked of the MACHINE, not of the man. `currentVehicleFor($rider)` answers
+             *   "what is he holding", which is NULL both when he holds nothing and when the
+             *   registry cannot say — and those are opposite answers here. `keeperOf($bike)`
+             *   answers the question this guard is actually asking: who has this machine.
+             */
+            $keeper = (new VehicleService())->keeperOf((int) $v['vehicle_id']);
+            $has    = $keeper ? (int) $keeper->user_id : 0;
+            if ($has !== $riderId) {
+                $bike = (new VehicleResolver())->labelFor((int) $v['vehicle_id']) ?: 'that bike';
+                $now  = $has ? $this->nameOf($has) : null;
+                return ['ok' => false, 'message' => $isRider
+                    ? $bike . ' ab aap ke naam par nahi hai — is liye workshop trip shuru nahi '
+                      . 'ho sakti. Manager se baat karein.'
+                    : $this->nameOf($riderId) . ' no longer holds ' . $bike . ', so this errand is '
+                      . 'not his to start. ' . ($now
+                          ? $now . ' has it now and takes it in.'
+                          : 'Nobody holds it — assign it to whoever is taking it in.')];
+            }
+        } catch (\Throwable $e) {
+            // Registry unavailable ⇒ behave exactly as before this check existed.
+        }
+
+        $orders = $this->openOrdersFor($riderId);
+        if ($orders['dispatched'] > 0 && empty($in['force'])) {
+            /**
+             * ⚠ A MANAGER may force it — he is the one who can move the orders, and he may
+             *   have just done so by phone. The RIDER never can: `force` is ignored for him,
+             *   because the whole point is that he cannot fix this himself.
+             */
+            if (!$isManager) {
+                try {
+                    app(\App\Services\FirebaseService::class)
+                        ->notifyWorkshopVisit('needs_unassign', $visitId, $uid);
+                } catch (\Throwable $e) {
+                    Log::warning('needs_unassign push failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+                }
+                return ['ok' => false, 'blocked_by_orders' => true, 'orders' => $orders, 'message' =>
+                    'Aap ke naam par ' . $orders['dispatched'] . ' dispatched order'
+                    . ($orders['dispatched'] === 1 ? '' : 's') . ' hain. Manager se kahein ke woh orders '
+                    . 'aap ke naam se hata dein, phir dobara dabayein — warna woh orders atak jayenge. '
+                    . 'Manager ko itla bhej di gayi hai.'];
+            }
+            return ['ok' => false, 'blocked_by_orders' => true, 'orders' => $orders, 'message' =>
+                $this->nameOf($riderId) . ' still has ' . $orders['dispatched'] . ' dispatched order'
+                . ($orders['dispatched'] === 1 ? '' : 's') . ' out. Move them to another rider first, '
+                . 'or send this again to go anyway.'];
+        }
+
+        // ⚠ A van carrying cargo strands MORE than orders — the stock is on it.
+        if ($orders['on_van'] > 0 && empty($in['force'])) {
+            return ['ok' => false, 'blocked_by_orders' => true, 'orders' => $orders, 'message' =>
+                $isRider
+                    ? 'Van par ' . $orders['on_van'] . ' order abhi loaded hain — pehle unload ya kisi'
+                      . ' aur ko transfer karwayein.'
+                    : 'The van still has ' . $orders['on_van'] . ' loaded orders — unload or move them first.'];
+        }
+
+        try {
+            $upd = ['departed_at' => now(), 'departed_by' => $uid, 'updated_at' => now()];
+            /**
+             * ⭐⭐ SETTING OFF **IS** ACCEPTING (Sep-10). A rider who presses "Workshop jaa raha
+             *    hoon" has plainly agreed to go, so leaving the visit `scheduled` would keep the
+             *    "confirm karein" card on his phone while he is already on the road — two cards
+             *    disagreeing about where he is in the flow, which is exactly the failure the
+             *    Sep-3 device round fixed for the accept/outcome pair.
+             * ⚠ Only when HE pressed it. A manager standing in has confirmed nothing on the
+             *   rider's behalf — that distinction is what `accepted_via` exists to preserve.
+             */
+            if ($isRider && (string) $v['status'] !== 'accepted') {
+                $upd['status']       = 'accepted';
+                $upd['accepted_at']  = now();
+                $upd['accepted_by']  = $uid;
+                $upd['accepted_via'] = 'rider';
+            }
+            $n = DB::table(self::T_VISIT)->where('id', $visitId)->whereNull('departed_at')
+                ->update($upd);
+            if (!$n) return ['ok' => false, 'message' => 'Already on the way.'];
+        } catch (\Throwable $e) {
+            Log::error('workshop depart failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+            return ['ok' => false, 'message' => 'Could not start the trip.'];
+        }
+
+        $this->checkoutMemo = [];
+        try {
+            app(\App\Services\FirebaseService::class)->notifyWorkshopVisit('departed', $visitId, $uid);
+        } catch (\Throwable $e) {
+            Log::warning('departed push failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+        }
+
+        $trip = $this->tripFor($riderId);
+        return [
+            'ok' => true,
+            'trip' => $trip,
+            'assigned_warning' => $orders['assigned'] > 0 ? $orders['assigned'] : null,
+            'message' => $isRider
+                ? 'Theek hai — nikal jayein. Pohanchne par khud pata chal jayega.'
+                : $this->nameOf($riderId) . ' is on the way to ' . ($trip['workshop'] ?? 'the workshop') . '.',
+        ];
+    }
+
+    /**
+     * What is on this rider's plate right now — the three counts the START gate needs.
+     *
+     * ⚠ "dispatched" = out for delivery AND already dispatched (an ETA was calculated), the
+     *   same distinction the live board draws. Those are the ones that strand.
+     *
+     * @return array{dispatched:int, assigned:int, on_van:int}
+     */
+    public function openOrdersFor(int $riderId): array
+    {
+        $out = ['dispatched' => 0, 'assigned' => 0, 'on_van' => 0];
+        try {
+            $rows = DB::table('t_crm_prod_order')
+                ->where('assigned_rider_user_id', $riderId)
+                ->whereIn('order_status', ['out_for_delivery', 'on_van'])
+                ->get(['order_status', 'eta_calculated_at']);
+            foreach ($rows as $r) {
+                if ((string) $r->order_status === 'on_van') { $out['on_van']++; continue; }
+                if (!empty($r->eta_calculated_at)) $out['dispatched']++;
+                else                               $out['assigned']++;
+            }
+        } catch (\Throwable $e) {
+            // ⚠ Fail OPEN: an unreadable orders table must not trap a rider who has been
+            //   told to take the bike in. The store notice still goes out.
+            Log::warning('openOrdersFor failed', ['rider' => $riderId, 'error' => $e->getMessage()]);
+        }
+        return $out;
+    }
+
+    /**
+     * ⭐⭐ ARRIVAL BY GEOFENCE — there is no arrival button (owner ruling, 10-Sep).
+     *
+     * Called from the location heartbeat the phone already sends every five minutes, so
+     * nothing new runs on the device. Same shape as the going-home arrival stamp.
+     *
+     * ⭐ It also stamps `departed_at` when that is missing: a rider who forgot to press the
+     *   button but is demonstrably standing at the workshop HAS gone, and the board saying
+     *   otherwise while his own GPS proves it would be the kind of contradiction this whole
+     *   round exists to remove.
+     *
+     * ⚠ Only for a REGISTERED workshop with coordinates. A free-text one never arrives, and
+     *   the trip honestly reads "going to …" until he answers the outcome.
+     *
+     * @return bool true when this fix stamped an arrival (so the caller can push once)
+     */
+    public function stampArrival(int $userId, float $lat, float $lng): bool
+    {
+        if (!$this->tripEnabled()) return false;
+        try {
+            $today = \Carbon\Carbon::today()->format('Y-m-d');
+            $rows = DB::table(self::T_VISIT)
+                ->where('user_id', $userId)
+                ->whereDate('visit_date', $today)
+                ->whereIn('status', self::LIVE_STATUSES)
+                ->whereNull('arrived_at')
+                ->whereNull('done_at')
+                ->whereNotNull('location_id')
+                ->get(['id', 'location_id', 'departed_at']);
+            if ($rows->isEmpty()) return false;
+
+            foreach ($rows as $r) {
+                $c = $this->workshopCoords($r->location_id);
+                if (!$c) continue;
+                $d = $this->haversine($lat, $lng, $c['lat'], $c['lng']);
+                if ($d > $c['radius']) continue;
+
+                $upd = ['arrived_at' => now(), 'updated_at' => now()];
+                // He is there; if he never pressed "going", the fix proves he went anyway.
+                if (empty($r->departed_at)) {
+                    $upd['departed_at'] = now();
+                    $upd['departed_by'] = $userId;
+                }
+                $n = DB::table(self::T_VISIT)->where('id', $r->id)->whereNull('arrived_at')->update($upd);
+                if (!$n) continue;
+
+                $this->checkoutMemo = [];
+                try {
+                    app(\App\Services\FirebaseService::class)
+                        ->notifyWorkshopVisit('arrived', (int) $r->id, $userId);
+                } catch (\Throwable $e) {
+                    Log::warning('arrived push failed', ['visit' => $r->id, 'error' => $e->getMessage()]);
+                }
+                return true;
+            }
+        } catch (\Throwable $e) {
+            // ⚠ NON-FATAL BY CONTRACT. This runs inside the heartbeat; a failure here must
+            //   never cost the rider his location update.
+            Log::warning('stampArrival failed', ['user' => $userId, 'error' => $e->getMessage()]);
+        }
+        return false;
+    }
+
+    /** Metres between two pins. Local so the heartbeat path pulls in no controller. */
+    private function haversine(float $lat1, float $lon1, float $lat2, float $lon2): float
+    {
+        $R = 6371000;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+        $a = sin($dLat / 2) ** 2 + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLon / 2) ** 2;
+        return $R * 2 * atan2(sqrt($a), sqrt(1 - $a));
+    }
+
+    /**
+     * ⭐⭐ EVERY ERRAND IN PROGRESS RIGHT NOW — the ONE source for the store side.
+     *
+     * The phone banner, the web corner notice and the manager pushes all read this, so
+     * "who is away at a workshop" cannot be answered two different ways on two screens.
+     * Riders never see it; the audience gate lives in the controller.
+     */
+    public function liveTrips(): array
+    {
+        if (!$this->tripEnabled()) return [];
+        try {
+            $today = \Carbon\Carbon::today()->format('Y-m-d');
+            $rows = $this->listVisits(['from' => $today, 'to' => $today, 'limit' => 100]);
+            $out = [];
+            foreach ($rows as $v) {
+                if (!in_array((string) ($v['trip_state'] ?? ''), self::TRIP_ACTIVE, true)) continue;
+                $t = $this->decorateTrip($v, (int) $v['user_id'], true);
+                if (!$t['is_active']) continue;          // he has checked out
+                $t['user_id']    = (int) $v['user_id'];
+                $t['rider_name'] = $v['rider_name'];
+                $out[] = $t;
+            }
+            // Those still on the road first — they are the ones a dispatcher must not load up.
+            usort($out, fn ($a, $b) => ($a['state'] === self::TRIP_EN_ROUTE ? 0 : 1)
+                                     <=> ($b['state'] === self::TRIP_EN_ROUTE ? 0 : 1));
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('liveTrips failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * ⭐⭐ "HE NEVER WENT, AND HE HAS GONE HOME" (owner ruling, 10-Sep).
+     *
+     * Same-day bookings have no approval cut-off any more, so the one thing that must not
+     * pass in silence is the rider checking out having never set off. The managers are told
+     * ONCE, from the checkout request itself (prod has no scheduler), and the matter ends
+     * there for the day.
+     *
+     * ⚠⚠ The VISIT IS NOT CLOSED. Midnight still makes it MISSED, which is a question a
+     *    manager answers — auto-resolving it here would make "he went" and "he never went"
+     *    indistinguishable, the one thing this feature must never do (Sep-2 ruling).
+     *
+     * @return int how many notices were sent (0 or 1 in practice)
+     */
+    public function alertNotGoneAtCheckout(int $userId): int
+    {
+        if (!$this->tripEnabled()) return 0;
+        $sent = 0;
+        try {
+            $today = \Carbon\Carbon::today()->format('Y-m-d');
+            /**
+             * ⚠ PROPOSALS COUNT TOO. A same-day request nobody approved is the other way this
+             *   day ends with the bike unserviced, and it is arguably the one the managers most
+             *   need to hear — the rider was never even told. The push copy forks on status.
+             */
+            $statuses = $this->approvalEnabled() ? self::OPEN_STATUSES : self::LIVE_STATUSES;
+            $rows = DB::table(self::T_VISIT)
+                ->where('user_id', $userId)
+                ->whereDate('visit_date', $today)
+                ->whereIn('status', $statuses)
+                ->whereNull('departed_at')
+                ->whereNull('done_at')
+                ->whereNull('not_gone_alert_at')
+                // ⚠ "He never went" is already explained when the machine lost its keeper —
+                //   the managers were pushed then. A second notice about the same day says
+                //   nothing new and reads as two separate failures.
+                ->whereNull('no_keeper_since')
+                ->get(['id']);
+            foreach ($rows as $r) {
+                // The stamp IS the claim — two checkout posts must not push twice.
+                $n = DB::table(self::T_VISIT)->where('id', $r->id)->whereNull('not_gone_alert_at')
+                    ->update(['not_gone_alert_at' => now(), 'updated_at' => now()]);
+                if (!$n) continue;
+                try {
+                    app(\App\Services\FirebaseService::class)
+                        ->notifyWorkshopVisit('not_gone', (int) $r->id, $userId);
+                    $sent++;
+                } catch (\Throwable $e) {
+                    Log::warning('not_gone push failed', ['visit' => $r->id, 'error' => $e->getMessage()]);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('alertNotGoneAtCheckout failed', ['user' => $userId, 'error' => $e->getMessage()]);
+        }
+        return $sent;
+    }
+
+    /**
+     * ⭐ THE TRIP STATE OF ONE ROW. Static and tiny on purpose: `shape()` needs it, the
+     *   boards need it, and the tests need it without a database.
+     *
+     * ⚠ A row is only ever "on a trip" on its OWN day. A visit departed yesterday and never
+     *   answered is MISSED, not still-in-progress — otherwise a forgotten outcome would keep
+     *   a rider marked "at the workshop" for a week.
+     */
+    /**
+     * ⭐⭐ WHERE DOES HE CHECK IN ON THE DAY OF THIS VISIT — 'workshop' or 'regular'.
+     *
+     * THE ONE ANSWER, shared by the approval push, every rider-facing card and the
+     * attendance line. Before this each of them inferred it from `location_id`, which was
+     * safe only while "a registered workshop was chosen" and "his day starts there" were the
+     * same fact. Since the approver is ASKED (10-Sep-2026) they are two different facts, and
+     * a screen that keeps inferring tells him the opposite of the decision.
+     *
+     * ⚠ NULL `attendance_at` = the row predates the question (or nobody was asked), so the
+     *   OLD inference applies and nothing about an existing visit changes.
+     *
+     * @param array|object $r a visit row or a shaped visit
+     */
+    public static function checkinAtOf($r): string
+    {
+        $get = fn (string $k) => is_array($r) ? ($r[$k] ?? null) : ($r->$k ?? null);
+        $att = (string) ($get('attendance_at') ?? '');
+        if (in_array($att, ['regular', 'workshop'], true)) return $att;
+        return !empty($get('location_id')) ? 'workshop' : 'regular';
+    }
+
+    public static function tripStateOf(array $r): ?string
+    {
+        $live = in_array((string) ($r['status'] ?? ''), self::LIVE_STATUSES, true);
+        if (!$live) return null;
+        if (substr((string) ($r['visit_date'] ?? ''), 0, 10) !== \Carbon\Carbon::today()->format('Y-m-d')) {
+            return null;
+        }
+        if (!empty($r['done_at'])) return self::TRIP_ENDED;
+        if (!empty($r['arrived_at']))  return self::TRIP_AT;
+        if (!empty($r['departed_at'])) return self::TRIP_EN_ROUTE;
+        return self::TRIP_NONE;
+    }
+
+    /**
+     * ⭐⭐ "IS THIS PERSON ON A WORKSHOP ERRAND RIGHT NOW, AND WHERE IS HE IN IT?"
+     *
+     * THE ONE ANSWER. Every surface reads this and adds nothing of its own: the live rider
+     * card on the orders page, the riders-map Live tab, the store phone's pinned-rider tab
+     * and rider picker, the van boards, the dispatch guard, the rider's own line, and the
+     * store notices. That is deliberate — the alternative is six screens each deciding what
+     * "at the workshop" means, which is exactly how the fleet ended up with seven answers to
+     * "how often is this bike due" in August.
+     *
+     * ⭐ THE LABEL IS COMPOSED HERE TOO. With an ETA, a "since", two audiences and two
+     *   languages, a client that formats its own sentence will drift from the next one.
+     *
+     * @param  bool $withEta  false on batch/board paths that only need the state (the ETA
+     *                        costs a GPS read and possibly a cached Google call).
+     * @return array{state,visit_id,vehicle_id,vehicle_name,vtype,workshop,visit_time,since,
+     *               eta_min,eta_text,label,label_ur,is_active}|null  null = no errand today
+     */
+    public function tripFor(int $userId, ?string $date = null, bool $withEta = true): ?array
+    {
+        if (!$this->tripEnabled() || $userId <= 0) return null;
+        $day = $date ? substr($date, 0, 10) : \Carbon\Carbon::today()->format('Y-m-d');
+        try {
+            $rows = $this->listVisits(['user_id' => $userId, 'from' => $day, 'to' => $day, 'limit' => 5]);
+            foreach ($rows as $v) {
+                if (($v['trip_state'] ?? null) === null) continue;
+                return $this->decorateTrip($v, $userId, $withEta);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('tripFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
+        }
+        return null;
+    }
+
+    /**
+     * The same answer for a whole board in ONE query — the live rider card asks for every
+     * rider on screen, and asking per row is how a 60 ms board becomes a 600 ms one.
+     *
+     * @return array<int, array> keyed by user id; riders with no errand are absent
+     */
+    public function tripsFor(array $userIds, ?string $date = null, bool $withEta = true): array
+    {
+        $userIds = array_values(array_unique(array_filter(array_map('intval', $userIds))));
+        if (!$this->tripEnabled() || !$userIds) return [];
+        $day = $date ? substr($date, 0, 10) : \Carbon\Carbon::today()->format('Y-m-d');
+
+        $out = [];
+        try {
+            $rows = DB::table(self::T_VISIT . ' as v')
+                ->leftJoin('t_sys_user as u', 'u.id', '=', 'v.user_id')
+                ->whereIn('v.user_id', $userIds)
+                ->whereDate('v.visit_date', $day)
+                ->whereIn('v.status', self::LIVE_STATUSES)
+                ->orderBy('v.id')
+                ->get(['v.*', 'u.fullname as rider_name']);
+            if ($rows->isEmpty()) return [];
+
+            $labels = [];
+            try {
+                $res = new VehicleResolver();
+                foreach ($rows->pluck('vehicle_id')->unique() as $vid) {
+                    $labels[(int) $vid] = $res->labelFor((int) $vid);
+                }
+            } catch (\Throwable $e) {
+                $labels = [];
+            }
+
+            foreach ($rows as $r) {
+                $v = $this->shape((array) $r, $labels, []);
+                if (($v['trip_state'] ?? null) === null) continue;
+                $uid = (int) $v['user_id'];
+                // One errand per person per day on the boards: the earliest live one wins,
+                // so a second booking cannot make him appear twice with different states.
+                if (!isset($out[$uid])) $out[$uid] = $this->decorateTrip($v, $uid, $withEta);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('tripsFor failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+        return $out;
+    }
+
+    /**
+     * Turn a shaped visit into the trip payload: resolve the workshop's coordinates, work
+     * out the ETA from his latest fix, close the trip if he has gone home, and write both
+     * sentences.
+     */
+    private function decorateTrip(array $v, int $userId, bool $withEta): array
+    {
+        $state = (string) $v['trip_state'];
+
+        /**
+         * ⚠⚠ HE HAS GONE HOME. A rider who checks out has ended the errand whatever the row
+         *    says — leaving him "at the workshop" on the board overnight would be a lie the
+         *    next morning's dispatcher acts on.
+         * ⭐ The VISIT is untouched: it still wants its outcome, and midnight still makes it
+         *   MISSED if he never went. Ending the TRIP is not answering the QUESTION — that
+         *   distinction is the Sep-2 ruling and it holds here.
+         */
+        if (in_array($state, self::TRIP_ACTIVE, true) && $this->hasCheckedOut($userId, $v['visit_date'])) {
+            $state = self::TRIP_ENDED;
+        }
+
+        $place  = $v['workshop'] ?: ($this->locationNameFor($v['location_id']) ?: 'the workshop');
+        $coords = $this->workshopCoords($v['location_id']);
+        $since  = $state === self::TRIP_AT ? $v['arrived_at'] : $v['departed_at'];
+
+        $eta = null;
+        if ($withEta && $state === self::TRIP_EN_ROUTE && $coords) {
+            $eta = $this->etaToWorkshop($userId, $coords);
+        }
+
+        $sinceTxt = $since ? \Carbon\Carbon::parse($since)->format('g:i A') : null;
+
+        // 🗣 Manager copy is English (UI furniture); the rider's own line is Roman Urdu
+        //    because it tells him what is happening to him — the Sep-3 copy rule.
+        switch ($state) {
+            case self::TRIP_EN_ROUTE:
+                $label = '🔧 Going to ' . $place . ($eta ? ' · ~' . $eta['minutes'] . ' min' : '');
+                $labelUr = $place . ' ki taraf' . ($eta ? ' · ~' . $eta['minutes'] . ' min' : '');
+                break;
+            case self::TRIP_AT:
+                $label = '🔧 At ' . $place . ($sinceTxt ? ' · since ' . $sinceTxt : '');
+                $labelUr = $place . ' par' . ($sinceTxt ? ' · ' . $sinceTxt . ' se' : '');
+                break;
+            case self::TRIP_NONE:
+                $label = '🔧 Workshop today' . ($v['visit_time'] ? ' · ' . $v['visit_time'] : '');
+                $labelUr = 'Aaj workshop' . ($v['visit_time'] ? ' · ' . $v['visit_time'] : '');
+                break;
+            default:
+                $label = '🔧 Workshop done';
+                $labelUr = 'Workshop mukammal';
+        }
+
+        return [
+            'state'         => $state,
+            'is_active'     => in_array($state, self::TRIP_ACTIVE, true),
+            'visit_id'      => (int) $v['id'],
+            'vehicle_id'    => (int) $v['vehicle_id'],
+            'vehicle_name'  => $v['vehicle_name'],
+            'vtype'         => $this->vtypeOf((int) $v['vehicle_id']),
+            'workshop'      => $place,
+            'location_id'   => $v['location_id'],
+            'visit_time'    => $v['visit_time'],
+            'purpose'       => $v['purpose'],
+            'departed_at'   => $v['departed_at'],
+            'arrived_at'    => $v['arrived_at'],
+            'since'         => $since,
+            'since_text'    => $sinceTxt,
+            'eta_min'       => $eta['minutes'] ?? null,
+            'eta_text'      => $eta ? ('~' . $eta['minutes'] . ' min') : null,
+            'eta_source'    => $eta['source'] ?? null,
+            'can_depart'    => (bool) $v['can_depart'],
+            'no_keeper_since' => $v['no_keeper_since'],
+            'label'         => $label,
+            'label_ur'      => $labelUr,
+        ];
+    }
+
+    /** Did he check out on that day? One read, memoised — the boards ask per rider. */
+    private function hasCheckedOut(int $userId, string $date): bool
+    {
+        $key = $userId . '|' . $date;
+        if (array_key_exists($key, $this->checkoutMemo)) return $this->checkoutMemo[$key];
+        try {
+            // ⚠ `logout_time` is the column; there is no `check_out_time` on this table
+            //   (the API renames it on the way out, which is easy to be misled by).
+            $row = DB::table('t_ops_attendance')
+                ->where('user_id', $userId)->whereDate('attendance_date', $date)
+                ->first(['logout_time']);
+            $out = $row && !empty($row->logout_time);
+        } catch (\Throwable $e) {
+            // ⚠ Fail OPEN (not checked out): a missing attendance table must never make a
+            //   live errand vanish from the board.
+            $out = false;
+        }
+        return $this->checkoutMemo[$key] = $out;
+    }
+
+    /** 'bike' | 'van' — so a van's trip reads "Van at Ali Motors" on the van boards. */
+    private function vtypeOf(int $vehicleId): string
+    {
+        try {
+            return (string) (DB::table(VehicleService::T_VEHICLE)->where('id', $vehicleId)
+                ->value('vtype') ?: 'bike');
+        } catch (\Throwable $e) {
+            return 'bike';
+        }
+    }
+
+    private function locationNameFor($locationId): ?string
+    {
+        if (!$locationId) return null;
+        try {
+            return DB::table('t_ops_company_locations')->where('id', (int) $locationId)
+                ->value('location_name');
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * The workshop's pin, when it is a registered location. Free-text workshops have none —
+     * which is why arrival is never stamped for them and the trip honestly reads "going to"
+     * until the rider answers the outcome.
+     *
+     * @return array{lat:float,lng:float,radius:int}|null
+     */
+    public function workshopCoords($locationId): ?array
+    {
+        if (!$locationId) return null;
+        $id = (int) $locationId;
+        if (array_key_exists($id, self::$coordMemo)) return self::$coordMemo[$id];
+        $out = null;
+        try {
+            $l = DB::table('t_ops_company_locations')->where('id', $id)
+                ->first(['latitude', 'longitude', 'radius_meters']);
+            if ($l && $l->latitude !== null && $l->longitude !== null) {
+                $r = (int) ($l->radius_meters ?? 0);
+                $out = ['lat' => (float) $l->latitude, 'lng' => (float) $l->longitude,
+                        'radius' => $r > 0 ? $r : self::ARRIVE_RADIUS_M];
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        return self::$coordMemo[$id] = $out;
+    }
+
+    /**
+     * ⭐⭐ "HOW LONG UNTIL HE GETS THERE" — the owner's definition of arming the GPS.
+     *
+     * ⚠ NOT a new tracker. The 5-minute heartbeat has always run from check-in to checkout;
+     *   what a delivery adds is a STATUS and an ETA, and that is precisely what this errand
+     *   was missing. So this reuses `getReturnToOfficeInfo` — already parametric on the
+     *   destination, already Google-with-cache and haversine fallback — pointed at the
+     *   workshop instead of the office. One ETA engine, two destinations.
+     *
+     * @return array{minutes:int, source:string}|null  null = no fresh fix to measure from
+     */
+    private function etaToWorkshop(int $userId, array $coords): ?array
+    {
+        try {
+            $info = app(\App\Http\Controllers\API\RiderController::class)
+                ->getReturnToOfficeInfo($userId, $coords['lat'], $coords['lng'], $coords['radius'], true);
+            if (!$info || !isset($info['minutes'])) return null;
+            return ['minutes' => (int) $info['minutes'], 'source' => $info['source'] ?? 'estimate'];
+        } catch (\Throwable $e) {
+            Log::debug('workshop ETA skipped', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * ⭐⭐ THE MACHINE LOST ITS KEEPER WHILE AN ERRAND WAS OPEN (owner ruling, 10-Sep-2026).
+     *
+     * *"in this case Shabib will simply remove the bike from his name with the change rider
+     * option"* — that is the answer to a bike kept at the workshop overnight. There is no third
+     * outcome and no new button; the existing release does the work, and this keeps the errand
+     * coherent afterwards.
+     *
+     * What it does NOT do, deliberately:
+     *   • it does not close the visit — somebody still has to say what happened to the bike;
+     *   • it does not answer it — auto-completing would erase the difference between "he went"
+     *     and "he never went", the one rule this feature is built around (Sep-2);
+     *   • it does not blame the rider — he handed the machine back, which is what he was told.
+     *
+     * ⚠ Only for a machine with NO new keeper. `onHandover()` already moves an errand that has
+     *   been passed to somebody else, and that path is the right one — the new holder is the man
+     *   who will be at the workshop.
+     */
+    public function onKeeperLost(int $vehicleId, ?int $fromUserId, ?int $actorId = null): int
+    {
+        if (!$this->available() || !$this->tripEnabled()) return 0;
+        $n = 0;
+        try {
+            $today = \Carbon\Carbon::today()->format('Y-m-d');
+            /**
+             * ⚠⚠ WIDENED 10-Sep-2026 (review). This used to stamp only an errand actually
+             *    UNDER WAY, on the reasoning that "a visit he never started is simply a day
+             *    nobody went on, and the checkout notice covers it". That held while the only
+             *    caller was `release()` at the end of a day. It does not hold for the caller
+             *    added in the same review — a manager giving him a SPARE at 10am, which is the
+             *    ordinary workshop morning:
+             *
+             *      • the errand is still ahead of him, and he no longer has the bike;
+             *      • his phone would keep offering "Workshop jaa raha hoon" for it;
+             *      • and the checkout notice fires hours later, if at all.
+             *
+             *    So a live visit dated TODAY-OR-LATER is stamped too. Nothing is closed and
+             *    nothing is answered — the managers are told the machine has nobody to take
+             *    it in, which is the fact, and the visit waits for a decision.
+             *
+             * ⚠ A PAST visit is stamped only if he had actually set off on it; one he never
+             *   started is history and the missed-visit question already covers it.
+             */
+            $rows = DB::table(self::T_VISIT)
+                ->where('vehicle_id', $vehicleId)
+                ->whereIn('status', self::LIVE_STATUSES)
+                ->whereNull('done_at')
+                ->whereNull('no_keeper_since')
+                ->where(function ($q) use ($today) {
+                    $q->where(function ($w) use ($today) {
+                        $w->whereDate('visit_date', '<=', $today)->whereNotNull('departed_at');
+                    })->orWhereDate('visit_date', '>=', $today);
+                })
+                ->get(['id']);
+            foreach ($rows as $r) {
+                $upd = DB::table(self::T_VISIT)->where('id', $r->id)->whereNull('no_keeper_since')
+                    ->update(['no_keeper_since' => now(), 'updated_at' => now()]);
+                if (!$upd) continue;
+                $n++;
+                $this->checkoutMemo = [];
+                try {
+                    app(\App\Services\FirebaseService::class)
+                        ->notifyWorkshopVisit('no_keeper', (int) $r->id, (int) ($actorId ?: $fromUserId ?: 0));
+                } catch (\Throwable $e) {
+                    Log::warning('no_keeper push failed', ['visit' => $r->id, 'error' => $e->getMessage()]);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('onKeeperLost failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+        }
+        return $n;
     }
 
     /** The rider's own next live visit — his banner, his vehicle card, his attendance line. */
@@ -1626,8 +2706,19 @@ class WorkshopVisitService
         //   a rider who did not go must keep seeing it, not have it silently vanish.
         $rows = $this->listVisits(['user_id' => $userId,
                                    'from' => \Carbon\Carbon::today()->subDays(14)->format('Y-m-d'),
-                                   'limit' => 1]);
-        return $rows[0] ?? null;
+                                   'limit' => 5]);
+        /**
+         * ⚠⚠ …BUT NOT A BIKE HE NO LONGER HAS (10-Sep-2026). When a machine loses its keeper
+         *    the errand stays open — somebody must still answer for it — but it stops being
+         *    THIS man's instruction, and leaving it on his card asks him to take in a bike
+         *    that is not in his hands. The managers were pushed at the moment it happened;
+         *    `onHandover()` gives it to the new holder as soon as there is one.
+         */
+        foreach ($rows as $r) {
+            if (!empty($r['no_keeper_since'])) continue;
+            return $r;
+        }
+        return null;
     }
 
     /**
@@ -1834,7 +2925,10 @@ class WorkshopVisitService
             'rider_name'          => $r['rider_name'] ?? null,
             'visit_date'          => $date,
             'visit_time'          => $r['visit_time'] ? substr((string) $r['visit_time'], 0, 5) : null,
+            // ⚠ The free-text name a manager typed, unchanged. `workshop_label` below is what
+            //   a SCREEN should print — a registered workshop has a name but no free text.
             'workshop'            => $r['workshop'],
+            'workshop_label'      => $r['workshop'] ?: ($r['location_name'] ?? null),
             'location_id'         => $r['location_id'] ? (int) $r['location_id'] : null,
             'purpose'             => (string) $r['purpose'],
             'maintenance_type_id' => $r['maintenance_type_id'] ? (int) $r['maintenance_type_id'] : null,
@@ -1878,6 +2972,57 @@ class WorkshopVisitService
             'done_at'             => $r['done_at'] ? (string) $r['done_at'] : null,
             'outcome_note'        => $r['outcome_note'] ?? null,
             'service_log_id'      => $r['service_log_id'] ? (int) $r['service_log_id'] : null,
+            /**
+             * 🚦 THE TRIP (Sep-10 2026) — additive; `?? null` throughout because the columns
+             *    may not exist yet (the PHP lands before the SQL on a hand-deployed system).
+             * ⚠ `trip_state` here is the row's own view. The BOARDS ask `tripFor()`, which
+             *   also weighs his attendance (checked out ⇒ the trip is over) and computes the
+             *   ETA. Both agree on the first three states by construction — this one simply
+             *   cannot see a checkout.
+             */
+            'attendance_at'       => $r['attendance_at'] ?? null,
+            /**
+             * 📍 THE RESOLVED ANSWER AND THE RIDER'S OWN SENTENCE (10-Sep-2026).
+             *
+             * ⚠⚠ The rider was never told WHERE TO CLOCK IN by any screen — only by the
+             *    approval push, which said "jagah badal gayi hai" whether it had or not. His
+             *    card, his attendance line and the push now read one derivation and print one
+             *    sentence, so they cannot send him to two different places.
+             * ⚠ Composed HERE, not on the clients: two apps and a blade formatting the same
+             *   two-branch sentence is three chances to drift.
+             * ⚠ Null for anything that is not a LIVE instruction — a proposal is not something
+             *   he has been told about, and a finished visit has no morning left to plan.
+             */
+            'checkin_at'          => self::checkinAtOf($r),
+            /**
+             * 📍 THE QUESTION, ON EVERY SCREEN THAT CAN ANSWER IT (10-Sep-2026 review).
+             *
+             * ⚠⚠ This was built only into `pendingApprovals()`, so the web corner card and the
+             *    phone's approval banner asked it — while the OTHER two doors that approve
+             *    (the Bikes screen's list and a machine's own card) posted `{}` and told the
+             *    planner "his day will be pinned to the workshop" whether it would be or not.
+             *    Three doors, one decision, two of them lying about it.
+             *
+             * ⚠ PROPOSALS ONLY. It costs a shift lookup (cached), and it is meaningless for
+             *   anything already decided — so every other row carries null and pays nothing.
+             */
+            'attendance'          => (string) $r['status'] === 'proposed'
+                ? $this->attendanceChoiceFor($r) : null,
+            'checkin_line'        => !$live ? null : (self::checkinAtOf($r) === 'workshop'
+                ? 'Us din attendance ' . ($r['workshop'] ?: ($r['location_name'] ?? 'workshop')) . ' par karein.'
+                : 'Attendance apni normal jagah par hi karein, phir wahan chale jayein.'),
+            'departed_at'         => !empty($r['departed_at']) ? (string) $r['departed_at'] : null,
+            'departed_by'         => !empty($r['departed_by']) ? (int) $r['departed_by'] : null,
+            'departed_by_name'    => !empty($r['departed_by']) ? ($names[(int) $r['departed_by']] ?? null) : null,
+            'arrived_at'          => !empty($r['arrived_at']) ? (string) $r['arrived_at'] : null,
+            'no_keeper_since'     => !empty($r['no_keeper_since']) ? (string) $r['no_keeper_since'] : null,
+            'trip_state'          => self::tripStateOf($r),
+            // ⚠ "May he press START?" is a question about TODAY, so it is false on every
+            //   other day by construction — a card for tomorrow must never offer the button.
+            // ⚠ …and NOT once the machine has lost its keeper (10-Sep-2026). The button would
+            //   otherwise sit on the phone of a man who handed the bike back this morning.
+            'can_depart'          => $live && $date === $today && empty($r['departed_at'])
+                                     && empty($r['no_keeper_since']),
         ];
     }
 

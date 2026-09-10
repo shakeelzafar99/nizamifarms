@@ -138,5 +138,17 @@ Schedule::command('campaigns:send-process')
     ->withoutOverlapping(2)
     ->runInBackground();
 
+// Sep-2026 — The fleet's clock: service-due pushes, the day-before workshop
+// reminder, the approval nudge / auto-decline, and the overnight-meter
+// escalation. All of these used to fire only when a screen polled the right
+// endpoint. Every push is ledger- or stamp-deduped, so the request piggybacks
+// stay in place and the two cannot double-send. ⚠ On prod this is scheduled as
+// its OWN StackCP task (schedule:run does not run there):
+//   /usr/bin/php82 /home/sites/29a/8/8556230fc3/public_html/app/artisan fleet:sweep
+Schedule::command('fleet:sweep')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping(5)
+    ->runInBackground();
+
 // Rider Reports are computed REAL-TIME on open (RiderReportsController) — no
 // scheduled job, no stored tables, so there is no staleness to reconcile.

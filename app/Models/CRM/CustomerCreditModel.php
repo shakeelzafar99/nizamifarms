@@ -52,6 +52,19 @@ class CustomerCreditModel extends BaseModel
     public const SOURCE_MANUAL       = 'manual';
     public const SOURCE_CANCELLATION = 'cancellation';
     public const SOURCE_ZERO_OUT     = 'zero_out';
+    /**
+     * A delivered order came back (Sep-2026). Like a cancellation, the money is
+     * already banked and already booked as revenue, so the grant RE-CLASSIFIES
+     * revenue into "owed to the customer" — it must never post to a bank, or the
+     * same rupees would be counted twice. See postGrantLedger().
+     */
+    public const SOURCE_RETURN       = 'return';
+
+    /**
+     * Sources whose money is ALREADY in our accounts, so the grant's counter-side
+     * is Sales Revenue rather than a bank. Getting this wrong double-counts.
+     */
+    public const RECLASSIFICATION_SOURCES = [self::SOURCE_CANCELLATION, self::SOURCE_RETURN];
 
     /** The sentinel discount code that marks a consume on an order. */
     public const DISCOUNT_CODE = 'ACCOUNT_BALANCE';

@@ -796,6 +796,148 @@ class VehicleController extends Controller
         ]);
     }
 
+    /* ====================================================================== *
+     * 🏠 RIDER HOME LOCATION — the SAME three endpoints for the Bikes tab on
+     *    the web and Bikes on the phone (owner ruling, 10-Sep-2026: "all this
+     *    should still be one engine and in sync on the web and mobile").
+     *
+     *    Every one of them is a thin gate over RiderHomePinService. Neither
+     *    surface parses a Google link, decides what "moved" means, or stamps
+     *    who/when — the service does, once, so the two can never drift.
+     *
+     * ⚠ The WEB pair and the MOBILE pair differ ONLY in the first check: the
+     *   phone must additionally hold the Bikes mobile key (`view_bike_costs`),
+     *   because a mobile permission being off means the screen is not meant to
+     *   exist for that user at all. The authority to CHANGE a pin is
+     *   `assign_vehicles` on both, checked by canManage().
+     * ====================================================================== */
+
+    /** WEB — read one rider's pin + who set it + the recent trail. */
+    public function homePinShow(Request $request, $userId)
+    {
+        if (!$this->canView()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return response()->json($this->homePinPayload((int) $userId) + ['can_manage' => $this->canManage()]);
+    }
+
+    /** WEB — save a pasted link / Plus Code / coordinates. */
+    public function homePinSave(Request $request, $userId)
+    {
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change rider home locations'], 403);
+        }
+        return response()->json($this->doHomePinSave($request, (int) $userId, 'web-bikes'));
+    }
+
+    /** WEB — explicit removal. */
+    public function homePinClear(Request $request, $userId)
+    {
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change rider home locations'], 403);
+        }
+        return response()->json($this->doHomePinClear((int) $userId, 'web-bikes'));
+    }
+
+    /** MOBILE — read. */
+    public function apiHomePinShow(Request $request, $userId)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return response()->json($this->homePinPayload((int) $userId) + ['can_manage' => $this->canManage()]);
+    }
+
+    /** MOBILE — save. */
+    public function apiHomePinSave(Request $request, $userId)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change rider home locations'], 403);
+        }
+        return response()->json($this->doHomePinSave($request, (int) $userId, 'mobile-bikes'));
+    }
+
+    /** MOBILE — explicit removal. */
+    public function apiHomePinClear(Request $request, $userId)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        if (!$this->canManage()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change rider home locations'], 403);
+        }
+        return response()->json($this->doHomePinClear((int) $userId, 'mobile-bikes'));
+    }
+
+    /** The one response shape both surfaces render. */
+    private function homePinPayload(int $userId): array
+    {
+        $svc = new \App\Services\Riders\RiderHomePinService();
+        $name = null;
+        try {
+            $name = DB::table('t_sys_user')->where('id', $userId)->value('fullname');
+        } catch (\Throwable $e) { /* cosmetic */ }
+
+        return [
+            'success'     => true,
+            'user_id'     => $userId,
+            'rider_name'  => $name,
+            'home_pin'    => $svc->get($userId),
+            'history'     => $svc->history($userId, 10),
+            'default_radius_m' => $svc->defaultRadius(),
+        ];
+    }
+
+    /**
+     * ⚠ The refusal path matters as much as the happy one: when the text cannot be read
+     *   we return `success:false` and DO NOT touch the stored pin, so a bad paste can
+     *   never cost a good home location. The caller shows `message` and keeps the sheet
+     *   open with what the manager typed still in it.
+     */
+    private function doHomePinSave(Request $request, int $userId, string $source): array
+    {
+        $radius = $request->input('home_radius_m');
+        $res = (new \App\Services\Riders\RiderHomePinService())->resolveAndSave(
+            $userId,
+            $request->input('text'),
+            $request->input('latitude'),
+            $request->input('longitude'),
+            ($radius !== null && $radius !== '') ? (int) $radius : null,
+            (int) auth()->id(),
+            $source
+        );
+
+        if (!$res['ok']) {
+            return ['success' => false, 'message' => $res['error']] + $this->homePinPayload($userId);
+        }
+
+        return [
+            'success' => true,
+            'moved'   => $res['moved'],
+            'message' => $res['moved']
+                ? 'Home location saved.'
+                : 'That is already the saved home location — nothing changed.',
+        ] + $this->homePinPayload($userId);
+    }
+
+    private function doHomePinClear(int $userId, string $source): array
+    {
+        $res = (new \App\Services\Riders\RiderHomePinService())
+            ->clear($userId, (int) auth()->id(), $source);
+
+        if (!$res['ok']) {
+            return ['success' => false, 'message' => $res['error']] + $this->homePinPayload($userId);
+        }
+
+        return [
+            'success' => true,
+            'message' => $res['cleared'] ? 'Home location removed.' : 'There was no home location to remove.',
+        ] + $this->homePinPayload($userId);
+    }
+
     /**
      * The Bikes screen's OWN mobile key — the same gate FleetFuelController uses.
      * Authoritative on purpose: an additive gate would make unticking it useless.
@@ -1526,11 +1668,24 @@ class VehicleController extends Controller
                 }
             } catch (\Throwable $e) { /* a missing label is cosmetic */ }
 
+            // 🏠 Who set each home pin, resolved in ONE query rather than per rider —
+            //    this roster is drawn on every Bikes load, on the web and on the phone.
+            $homeSvc = new \App\Services\Riders\RiderHomePinService();
+            $setterNames = [];
+            try {
+                $setterNames = DB::table('t_ops_rider_profile as p')
+                    ->join('t_sys_user as su', 'su.id', '=', 'p.home_set_by')
+                    ->whereNotNull('p.home_set_by')
+                    ->pluck('su.fullname', 'su.id')
+                    ->all();
+            } catch (\Throwable $e) { /* a missing name is cosmetic */ }
+
             return DB::table('t_ops_rider_profile as p')
                 ->join('t_sys_user as u', 'u.id', '=', 'p.user_id')
                 ->where('p.active', 1)
                 ->orderBy('u.fullname')
-                ->get(['p.user_id', 'u.fullname', 'p.company_bike', 'p.home_latitude'])
+                ->get(['p.user_id', 'u.fullname', 'p.company_bike', 'p.home_latitude',
+                       'p.home_longitude', 'p.home_set_at', 'p.home_set_by'])
                 ->map(fn ($r) => [
                     'user_id'      => (int) $r->user_id,
                     'name'         => $r->fullname,
@@ -1542,6 +1697,19 @@ class VehicleController extends Controller
                     'since'        => $since[(int) $r->user_id] ?? null,
                     'free_since'   => isset($held[(int) $r->user_id]) ? null : ($lastHeld[(int) $r->user_id] ?? null),
                     'has_home_pin' => $r->home_latitude !== null,
+                    // 🏠 The pin itself, so the Bikes roster can SHOW the stored location
+                    // (owner: "should be able to view the saved") instead of only a tick.
+                    // Same shape on the web tab and the phone — one roster, one answer.
+                    'home_pin'     => $r->home_latitude !== null && $r->home_longitude !== null
+                        ? [
+                            'lat' => (float) $r->home_latitude,
+                            'lng' => (float) $r->home_longitude,
+                            'set_at' => $r->home_set_at,
+                            'set_by_name' => $r->home_set_by !== null
+                                ? ($setterNames[(int) $r->home_set_by] ?? null) : null,
+                            'maps_url' => $homeSvc->mapsUrl((float) $r->home_latitude, (float) $r->home_longitude),
+                        ]
+                        : null,
                 ])->all();
         } catch (\Throwable $e) {
             return [];
@@ -1840,6 +2008,155 @@ class VehicleController extends Controller
         if (!$u) return false;
         if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
         return (bool) $u->hasPermission('assign_vehicles');
+    }
+
+    /**
+     * ⭐ MAY HE CHANGE A SERVICE SCHEDULE? `manage_bike_service` — the SAME key that
+     *   already gates recording a service and editing the maintenance types, and NOT
+     *   `assign_vehicles`.
+     *
+     * ⚠⚠ Qasim owns maintenance and deliberately holds no `assign_vehicles` (owner
+     *    ruling, 3-Sep: Shabib assigns machines). Gating the schedule editor on the
+     *    assignment key would have locked the maintenance manager out of the one screen
+     *    built for him. Accepts either half so the same method serves web and mobile.
+     */
+    private function canManageService(Request $request = null): bool
+    {
+        $u = auth()->user() ?: ($request ? $request->user() : null);
+        if (!$u) return false;
+        if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) return false;
+        if (method_exists($u, 'hasMobilePermission')
+            && $u->hasMobilePermission('manage_bike_service')) return true;
+        return (bool) $u->hasPermission('manage_bike_service');
+    }
+
+    /**
+     * ⭐⭐ THE PER-VEHICLE SCHEDULE EDITOR — read (Sep-2026).
+     *
+     * Every job this machine's CLASS is offered, the standard beside each, and this
+     * vehicle's own value where it has one. This is the payload behind "⚙️ This
+     * vehicle's schedule" on both surfaces, so web and mobile draw the same rows in
+     * the same order and cannot disagree about what is set.
+     */
+    public function schedule(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canManageService($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change service schedules'], 403);
+        }
+        try {
+            $v = $svc->find((int) $id);
+            if (!$v) return response()->json(['success' => false, 'message' => 'That vehicle no longer exists.'], 404);
+
+            $class   = $svc->classOf((int) $id);
+            $tracked = $svc->isTrackedId((int) $id);
+            $own     = (new \App\Services\Riders\VehicleScheduleService())->forVehicle((int) $id);
+            $types   = app(\App\Services\Riders\MaintenanceTypeService::class)->optionsFor($class);
+
+            $rows = [];
+            foreach ($types as $t) {
+                $tid = (int) $t['id'];
+                $o   = $own[$tid] ?? null;
+                $rows[] = [
+                    'id'   => $tid,
+                    'name' => $t['name'],
+                    'bucket' => $t['bucket'],
+                    'basis'  => $t['basis'] ?? 'km',
+                    'resets_service_clock' => !empty($t['resets_service_clock']),
+                    // What every machine of this class follows unless told otherwise.
+                    'standard_label' => $t['due_label'] ?? null,
+                    'standard_km'    => $t['interval_km'] ?? null,
+                    'standard_days'  => $t['interval_days'] ?? null,
+                    'has_standard'   => !empty($t['has_schedule']),
+                    // …and what THIS machine does, when it differs. Null = follow it.
+                    'own_km'         => $o['km'] ?? null,
+                    'own_days'       => $o['days'] ?? null,
+                ];
+            }
+
+            return response()->json([
+                'success'       => true,
+                'vehicle'       => ['id' => (int) $id, 'name' => $v['name'] ?? null,
+                                    'vtype' => $v['vtype'] ?? $class,
+                                    'is_company' => $v['is_company'] ?? null],
+                'vehicle_class' => $class,
+                // ⚠ A personal machine has no company schedule at all, so the editor
+                //   shows a sentence instead of a form rather than offering settings
+                //   that would never be read.
+                'tracked'       => $tracked,
+                'rows'          => $tracked ? $rows : [],
+                'note'          => $tracked ? null
+                    : 'This is a personal vehicle. The company does not keep its service schedule.',
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('vehicle schedule read failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not read this schedule'], 500);
+        }
+    }
+
+    /**
+     * ⭐⭐ THE PER-VEHICLE SCHEDULE EDITOR — write.
+     *
+     * The editor posts EVERY job it displayed, so a field left blank clears that
+     * vehicle's exception rather than leaving the old value behind. See
+     * VehicleScheduleService::saveFor for why a partial save would be wrong.
+     */
+    public function saveSchedule(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->canManageService($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised to change service schedules'], 403);
+        }
+
+        $data = $request->validate([
+            'rows'               => 'required|array|max:100',
+            'rows.*.id'          => 'required|integer',
+            'rows.*.interval_km'   => 'nullable|integer|min:0|max:200000',
+            'rows.*.interval_days' => 'nullable|integer|min:0|max:36500',
+        ]);
+
+        try {
+            if (!$svc->find((int) $id)) {
+                return response()->json(['success' => false, 'message' => 'That vehicle no longer exists.'], 404);
+            }
+            if (!$svc->isTrackedId((int) $id)) {
+                return response()->json(['success' => false, 'message' =>
+                    'This is a personal vehicle and the company does not keep its service schedule.'], 422);
+            }
+
+            $rows = [];
+            foreach ($data['rows'] as $r) {
+                $rows[(int) $r['id']] = ['km'   => $r['interval_km']   ?? null,
+                                         'days' => $r['interval_days'] ?? null];
+            }
+
+            $res = (new \App\Services\Riders\VehicleScheduleService())
+                ->saveFor((int) $id, $rows, (int) auth()->id());
+            if (!$res['ok']) {
+                return response()->json(['success' => false, 'message' => $res['message']], 422);
+            }
+
+            return response()->json(['success' => true, 'message' => $res['message'],
+                                     'saved' => $res['saved'], 'cleared' => $res['cleared']]);
+        } catch (\Throwable $e) {
+            \Log::error('vehicle schedule save failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not save this schedule'], 500);
+        }
+    }
+
+    /** Mobile twins — one method each, so the phone and the desk cannot drift. */
+    public function apiSchedule(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->schedule($request, $svc, $id);
+    }
+
+    public function apiSaveSchedule(Request $request, VehicleService $svc, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        return $this->saveSchedule($request, $svc, $id);
     }
 
     /**

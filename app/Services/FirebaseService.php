@@ -430,18 +430,14 @@ class FirebaseService
         $keeper = $alert['keeper_user_id'] ?? null;
         if ($keeper) {
             // 🗣 Roman Urdu — the keeper is a RIDER and he is the one who has to take the
-            // bike in (owner ruling). The group title above stays English for the managers.
-            $hisTitle = ($alert['state'] ?? '') === 'overdue'
-                ? '🛢 Aap ki bike ki service late ho chuki hai'
-                : '🛢 Aap ki bike ki service aane wali hai';
-            $his = ($alert['state'] ?? '') === 'overdue'
-                ? 'Aap ki bike ka ' . ($alert['type_name'] ?? 'service') . ' '
-                    . number_format(abs((int) ($alert['due_in_km'] ?? 0))) . ' km late ho chuka hai.'
-                : 'Aap ki bike ka ' . ($alert['type_name'] ?? 'service') . ' '
-                    . number_format((int) ($alert['due_in_km'] ?? 0)) . ' km baad hai.';
+            // machine in (owner ruling). The group title above stays English for the managers.
+            // ⭐ ONE sentence, shared with the in-app banner (BikeServiceAlerts::riderCopy),
+            //   so "gaari" for a van and "din" for a time-based job reach the tray as well
+            //   as the screen. This used to compose its own copy from `due_in_km` and said
+            //   "bike" for everything — the review found the two disagreeing.
+            $copy = \App\Services\Riders\BikeServiceAlerts::riderCopy($alert);
             try {
-                $this->notifyUser((int) $keeper, ['title' => $hisTitle, 'body' => $his],
-                                  $data, 'shift_notifications');
+                $this->notifyUser((int) $keeper, $copy, $data, 'shift_notifications');
             } catch (\Throwable $e) {
                 Log::warning('service-due push to keeper failed', [
                     'user_id' => $keeper, 'error' => $e->getMessage(),
@@ -880,6 +876,7 @@ class FirebaseService
                  *    morning is exactly the mistake this whole feature exists to prevent.
                  */
                 $startsAt = null;
+                $usual    = null;
                 try {
                     $s = (new \App\Services\ShiftResolutionService())
                         ->getUserShift($riderId, substr((string) $v->visit_date, 0, 10));
@@ -887,8 +884,23 @@ class FirebaseService
                     // ⚠ Asked AFTER the pin is written, so this is the hour he will actually
                     //   be measured on, including a start time the planner just adjusted.
                     $startsAt = !empty($s['shift_start']) ? substr((string) $s['shift_start'], 0, 5) : null;
+                    $usual    = $s['location_name'] ?? null;
                 } catch (\Throwable $e) {
                 }
+
+                /**
+                 * ⚠⚠ DID HIS DAY ACTUALLY MOVE? (10-Sep-2026) This message used to announce a
+                 *    location change whenever a workshop had a NAME — which was safe only
+                 *    while "a registered workshop was chosen" and "his day starts there" were
+                 *    the same fact. They are not any more: the approver is now ASKED, and he
+                 *    can quite reasonably answer *"check in at LaCarne as usual, ride over at
+                 *    11"*. Sending "jagah badal gayi hai" for that answer tells the rider the
+                 *    exact opposite of the decision, and he goes to the wrong place.
+                 *
+                 * ⚠ NULL `attendance_at` means the column predates the choice (or was never
+                 *   asked), so the OLD inference applies and the old sentence is unchanged.
+                 */
+                $pinsDay = \App\Services\Riders\WorkshopVisitService::checkinAtOf($v) === 'workshop';
                 $vd = \Carbon\Carbon::parse($v->visit_date);
                 $dayWord = $vd->isToday() ? 'Aaj' : ($vd->isTomorrow() ? 'Kal' : $vd->format('j M') . ' ko');
 
@@ -913,18 +925,35 @@ class FirebaseService
                 } catch (\Throwable $e) {
                 }
 
-                $body = $place
+                if ($pinsDay && $place) {
                     // ⚠ No markdown — a push body is plain text on both platforms.
-                    ? "{$dayWord} aap ki shift {$place} par hai"
+                    $body = "{$dayWord} aap ki shift {$place} par hai"
                         . ($startsAt ? " — time wahi {$startsAt}." : '.')
-                        . " Jagah badal gayi hai, wahan check-in karein. Bike: {$bike}."
-                    : "{$dayWord} {$bike} workshop le kar jana hai" . ($startsAt ? " — time wahi {$startsAt}." : '.')
+                        . " Jagah badal gayi hai, wahan check-in karein. Bike: {$bike}.";
+                } elseif ($place) {
+                    /**
+                     * ⭐ "CHECK IN AS USUAL, RIDE OVER AFTERWARDS" — the answer that had no way
+                     *   of being given before, and therefore no way of being said. His normal
+                     *   place is NAMED, because "apni normal jagah" is exactly the vagueness
+                     *   that makes a rider guess.
+                     */
+                    $body = "{$dayWord} {$bike} {$place} le kar jana hai"
+                        . ($startsAt ? " — shift wahi {$startsAt}." : '.')
+                        . ' Attendance ' . ($usual ? "{$usual} par" : 'apni normal jagah par')
+                        . ' hi karein, phir wahan chale jayein.';
+                } else {
+                    $body = "{$dayWord} {$bike} workshop le kar jana hai" . ($startsAt ? " — time wahi {$startsAt}." : '.')
                         . ' Jagah abhi tay nahi — manager se pooch lein.';
+                }
                 if ($movedFrom) {
                     $body = "Pehle {$movedFrom} ka plan tha, ab woh CANCEL hai. " . $body;
                 }
                 $this->notifyUser($riderId, [
-                    'title' => $movedFrom ? '🔧 Workshop day badal gaya' : '🔧 Workshop day — jagah badal gayi',
+                    // ⚠ The TITLE has to follow the body — "jagah badal gayi" over a message
+                    //   that says his place has NOT changed is the contradiction a rider reads
+                    //   first and acts on.
+                    'title' => $movedFrom ? '🔧 Workshop day badal gaya'
+                        : ($pinsDay ? '🔧 Workshop day — jagah badal gayi' : '🔧 Workshop day — confirm karein'),
                     'body'  => $body,
                 ], $data + ['event' => 'approved'], 'shift_notifications');
 
@@ -933,7 +962,13 @@ class FirebaseService
                     $this->notifyUser($bookedBy, [
                         'title' => '✅ Workshop day approved',
                         'body'  => "{$actor} approved {$bike} for {$rider}, {$when}"
-                            . ($place ? " at {$place}" : '') . '. He has been told.',
+                            . ($place ? " at {$place}" : '')
+                            // ⭐ Say WHICH answer was given — the booker is the man who has to
+                            //   plan round the rider's morning, and the two answers put him in
+                            //   two different places at the start of the day.
+                            . ($pinsDay ? ' · he checks in THERE'
+                                        : ' · he checks in as usual' . ($usual ? " ({$usual})" : ''))
+                            . '. He has been told.',
                     ], $mgr + ['event' => 'approved'], 'shift_notifications');
                 }
                 return;
@@ -1022,6 +1057,100 @@ class FirebaseService
                     'body'  => "{$rider} → {$bike}, {$when}"
                         . ($v->status === 'scheduled' ? ' · not confirmed' : ''),
                 ], $mgr + ['event' => 'reminder'], 'shift_notifications');
+            }
+
+            /* ═══════════════════════════════════════════════════════════════════════
+               🚦 THE TRIP (10-Sep-2026). Four events, all MANAGER-BOUND.
+
+               ⚠⚠ The rider hears NOTHING from any of them, and that is deliberate: he
+                  pressed the button, or his own phone's GPS said he had arrived, or he
+                  went home. Telling a man what he just did is noise, and noise is how a
+                  rider learns to swipe these away.
+
+               ⚠ `assign_riders` is in the audience because the person who must NOT give
+                 him an order is the dispatcher, who may hold no fleet or shift key at all.
+               ═══════════════════════════════════════════════════════════════════════ */
+            $place = (string) ($v->workshop ?: 'the workshop');
+            $DISPATCH = 'assign_riders';
+
+            if ($event === 'departed') {
+                $eta = '';
+                try {
+                    $t = app(\App\Services\Riders\WorkshopVisitService::class)->tripFor($riderId);
+                    if (!empty($t['eta_text'])) $eta = ' · ' . $t['eta_text'];
+                } catch (\Throwable $e) {
+                    $eta = '';
+                }
+                $body = "{$rider} → {$place} with {$bike}{$eta}. Don't assign him orders.";
+                $this->sendToPermissionGroup($DISPATCH,
+                    ['title' => '🔧 Going to the workshop', 'body' => $body],
+                    $mgr + ['event' => 'departed'], 'shift_notifications');
+                $this->sendToPermissionGroup($ALERT,
+                    ['title' => '🔧 Going to the workshop', 'body' => $body],
+                    $mgr + ['event' => 'departed'], 'shift_notifications');
+            }
+
+            if ($event === 'arrived') {
+                $body = "{$rider} has reached {$place} with {$bike}.";
+                $this->sendToPermissionGroup($ALERT,
+                    ['title' => '🔧 At the workshop', 'body' => $body],
+                    $mgr + ['event' => 'arrived'], 'shift_notifications');
+            }
+
+            /**
+             * ⚠⚠ HE CANNOT FIX THIS HIMSELF. He pressed "going to the workshop" and was
+             *    refused because dispatched orders are on his name — only a manager can move
+             *    them. So the refusal on his screen and this push are one action: the sentence
+             *    he reads tells him to ask, and this tells them what to do.
+             */
+            if ($event === 'needs_unassign') {
+                $n = 0;
+                try {
+                    $n = (int) (app(\App\Services\Riders\WorkshopVisitService::class)
+                        ->openOrdersFor($riderId)['dispatched'] ?? 0);
+                } catch (\Throwable $e) {
+                    $n = 0;
+                }
+                $body = "{$rider} has to take {$bike} to {$place} but still has "
+                      . ($n ?: 'some') . " dispatched order" . ($n === 1 ? '' : 's')
+                      . " on his name. Move them to another rider so they don't get stuck.";
+                $this->sendToPermissionGroup($DISPATCH,
+                    ['title' => '⚠ Orders blocking a workshop trip', 'body' => $body],
+                    $mgr + ['event' => 'needs_unassign'], 'shift_notifications');
+                $this->sendToPermissionGroup($ALERT,
+                    ['title' => '⚠ Orders blocking a workshop trip', 'body' => $body],
+                    $mgr + ['event' => 'needs_unassign'], 'shift_notifications');
+            }
+
+            /**
+             * ⭐⭐ "HE NEVER WENT, AND HE HAS GONE HOME" (owner ruling, 10-Sep). Same-day
+             *    bookings have no cut-off any more, so this is the ONE thing that must not
+             *    pass in silence — and it ends there: the visit is not closed, midnight still
+             *    makes it MISSED, and a manager answers it like any other.
+             */
+            if ($event === 'not_gone') {
+                $why = (string) $v->status === 'proposed'
+                    ? "nobody approved the request"
+                    : "he never set off";
+                $body = "{$rider} checked out and {$bike} did not go to {$place} today — {$why}.";
+                $this->sendToPermissionGroup($ALERT,
+                    ['title' => '⚠ Workshop day missed', 'body' => $body],
+                    $mgr + ['event' => 'not_gone'], 'shift_notifications');
+                $this->sendToPermissionGroup($PLANNER,
+                    ['title' => '⚠ Workshop day missed', 'body' => $body],
+                    $mgr + ['event' => 'not_gone'], 'shift_notifications');
+            }
+
+            /**
+             * 🔁 The machine stayed at the workshop and its rider was moved off it (owner
+             *    ruling: Shabib uses "change rider"). The errand is still open and somebody has
+             *    to answer for it, so the managers are told who is now holding the question.
+             */
+            if ($event === 'no_keeper') {
+                $this->sendToPermissionGroup($ALERT, [
+                    'title' => '🔧 Bike left at the workshop',
+                    'body'  => "{$bike} is at {$place} with nobody holding it. Record the outcome when it is back.",
+                ], $mgr + ['event' => 'no_keeper'], 'shift_notifications');
             }
         } catch (\Throwable $e) {
             // A visit that was recorded must never fail because a push did.

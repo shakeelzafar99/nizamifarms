@@ -118,6 +118,27 @@ class LedgerModel extends BaseModel
     const TYPE_TIP_COLLECTED = 'tip_collected';
     const TYPE_TIP_PAYOUT = 'tip_payout';
 
+    /**
+     * Money handed BACK to a customer whose delivered order was returned (Sep-2026).
+     *
+     * Shape: from = the account the money is leaving (the till it was settled into,
+     * or the bank the online payment landed in) → to = Sales Revenue. Through the
+     * balance engine that is "cash out, revenue un-recognised", i.e. the exact
+     * counter-entry to the invoice — WITHOUT touching the invoice row, which has to
+     * stay because the sale and the cash really did happen on their own dates.
+     *
+     * ⭐ Deliberately NOT 'expense': a refund is negative revenue, not a cost. Every
+     * expense/P&L query filters transaction_type = 'expense', so booking it there
+     * would put returns into the expense line and overstate both revenue and costs.
+     * Ledger-side revenue readers subtract this type instead — see
+     * LedgerKpiService and HQ ExecutiveClosingService.
+     *
+     * ⚠ Order-based revenue (ProfitRevenueSql and its callers) must NOT subtract it:
+     * those already drop the order the moment its status leaves `delivered`.
+     * Subtracting there as well would count the return twice. See OrderReturnService.
+     */
+    const TYPE_ORDER_REFUND = 'order_refund';
+
     // Mode constants
     const MODE_CASH = 'cash';
     const MODE_ONLINE = 'online';
@@ -162,6 +183,7 @@ class LedgerModel extends BaseModel
         self::TYPE_REIMBURSEMENT_PAYMENT => 'Reimbursement Paid',
         self::TYPE_TIP_COLLECTED    => 'Tip Collected',
         self::TYPE_TIP_PAYOUT       => 'Tip Paid Out',
+        self::TYPE_ORDER_REFUND     => 'Order Refund',
     ];
 
     /** Label for a transaction_type, falling back to a readable form of the raw key. */

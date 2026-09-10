@@ -1619,13 +1619,25 @@ class FleetFuelService
             if (!\Illuminate\Support\Facades\Schema::hasTable('t_fleet_maintenance_types')) {
                 return [];
             }
+            /**
+             * ⚠ THE BIKE CLASS, DELIBERATELY. This branch exists only for a rider the
+             *   registry cannot place on any machine — it does not know what he rides,
+             *   and bike is both the old behaviour and the overwhelmingly likely truth.
+             *   A rider ON the van resolves through the machine-keyed engine above and
+             *   never reaches here.
+             */
+            $cols = ['id', 'type_name', 'interval_km', 'bucket', 'resets_service_clock'];
+            if (app(MaintenanceTypeService::class)->classAware()) {
+                $cols = array_merge($cols, ['applies_to', 'basis', 'interval_km_van',
+                                            'interval_days', 'interval_days_van']);
+            }
             $types = DB::table('t_fleet_maintenance_types')
-                ->where('is_active', 1)->where('interval_km', '>', 0)
+                ->where('is_active', 1)
                 ->orderBy('sort_order')->orderBy('type_name')
                 // ⚠ `resets_service_clock` is selected because the rows below must have
                 //   the SAME shape as VehicleService::serviceScheduleFor's — see the
                 //   note on `resets_clock` there.
-                ->get(['id', 'type_name', 'interval_km', 'bucket', 'resets_service_clock']);
+                ->get($cols);
             if ($types->isEmpty()) {
                 return [];
             }
@@ -1667,12 +1679,19 @@ class FleetFuelService
             //   the machine-keyed panel for the same rider on the same day.
             $resolver = new ServiceIntervalResolver();
 
+            $klass = \App\Models\Riders\MaintenanceTypeModel::CLASS_BIKE;
+
             $out = [];
             foreach ($types as $t) {
+                $r = $resolver->resolveFor(null, $klass, $t, $userId);
+                // Same filter the machine-keyed engine applies: no schedule on this
+                // class ⇒ no countdown, so the row is not on the panel at all.
+                if (empty($r['has'])) continue;
+
                 $l    = $last->get($t->id);
                 $lastM = $l ? (int) $l->m : null;
-                $explained = $resolver->explain(null, (int) $t->interval_km, $userId);
-                $interval  = (int) $explained['km'];
+                $explained = $r;
+                $interval  = (int) ($r['km'] ?? 0);
                 // due_in is only meaningful when we know BOTH where the bike is now
                 // and when this job was last done. Anything else stays null rather
                 // than inventing a countdown from a made-up reference point.
@@ -1697,10 +1716,22 @@ class FleetFuelService
                      */
                     'resets_clock' => !empty($t->resets_service_clock),
                     'interval_km' => $interval,
-                    'type_interval_km'      => (int) $t->interval_km,
+                    'type_interval_km'      => (int) ($r['standard_km'] ?? 0),
                     'interval_overridden'   => !$explained['from_type'],
                     'interval_source'       => $explained['source'],
-                    'interval_source_label' => ServiceIntervalResolver::sourceLabel($explained),
+                    'interval_source_label' => $explained['source_label'],
+                    // ── shape parity with the machine-keyed engine (Sep-2026) ──
+                    'vehicle_class'  => $klass,
+                    'basis'          => $r['basis'],
+                    'interval_days'  => $r['days'],
+                    'standard_days'  => $r['standard_days'],
+                    'has_schedule'   => (bool) $r['has'],
+                    'interval_label' => $r['label'],
+                    'due_text'       => VehicleService::dueText(
+                                            ServiceIntervalResolver::stateFor($dueIn),
+                                            false, $dueIn, null),
+                    'due_in_days'    => null,
+                    'due_at_date'    => null,
                     'last_meter'  => $lastM,
                     'last_at'     => $l->d ?? null,
                     'due_at_km'   => $lastM !== null ? $lastM + $interval : null,
@@ -2069,13 +2100,20 @@ class FleetFuelService
         //   freezes. This block used to hand-roll `type → rider → config` and, like its
         //   twin in the clock, never saw the machine's own schedule at all.
         $resolver = new ServiceIntervalResolver();
-        $intervalFor = function ($r) use ($types, $resolver, $userId): int {
-            $t = $types->find($r->maintenance_type_id ?? null);
-            return $resolver->intervalFor(
-                isset($r->vehicle_id) && $r->vehicle_id ? (int) $r->vehicle_id : null,
-                $t ? (int) $t->interval_km : null,
-                $userId
-            );
+        $vehSvc   = new VehicleService();
+        /**
+         * ⭐ CLASS-AWARE (Sep-2026): "serviced N km early" is measured against the
+         *   schedule THAT MACHINE follows, so a van claim is judged on van numbers.
+         * ⚠ A TIME-based job has no kilometre schedule to be early against, so it
+         *   returns 0 and the flag simply does not fire — better than inventing an
+         *   early/late verdict from a number in the wrong unit.
+         */
+        $intervalFor = function ($r) use ($types, $resolver, $userId, $vehSvc): int {
+            $t   = $types->find($r->maintenance_type_id ?? null);
+            $vid = isset($r->vehicle_id) && $r->vehicle_id ? (int) $r->vehicle_id : null;
+            $res = $resolver->resolveFor($vid, $vehSvc->classOf($vid), $t, $userId);
+            return ($res['basis'] === \App\Models\Riders\MaintenanceTypeModel::BASIS_KM)
+                ? (int) ($res['km'] ?? 0) : 0;
         };
 
         // ⭐ The machine, where the registry can place the claim. Gated on the same

@@ -55,13 +55,29 @@ class OrderStatusService
 
             $order->creditStrandedPaymentOnCancel = !empty($options['credit_stranded_payment']);
 
+            // RETURNS (Sep-2026) — the manager's answers about the money and the
+            // goods. Only ever set by the return form; every other caller leaves
+            // it null and behaves exactly as before. See OrderModel::$returnOptions.
+            $order->returnOptions = isset($options['return']) && is_array($options['return'])
+                ? $options['return']
+                : null;
+
             $success = $order->changeStatus($statusCode, $notes, $userId ?? auth()->id());
 
             $result = [
                 'success' => $success,
-                'message' => $success ? 'Status updated successfully' : 'Failed to update status',
+                // A deliberate refusal explains itself; anything else stays generic
+                // (the detail is in the log, not on the screen).
+                'message' => $success
+                    ? 'Status updated successfully'
+                    : ($order->lastStatusError ?: 'Failed to update status'),
                 'order' => $success ? $order->fresh() : null
             ];
+
+            if ($success && $order->returnRecord) {
+                $result['return'] = app(\App\Services\CRM\OrderReturnService::class)
+                    ->summarise($order->returnRecord);
+            }
 
             // Surface what the cancellation did with the customer's money, so
             // the caller can tell them rather than leaving it to the log.

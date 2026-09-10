@@ -174,97 +174,14 @@ class RiderProfileController extends Controller
                     ? (int) round((float) $grace)
                     : null;
             }
-            // HOME pin (U4 going-home journey; home-journey SQL). Paste a Google Maps link
-            // (short share links are resolved) OR type coordinates. Only meaningful for a
-            // company-bike rider; clearing both fields (or unticking the bike) clears the pin.
-            if (Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
-                $prior = DB::table('t_ops_rider_profile')->where('user_id', $request->user_id)
-                    ->first(['home_latitude', 'home_longitude']);
-                $homeLat = $request->input('home_latitude');
-                $homeLng = $request->input('home_longitude');
-                $mapsUrl = trim((string) $request->input('home_maps_url', ''));
-                $skipPin = false;               // leave the stored pin exactly as it is
-
-                if ($mapsUrl !== '') {
-                    $coords = null;
-                    $resolved = $mapsUrl;
-                    // Reuse the app-wide verified-pin parser (7 URL patterns + short links).
-                    try {
-                        $api = app(\App\Http\Controllers\API\RiderController::class);
-                        $resolved = $api->resolveGoogleMapsUrl($mapsUrl);
-                        $coords = $api->parseCoordinatesFromGoogleMapsUrl($resolved);
-                    } catch (\Throwable $e) {
-                        $coords = null;
-                    }
-
-                    // ⭐⭐ PLUS CODE FALLBACK (31 Aug 2026 incident). Google's share sheet hands
-                    //    out PLACE-ID urls — `/maps/place/Nizami+Farms,+P35Q%2B5FF,…/data=!4m2!3m1!1s0x…`
-                    //    — which carry no `@lat,lng` and no `!3d`/`!4d`, so every pattern above
-                    //    returns null. Five saves in a row were refused this way. The coordinates
-                    //    are still in the URL, as the Plus Code, and that decodes offline.
-                    //    Reference = the company office; see PlusCode's ±55 km caveat.
-                    if (!$coords) {
-                        try {
-                            $ref = $this->pinReference();
-                            $pc = new PlusCode();
-                            $hit = $pc->fromText($resolved, $ref['lat'], $ref['lng'])
-                                ?? $pc->fromText($mapsUrl, $ref['lat'], $ref['lng']);
-                            if ($hit) {
-                                $coords = ['latitude' => $hit['latitude'], 'longitude' => $hit['longitude']];
-                                \Log::info('Home pin read from a Plus Code', [
-                                    'user_id' => $request->user_id, 'plus_code' => $hit['plus_code'],
-                                    'lat' => $hit['latitude'], 'lng' => $hit['longitude'],
-                                ]);
-                            }
-                        } catch (\Throwable $e) {
-                            \Log::warning('Plus Code fallback failed (non-fatal)', ['error' => $e->getMessage()]);
-                        }
-                    }
-
-                    if ($coords) {
-                        $homeLat = $coords['latitude'];
-                        $homeLng = $coords['longitude'];
-                    } else {
-                        // ⚠⚠ TWO THINGS THAT USED TO GO WRONG HERE, BOTH FIXED.
-                        //  1. This returned `redirect()->back()->with('error', …)`, which threw
-                        //     away the WHOLE profile save — phone, vehicle, meter rule, everything
-                        //     the manager had typed — over one unreadable link.
-                        //  2. Falling through to the typed boxes would re-save the PREFILLED
-                        //     (existing) coordinates and stamp a fresh home_set_at, so the page
-                        //     then reported "✓ Home pin saved (today)" for a pin that never moved.
-                        //     That is precisely how the 31 Aug attempts looked like they worked.
-                        // So: save everything else, touch nothing about the pin, and say so.
-                        $skipPin = true;
-                        $pinWarning = 'That Maps link has no coordinates in it, so the home pin was NOT changed. '
-                            . 'Everything else was saved. Open the pin in Google Maps, tap Share → Copy link '
-                            . '(or long-press the exact spot to drop a pin first), or type the coordinates.';
-                    }
-                }
-
-                if (!$skipPin) {
-                    $hasPin = $isBike && $homeLat !== null && $homeLat !== '' && $homeLng !== null && $homeLng !== '';
-                    $data['home_latitude'] = $hasPin ? (float) $homeLat : null;
-                    $data['home_longitude'] = $hasPin ? (float) $homeLng : null;
-                    $radius = $request->input('home_radius_m');
-                    $data['home_radius_m'] = ($hasPin && $radius !== null && $radius !== '') ? (int) $radius : null;
-
-                    // ⭐ Only stamp WHO/WHEN when the pin actually MOVED. Re-saving the profile
-                    //   for an unrelated reason used to refresh home_set_at, which made the
-                    //   modal announce "✓ Home pin saved (today)" for an untouched location —
-                    //   the manager's only feedback, and it was lying to him.
-                    $moved = $hasPin && (
-                        $prior === null
-                        || $prior->home_latitude === null
-                        || abs((float) $prior->home_latitude - (float) $homeLat) > 0.0000005
-                        || abs((float) $prior->home_longitude - (float) $homeLng) > 0.0000005
-                    );
-                    if ($moved) {
-                        $data['home_set_by'] = auth()->id();
-                        $data['home_set_at'] = now();
-                        $pinMoved = ['lat' => (float) $homeLat, 'lng' => (float) $homeLng];
-                    }
-                }
-            }
+            // 🏠 HOME pin — deliberately NOT part of $data. It is written AFTER the profile row,
+            // by RiderHomePinService: the ONE writer, shared with the Bikes tab and the phone.
+            //   • The pin no longer depends on `company_bike` (owner ruling, 10-Sep-2026). Riders
+            //     swap between a company machine and their own constantly, and the old
+            //     `$hasPin = $isBike && …` SILENTLY WIPED the home location when the tick came
+            //     off — losing the very thing the overnight meter checks measure against.
+            //   • A blank coordinate box now means "leave it alone", never "delete it".
+            //   • Removal is its own explicit, confirmed action — see destroyHomePin().
             // R1 — per-rider "may check in at any office" allowance (guarded).
             if (Schema::hasColumn('t_ops_rider_profile', 'checkin_any_office')) {
                 $data['checkin_any_office'] = $request->boolean('checkin_any_office') ? 1 : 0;
@@ -277,6 +194,44 @@ class RiderProfileController extends Controller
                 ['user_id' => $request->user_id],
                 $data
             );
+
+            // 🏠 Now the pin, through the shared engine. The profile row is written FIRST so the
+            //    rider always exists in the table before the pin lands on it.
+            //
+            // ⚠ ORDER OF THE THREE OUTCOMES MATTERS:
+            //    nothing entered  → leave the stored pin untouched, say nothing;
+            //    entered + read   → save, and echo back the coordinates actually stored;
+            //    entered + unread → save NOTHING about the pin, warn, and keep the rest of the
+            //                       profile (a bad paste must never cost a good pin, and it used
+            //                       to throw away the whole form as well).
+            $pinSvc  = new \App\Services\Riders\RiderHomePinService();
+            $mapsUrl = trim((string) $request->input('home_maps_url', ''));
+            $typedLat = $request->input('home_latitude');
+            $typedLng = $request->input('home_longitude');
+            // "Entered" means ANY of the three boxes has something in it. A half-typed pair
+            // (latitude only) must reach the engine so it can refuse with a reason, rather
+            // than being treated as an untouched form and silently ignored.
+            $anythingEntered = $mapsUrl !== ''
+                || ($typedLat !== null && $typedLat !== '')
+                || ($typedLng !== null && $typedLng !== '');
+
+            if ($pinSvc->pinColumnsExist() && $anythingEntered) {
+                $radius = $request->input('home_radius_m');
+                $res = $pinSvc->resolveAndSave(
+                    (int) $request->user_id,
+                    $mapsUrl,
+                    $typedLat,
+                    $typedLng,
+                    ($radius !== null && $radius !== '') ? (int) $radius : null,
+                    (int) auth()->id(),
+                    'web-riders'
+                );
+                if (!$res['ok']) {
+                    $pinWarning = $res['error'] . ' Everything else was saved.';
+                } elseif ($res['moved']) {
+                    $pinMoved = ['lat' => $res['pin']['lat'], 'lng' => $res['pin']['lng']];
+                }
+            }
 
             // ⭐ Say what was STORED, not just "saved". A home pin is invisible once the modal
             //   closes, and the 31 Aug mix-up (an office link pasted as a rider's home) would
@@ -298,7 +253,49 @@ class RiderProfileController extends Controller
     public function show($userId)
     {
         $profile = DB::table('t_ops_rider_profile')->where('user_id', $userId)->first();
-        return response()->json(['success' => true, 'profile' => $profile]);
+
+        // 🏠 The pin, resolved the SAME way every other surface resolves it — including WHO set
+        //    it and a map link, so a manager can check where it actually is before he moves it.
+        $svc = new \App\Services\Riders\RiderHomePinService();
+
+        return response()->json([
+            'success'  => true,
+            'profile'  => $profile,
+            'home_pin' => $svc->get((int) $userId),
+            'home_history' => $svc->history((int) $userId, 5),
+        ]);
+    }
+
+    /**
+     * 🏠 REMOVE a rider's home pin — explicit and deliberate, never a side effect of an empty
+     * form box or of unticking "company bike" (owner ruling, 10-Sep-2026).
+     *
+     * Gated on `assign_vehicles`, the same key that governs every other fleet write, so the
+     * three surfaces (this page, the Bikes tab, the phone) all ask the same question.
+     */
+    public function destroyHomePin(Request $request, $userId)
+    {
+        $u = auth()->user();
+        $allowed = $u
+            && !(method_exists($u, 'isReadOnly') && $u->isReadOnly())
+            && $u->hasPermission('assign_vehicles');
+
+        if (!$allowed) {
+            return redirect()->route('riders.index')
+                ->with('error', 'You are not allowed to change rider home locations.');
+        }
+
+        $res = (new \App\Services\Riders\RiderHomePinService())
+            ->clear((int) $userId, (int) auth()->id(), 'web-riders');
+
+        if (!$res['ok']) {
+            return redirect()->route('riders.index')->with('error', $res['error']);
+        }
+
+        return redirect()->route('riders.index')->with(
+            'success',
+            $res['cleared'] ? 'Home location removed.' : 'That rider had no home location to remove.'
+        );
     }
     /**
      * ⚰ RETIRED 7-Sep-2026 — `updateShift()` and its route `POST /riders/shift` are gone.

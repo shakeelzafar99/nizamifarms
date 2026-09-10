@@ -68,6 +68,7 @@
                         'view_status_history' => ['label' => 'View Status History', 'help' => 'See order status change history'],
                         'assign_riders' => ['label' => 'Assign Riders to Orders', 'help' => 'Assign delivery riders'],
                         'bulk_operations' => ['label' => 'Bulk Operations', 'help' => 'Bulk status changes and assignments'],
+                        'return_orders' => ['label' => 'Return a Delivered Order', 'help' => 'Take a delivered order back: decides whether the money is reversed, refunded or credited, and writes stock off. Normally Shabib and Taimur only', 'highlight' => true],
                     ] as $key => $config)
                     <label class="flex items-start hover:bg-gray-50 p-2 rounded {{ ($config['highlight'] ?? false) ? 'bg-yellow-50' : '' }}">
                         <input type="checkbox" name="permissions[{{ $key }}]" value="1" 

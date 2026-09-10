@@ -3532,8 +3532,41 @@ function getDistanceBadge(record) {
   // the tick can never disagree with the modal it opens.
   const details = meterGpsTicks(record, nmEsc);
 
+  /**
+   * 🏍️🚚 TWO MACHINES IN ONE DAY (owner ask, 10-Sep-2026).
+   *
+   * ⚠⚠ `t_ops_attendance` holds ONE meter pair per rider-day, and this cell printed the
+   *    difference between them as "N km". On a day the rider arrives on his own bike and
+   *    takes the van out, those two readings are of DIFFERENT ODOMETERS — a real row on
+   *    this system reads 27,751 → 17,259 — so the number is not a distance at all, and
+   *    nothing on the row said so. The rider's own phone has said it since Aug-27.
+   *
+   * ⭐ The reading STAMPS answer it (`meter_machines`, server-side). Each machine's real
+   *   kilometres live in the petrol modal, which reads the same legs the rider's app does —
+   *   so the marker points there rather than inventing a second number here.
+   * ⚠ `split` is true only when BOTH readings are stamped and they differ. One stamped and
+   *   one not is "we cannot say", which must keep rendering exactly as it always has.
+   */
+  const mm = record.meter_machines;
+  if (mm && mm.split) {
+    const esc2 = s => String(s == null ? '' : s).replace(/"/g, '&quot;');
+    const num = v => (v == null ? '–' : Number(v).toLocaleString());
+    const tip = `Start ${num(record.meter_start)} on ${esc2(mm.start_label || 'one machine')}`
+      + ` · close ${num(record.meter_end)} on ${esc2(mm.end_label || 'another')}.`
+      + ' Two different odometers, so the difference between them is not a distance.'
+      + ' Open ⛽ for the day, or the rider’s petrol modal for each machine’s own km.';
+    return `<span title="${tip}" style="font-size:12px;font-weight:600;color:#B45309;`
+      + `background:#FFFBEB;border:1px solid #FDE68A;border-radius:5px;padding:1px 6px;`
+      + `vertical-align:middle;">🏍️🚚 two machines</span>${getMeterPhotoIcons(record)}${details}`;
+  }
+
+  /* ⭐ …and on an ordinary day, say WHICH machine the pair belongs to — in the tooltip, so
+       the one-line cell the mockup approved is unchanged for anyone not asking. */
+  const oneLabel = (mm && !mm.split) ? (mm.start_label || mm.end_label) : null;
+
   if (hasMeter) {
-    return `<span style="font-size:13px;font-weight:600;color:#111827;vertical-align:middle;">${record.meter_distance} km</span>${getMeterPhotoIcons(record)}${details}`;
+    const t = oneLabel ? ` title="${String(oneLabel).replace(/"/g, '&quot;')} — this machine’s odometer"` : '';
+    return `<span${t} style="font-size:13px;font-weight:600;color:#111827;vertical-align:middle;">${record.meter_distance} km</span>${getMeterPhotoIcons(record)}${details}`;
   }
   if (hasRoad) {
     // No meter reading — fall back to the tracked road distance, clearly marked.

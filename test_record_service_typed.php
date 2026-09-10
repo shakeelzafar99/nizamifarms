@@ -89,15 +89,24 @@ ok('a user holding web manage_bike_service exists', (bool) $actor, null, true);
 if (!$actor || !$resetting || !$nonResetting) { echo "\nfixtures missing — stopping.\n"; exit(1); }
 Auth::guard('web')->loginUsingId($actor->id);   // ⚠ the ONLY login in this process
 
-// A rider with a profile AND a machine the registry can name, so the schedule is real.
+/**
+ * A rider with a profile AND a machine the registry can name, so the schedule is real.
+ *
+ * ⚠ Sep-2026: it must be a COMPANY machine. Personal bikes are no longer on the
+ *   company schedule at all (owner ruling, 10-Sep), so the first rider in id order
+ *   could be holding a machine with — correctly — no schedule to test against, and
+ *   this whole section would fail for the right reason at the wrong place.
+ */
 $rider = null; $vid = null;
 $vr = new VehicleResolver();
+$vsvc0 = new VehicleService();
 foreach (DB::table('t_ops_rider_profile')->pluck('user_id') as $uid) {
     $v = $vr->currentVehicleFor((int) $uid);
-    if ($v) { $rider = (int) $uid; $vid = (int) $v; break; }
+    if ($v && $vsvc0->isTrackedId((int) $v)) { $rider = (int) $uid; $vid = (int) $v; break; }
 }
-ok('a rider with a registered machine exists', (bool) $rider, null, true);
+ok('a rider with a registered COMPANY machine exists', (bool) $rider, null, true);
 if (!$rider) { echo "\nno registry fixture — stopping.\n"; exit(1); }
+$riderClass = $vsvc0->classOf($vid);
 
 $svc = new VehicleService();
 $baseMeter = (int) ($svc->currentMeterFor($vid) ?: 30000);
@@ -108,6 +117,8 @@ echo "  · resetting={$resetting->type_name}({$resetting->interval_km})"
 $profileBefore = DB::table('t_ops_rider_profile')->where('user_id', $rider)
     ->first(['last_service_meter', 'last_service_at', 'service_interval_km']);
 $logCountBefore = DB::table('t_fleet_service_log')->count();
+// ⚠ The high-water mark, so §12/§13 can remove exactly the rows they meant to write.
+$maxLogIdBefore = (int) (DB::table('t_fleet_service_log')->max('id') ?: 0);
 
 DB::beginTransaction();
 try {
@@ -179,17 +190,44 @@ flushAll();
 ok('an unknown type id is refused', $st, 422);
 
 // ─────────────────────────────────────────────────────────────────────────────
-head('§4 the SCHEDULE-only path is untouched — and still needs no type');
+head('§4 the SCHEDULE-only path is RETIRED (Sep-2026)');
+
+/**
+ * ⚠⚠ THIS SECTION IS THE REVERSE OF WHAT IT WAS, DELIBERATELY.
+ *
+ * `interval_km` on this endpoint was the "⚙️ This bike's schedule" control: ONE number
+ * per machine that named no job. It could not work — since the Aug-27 resolver the job's
+ * own standard always wins, so the number changed nothing on any screen — and the owner's
+ * 10-Sep ruling replaces it with a real per-(vehicle, job) editor.
+ *
+ * An old APK still posts the field, so the rules are:
+ *   • alone            → REFUSED, with a sentence telling the manager where the setting
+ *                        moved. Accepting and ignoring it is how somebody comes to
+ *                        believe he has configured something he has not.
+ *   • beside a meter   → the service is recorded and the stale field is dropped. A
+ *                        service happening must never be turned away over an extra.
+ *   • the legacy column is NOT cleared — it stays readable as a last-resort fallback.
+ */
+flushAll();
+$logNow  = DB::table('t_fleet_service_log')->count();
+$ovrWas  = DB::table('t_ops_rider_profile')->where('user_id', $rider)->value('service_interval_km');
+[$st, $body] = post(['rider_id' => $rider, 'interval_km' => 1500]);
+ok('the single-number schedule is refused on its own', $st, 422);
+ok('  …and says where the setting moved to',
+   (bool) preg_match('/vehicle page|This vehicle\'s schedule/i', $body['message'] ?? ''), null, true);
+ok('  …records NO service', DB::table('t_fleet_service_log')->count(), $logNow);
+ok('  …and writes no override',
+   DB::table('t_ops_rider_profile')->where('user_id', $rider)->value('service_interval_km'), $ovrWas);
 
 flushAll();
-$logNow = DB::table('t_fleet_service_log')->count();
-[$st, $body] = post(['rider_id' => $rider, 'interval_km' => 1500]);
-ok('setting a bike\'s own schedule still works with no type', $st, 200);
-ok('  …and records NO service', DB::table('t_fleet_service_log')->count(), $logNow);
-ok('  …and says only what changed',
-   (bool) preg_match('/due every 1,500 km/i', $body['message'] ?? ''), null, true);
-ok('  …and wrote the override',
-   (int) DB::table('t_ops_rider_profile')->where('user_id', $rider)->value('service_interval_km'), 1500);
+$m4 = $baseMeter + 40;
+[$st, $body] = post(['rider_id' => $rider, 'meter' => $m4,
+                     'maintenance_type_id' => $resetting->id, 'interval_km' => 1500]);
+ok('a real recording carrying the stale field still succeeds', $st, 200);
+ok('  …and still writes no override',
+   DB::table('t_ops_rider_profile')->where('user_id', $rider)->value('service_interval_km'), $ovrWas);
+ok('  …and says nothing about a schedule change',
+   (bool) preg_match('/due every/i', $body['message'] ?? ''), false);
 
 flushAll();
 [$st, $body] = post(['rider_id' => $rider]);
@@ -234,9 +272,15 @@ $vreq = Request::create('/orders/riders-map/fleet/vehicles/for-user', 'GET',
 $vres = json_decode(app(VehicleController::class)->forUser($vreq, new VehicleResolver(), new VehicleService())->getContent(), true);
 ok('forUser names the machine', (int) ($vres['vehicle']['id'] ?? 0), $vid);
 ok('  …and now ships service_schedule', is_array($vres['service_schedule'] ?? null), true);
+/**
+ * ⚠ Counted against the jobs scheduled FOR THIS MACHINE'S CLASS (Sep-2026), not the
+ *   whole type list — a van and a bike no longer have the same number of countdowns.
+ */
+$classTypes = app(\App\Services\Riders\MaintenanceTypeService::class)->optionsFor($riderClass);
 ok('  …with a row per scheduled job',
    count($vres['service_schedule'] ?? []),
-   count($types->filter(fn ($t) => (int) $t->interval_km > 0)));
+   count(array_filter($classTypes, fn ($t) => !empty($t['has_schedule'])
+                                              || (int) ($t['interval_km'] ?? 0) > 0)));
 
 $direct = (new VehicleService())->serviceScheduleFor($vid, (new VehicleService())->currentMeterFor($vid));
 ok('  …identical to what the engine itself answers',
@@ -1239,10 +1283,143 @@ ok('  …and no longer writes a "no service type given" note',
 $recSrc = file_get_contents(__DIR__ . '/app/Services/Riders/ServiceRecordService.php');
 ok('  …the type-required refusal now lives in the shared recorder',
    (bool) preg_match('/Choose which service was done/', $recSrc), null, true);
+/**
+ * ⚠ Accepts either call shape. Sep-2026 the controller began resolving the recorder
+ *   into a local first (it needs it twice — once for the machine's class, once for the
+ *   type), so pinning the exact `app(...)->resolveType` spelling was testing a coding
+ *   style rather than the rule. What matters is that the controller asks the SHARED
+ *   recorder, which the next assertion's "no duplicate refusal here" pins down.
+ */
 ok('  …and markServiced delegates to it rather than keeping a second copy',
-   (bool) preg_match('/ServiceRecordService::class\)\s*->resolveType/', $src), null, true);
+   (bool) preg_match('/(ServiceRecordService::class\)\s*|\$rec\s*)->resolveType/', $src), null, true);
 ok('  …with no duplicate of the refusal left in the controller',
    (bool) preg_match('/Choose which service was done/', $src), false);
+
+head('§12 🏍 THE RECORD FOLLOWS THE VEHICLE, NOT THE ROSTER (owner ask, 10-Sep-2026)');
+
+/**
+ * ⭐⭐ THE CASE THIS EXISTS FOR, and it is the ORDINARY workshop morning:
+ *
+ *    The bike goes IN. The manager hands the rider a spare for the day. Every reader then
+ *    asked `vehicleForDay(rider, date)` — "what was he on that day" — and got the SPARE. So
+ *    the oil change was credited to a machine that never had one; the visit read "done" with
+ *    a `service_log_id`; and the real bike's countdown kept running with nothing anywhere
+ *    saying why.
+ *
+ * ⭐ The record now carries the machine, frozen at filing time — the same treatment
+ *   `stampClaim()` has always given money.
+ */
+flushAll();
+$spare = DB::table('t_ops_vehicle')->where('is_active', 1)->where('is_company', 1)
+    ->where('id', '!=', $vid)->orderBy('id')->value('id');
+ok('a second COMPANY machine exists to stand in as the spare', (bool) $spare, null, true);
+
+if ($spare) {
+    $spare = (int) $spare;
+    $rec   = app(\App\Services\Riders\ServiceRecordService::class);
+
+    ok('the stamp column is applied on this database',
+       \App\Services\Riders\ServiceRecordService::logStampsVehicle(), true);
+
+    // ── the resolver: an explicit machine WINS, a bad one is ignored, absent derives ──
+    ok('an explicit machine wins over the roster', $rec->vehicleForRecord($spare, $rider), $spare);
+    ok('  …absent falls back to the registry, exactly as before',
+       $rec->vehicleForRecord(null, $rider), $vid);
+    ok('  ⚠ …and an id that names no vehicle is IGNORED, never trusted',
+       $rec->vehicleForRecord(99999999, $rider), $vid);
+
+    // ── the recording itself carries it ──
+    [$st9, $b9] = post(['rider_id' => $rider, 'meter' => $baseMeter + 40,
+                        'maintenance_type_id' => $resetting->id, 'vehicle_id' => $vid]);
+    ok('a recording naming the machine succeeds', $st9, 200);
+    $log = DB::table('t_fleet_service_log')->orderByDesc('id')->first();
+    ok('  ⭐ …and the row carries it', (int) $log->vehicle_id, $vid);
+    ok('  …the response says which machine it landed on', $b9['vehicle_id'] ?? null, $vid);
+
+    /**
+     * ⭐⭐ THE HEADLINE. Move the rider onto the spare — the registry now says "spare" for
+     *    today — and the record just filed must STILL belong to the bike at the workshop.
+     */
+    $before = DB::table('t_ops_vehicle_assignment')->where('user_id', $rider)
+        ->whereNull('released_on')->first(['id']);
+    DB::table('t_ops_vehicle_assignment')->where('user_id', $rider)->whereNull('released_on')
+        ->update(['released_on' => \Carbon\Carbon::today()->format('Y-m-d')]);
+    DB::table('t_ops_vehicle_assignment')->insert([
+        'vehicle_id' => $spare, 'user_id' => $rider,
+        'assigned_on' => \Carbon\Carbon::today()->format('Y-m-d'),
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+    flushAll();
+    ok('the registry now hands him the SPARE', (new VehicleResolver())->currentVehicleFor($rider), $spare);
+    ok('  ⭐⭐ …and the record still belongs to the machine at the workshop',
+       \App\Services\Riders\ServiceRecordService::logVehicleOf($log), $vid);
+
+    // …which is what the countdown reads. The evidence engine must see it on the RIGHT bike.
+    $sawOnReal  = false; $sawOnSpare = false;
+    foreach ($svc->serviceScheduleFor($vid, $baseMeter + 40) as $row) {
+        if ((int) $row['id'] === (int) $resetting->id && (int) ($row['last_meter'] ?? 0) === $baseMeter + 40) $sawOnReal = true;
+    }
+    foreach ($svc->serviceScheduleFor($spare, $baseMeter + 40) as $row) {
+        if ((int) $row['id'] === (int) $resetting->id && (int) ($row['last_meter'] ?? 0) === $baseMeter + 40) $sawOnSpare = true;
+    }
+    ok('  ⭐ the COUNTDOWN on the real machine was reset by it', $sawOnReal, true);
+    ok('  ⚠ …and the spare was NOT given a service it never had', $sawOnSpare, false);
+
+    /**
+     * ⚠⚠ AND THE HISTORY THE OLD CODE WROTE STILL READS THE OLD WAY. Nothing is back-filled,
+     *    so an unstamped row keeps being attributed by `vehicleForDay` — which is what makes
+     *    this migration safe to run on a live table with no countdown moving underneath it.
+     */
+    DB::table('t_fleet_service_log')->where('id', $log->id)->update(['vehicle_id' => null]);
+    ok('an UNSTAMPED row is still attributed by the registry, unchanged',
+       \App\Services\Riders\ServiceRecordService::logVehicleOf(
+           DB::table('t_fleet_service_log')->where('id', $log->id)->first()), $spare);
+
+    // Put the roster back before the plausibility checks below.
+    DB::table('t_ops_vehicle_assignment')->where('user_id', $rider)
+        ->where('vehicle_id', $spare)->whereNull('released_on')->delete();
+    if ($before) {
+        DB::table('t_ops_vehicle_assignment')->where('id', $before->id)->update(['released_on' => null]);
+    }
+    flushAll();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+head('§13 ⚠ a dropped digit is refused, not recorded');
+
+/**
+ * ⚠⚠ Nothing checked the odometer on this door, and the evidence readers silently SKIP an
+ *    implausible row — so "36500" typed as "3650" produced a receipt, a log row, a visit
+ *    marked done, and a countdown that never reset. Every screen said the service had
+ *    happened; none of them counted it.
+ *
+ * ⭐ Judged on the SAME spine every meter reading is judged on, so what this door accepts is
+ *   exactly what the countdown will later count.
+ */
+flushAll();
+$logsBefore10 = DB::table('t_fleet_service_log')->count();
+[$st10, $b10] = post(['rider_id' => $rider, 'meter' => (int) round($baseMeter / 10),
+                      'maintenance_type_id' => $resetting->id, 'vehicle_id' => $vid]);
+ok('a reading a digit short is refused', $st10, 422);
+ok('  …naming the machine and what it last read',
+   (bool) preg_match('/does not fit|last seen at/i', $b10['message'] ?? ''), null, true);
+ok('  …and NOTHING was written', DB::table('t_fleet_service_log')->count(), $logsBefore10);
+
+// ⭐ A genuine BACK-DATED service at a lower odometer still passes — it sits inside the
+//   machine's own range, which is the difference between "earlier" and "impossible".
+[$st10b, ] = post(['rider_id' => $rider, 'meter' => max(1, $baseMeter - 200),
+                   'maintenance_type_id' => $resetting->id, 'vehicle_id' => $vid,
+                   'date' => \Carbon\Carbon::today()->subDays(5)->format('Y-m-d')]);
+ok('a genuine back-dated service at a lower reading is still accepted', $st10b, 200);
+
+/**
+ * ⚠ These two sections DELIBERATELY record real services, so they tidy up after themselves —
+ *   §8 below asserts that the code under test leaves nothing behind, and a section that
+ *   knowingly writes has to hand the table back as it found it or that check means nothing.
+ */
+DB::table('t_fleet_service_log')->where('id', '>', $maxLogIdBefore)->delete();
+DB::table('t_ops_rider_profile')->where('user_id', $rider)->update((array) $profileBefore);
+flushAll();
 
 head('§8 nothing was left behind');
 ok('service-log row count back to where it started',

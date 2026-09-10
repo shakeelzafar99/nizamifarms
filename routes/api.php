@@ -301,6 +301,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/shifts/toggle-day-tag', [\App\Http\Controllers\API\RiderController::class, 'toggleDayTagMobile']);
         Route::post('/shifts/day-tag-range', [\App\Http\Controllers\API\RiderController::class, 'setDayTagRangeMobile']); // 🚫 Not required range
         Route::post('/shifts/update-phone', [\App\Http\Controllers\API\RiderController::class, 'updateShiftRiderPhone']);
+        /**
+         * 👥 Users list (Sep-2026) — the shared Shift Planner + Attendance roster.
+         * ⚠ NOT gated by `manage_shifts`: the gate is `manage_user_roster` (Shabib +
+         *   Taimur), checked inside the controller so the refusal carries a message.
+         */
+        Route::get('/shifts/users-list', [\App\Http\Controllers\API\RiderController::class, 'shiftUsersListMobile']);
+        Route::post('/shifts/users-list/toggle', [\App\Http\Controllers\API\RiderController::class, 'toggleShiftUserMobile']);
         Route::post('/shift/acknowledge', [\App\Http\Controllers\API\RiderController::class, 'acknowledgeShift']);
         /**
          * ⏳ SHIFT CHANGE APPROVALS (Sep-2026) — the phone twin of the desk's corner banner.
@@ -431,6 +438,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store/fleet/vehicles', [\App\Http\Controllers\CRM\VehicleController::class, 'apiIndex']);
     // ⚠ ABOVE '/vehicles/{id}' — 'roster' is a path, not an id.
     Route::get('/store/fleet/roster', [\App\Http\Controllers\CRM\VehicleController::class, 'apiRoster']);
+    // 🏠 RIDER HOME LOCATION (Sep-2026) — the phone's half of the shared engine. These hit the
+    //    SAME controller + RiderHomePinService as the web Bikes tab, so a pin saved on either
+    //    surface is read identically by the other. Reading needs the Bikes mobile key; changing
+    //    additionally needs `assign_vehicles`, both checked inside the controller.
+    // ⚠ ABOVE '/vehicles/{id}' — 'home-pin' is a path, not an id.
+    Route::get('/store/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiHomePinShow'])->where('userId', '[0-9]+');
+    Route::post('/store/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiHomePinSave'])->where('userId', '[0-9]+');
+    Route::delete('/store/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiHomePinClear'])->where('userId', '[0-9]+');
     // ⭐ 🔁 RIDER HANDOVER REQUESTS (Sep-2026) — "give me the van" / "take it back".
     //   A request MOVES NOTHING; approving runs the same VehicleService::assign()
     //   the fleet screen runs. The rider routes are SELF-SCOPED and need no
@@ -447,6 +462,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/store/vehicle-requests/{id}/reject', [\App\Http\Controllers\CRM\VehicleHandoverController::class, 'reject']);
     Route::get('/store/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'apiShow']);
     Route::get('/store/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'apiDays']);
+    // ⭐⭐ The per-vehicle per-job schedule editor, on the phone too.
+    Route::get('/store/fleet/vehicles/{id}/schedule', [\App\Http\Controllers\CRM\VehicleController::class, 'apiSchedule'])->where('id', '[0-9]+');
+    Route::post('/store/fleet/vehicles/{id}/schedule', [\App\Http\Controllers\CRM\VehicleController::class, 'apiSaveSchedule'])->where('id', '[0-9]+');
     // Condition photos from the phone — the handover happens in the yard, not at a
     // desk. Gated on view_bike_costs (open the screen) AND assign_vehicles (write).
     Route::post('/store/fleet/vehicles/{id}/photos', [\App\Http\Controllers\CRM\VehicleController::class, 'apiAddPhotos']);
@@ -506,6 +524,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/workshop-visits/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiAccept'])->where('id', '[0-9]+');
     Route::post('/workshop-visits/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiCancel'])->where('id', '[0-9]+');
     Route::post('/workshop-visits/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDone'])->where('id', '[0-9]+');
+    /**
+     * 🚦 THE TRIP (10-Sep-2026). `depart` is the rider's "Workshop jaa raha hoon"; `live` is the
+     *    ONE list the store banner reads. Arrival needs no route — the geofence stamps it from
+     *    the heartbeat the phone already sends.
+     */
+    Route::post('/workshop-visits/{id}/depart', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDepart'])->where('id', '[0-9]+');
+    Route::get('/workshop-visits/live', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiLive']);
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
     // ✏️ Correct / remove a service record from the phone — same right as recording one.
     Route::post('/store/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiAmendServiceRecord'])->where('id', '[0-9]+');
@@ -515,9 +540,27 @@ Route::middleware('auth:sanctum')->group(function () {
     // 🧾 "Which recorded service is this bill for?" — the picker's list. Own by default;
     //    another rider needs manage_bike_service.
     Route::get('/store/fleet/unbilled-services', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiUnbilledServices']);
+    /**
+     * ⚠ RETIRED UI, LIVE ROUTE (Sep-2026). The single fleet-wide number and the
+     *   single-number per-bike prompt are gone from both apps — schedules are per job,
+     *   per class, with per-vehicle exceptions. These two stay reachable so an APK built
+     *   before that change does not crash on a 404; the value they write is now only a
+     *   last-resort fallback nothing consults while a job carries a standard.
+     */
     Route::post('/store/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSetDefaultInterval']);
-    // Which bikes hold their own schedule — shown before a company-wide change.
     Route::get('/store/fleet/interval-overrides', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiIntervalOverrides']);
+
+    /**
+     * ⭐⭐ MAINTENANCE TYPES FROM THE PHONE (owner, 10-Sep-2026): "can Qasim create it
+     *    from the mobile?" — yes. He owns maintenance and works in frozen mode on a
+     *    handset, so the van's job list has to be buildable there. Same controller
+     *    methods as the web, gated on the mobile half of `manage_bike_service`.
+     */
+    Route::get('/store/fleet/maintenance-types', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMaintenanceTypes']);
+    Route::post('/store/fleet/maintenance-types', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSaveMaintenanceType']);
+    Route::post('/store/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiSaveMaintenanceType'])->where('id', '[0-9]+');
+    Route::delete('/store/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiDeleteMaintenanceType'])->where('id', '[0-9]+');
+    Route::get('/store/fleet/maintenance-types/{id}/exceptions', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiTypeExceptions'])->where('id', '[0-9]+');
     Route::get('/store/cancelled-orders', [\App\Http\Controllers\API\RiderController::class, 'getStoreCancelledOrders']); // ⭐ Cancelled orders grouped by date
     Route::get('/store/delivered-quantities-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesTree']); // ⭐ Delivered quantities with drill-down (lazy)
     Route::get('/store/delivered-quantities-full-tree', [\App\Http\Controllers\API\RiderController::class, 'getDeliveredQuantitiesFullTree']); // ⭐ Full tree for instant access (last 10 days)
@@ -1070,6 +1113,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/verify', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'verifyItems']);
         Route::get('/history', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getHistory']);
         Route::get('/daily-summary', [\App\Http\Controllers\CRM\OvernightStorageController::class, 'getDailySummary']);
+    });
+
+    // ============================
+    // RETURNS — store side (Sep-2026). The manager takes the return on the web
+    // (money + which shelf); this is the "scan it back onto the shelf" half.
+    // Gated on the mobile permission `scan_returns`, checked per call so the
+    // banner follows whoever is on shift rather than a login-time snapshot.
+    // ============================
+    Route::prefix('store/returns')->group(function () {
+        Route::get('/pending', [\App\Http\Controllers\API\ReturnsAPIController::class, 'pending']);
+        Route::get('/{returnId}', [\App\Http\Controllers\API\ReturnsAPIController::class, 'detail']);
+        Route::post('/{returnId}/scan', [\App\Http\Controllers\API\ReturnsAPIController::class, 'scan']);
+        Route::post('/{returnId}/manual', [\App\Http\Controllers\API\ReturnsAPIController::class, 'manual']);
+        Route::post('/{returnId}/complete', [\App\Http\Controllers\API\ReturnsAPIController::class, 'complete']);
     });
 
     // ============================

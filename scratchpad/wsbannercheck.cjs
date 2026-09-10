@@ -53,8 +53,32 @@ function mkNode(tag) {
 /** Give a card node the [data-…] children its own code asks for. */
 function equip(card) {
     card._q = {};
-    ['[data-say]', '[data-panel]', '[data-btns]', '[data-a="ok"]', '[data-a="adj"]', '[data-a="no"]']
+    ['[data-say]', '[data-panel]', '[data-btns]', '[data-a="ok"]', '[data-a="adj"]', '[data-a="no"]',
+     // 📍 the attendance question (Sep-10): drawn INTO the card, then redrawn on every choice
+     '[data-att-btns]', '[data-att-note]']
         .forEach(sel => { card._q[sel] = mkNode('div'); card._q[sel]._q = {}; });
+    /**
+     * The two answer pills are written as innerHTML and then looked up again — so parse them
+     * back out, exactly as a browser would, or a click can never be delivered to one.
+     * ⚠ `disabled` matters: "at the workshop" is refused until a registered workshop exists,
+     *   and a harness that ignored the attribute would prove the opposite of the rule.
+     */
+    const attRow = card._q['[data-att-btns]'];
+    Object.defineProperty(attRow, 'innerHTML', {
+        get() { return this._html; },
+        set(v) {
+            this._html = String(v);
+            this._btns = [...this._html.matchAll(/data-att-v="([a-z]+)"([^>]*)/g)].map(m => {
+                const n = mkNode('button');
+                n.disabled = /^\s*disabled/.test(m[2]);
+                n.getAttribute = a => (a === 'data-att-v' ? m[1] : null);
+                return n;
+            });
+        },
+    });
+    attRow.querySelectorAll = function (sel) {
+        return sel === '[data-att-v]' ? (this._btns || []) : [];
+    };
     // ⚠ Match the markup: the card writes these two with style="display:none". The Adjust
     //   handler TOGGLES on that value, so a panel that starts open would close on first click.
     card._q['[data-panel]'].style.display = 'none';
@@ -198,6 +222,91 @@ p4._q['[data-f="why"]'].value = 'Faizabad run';
 p4._q['[data-f="go"]'].click();
 ok('it posts the reason to the decline door',
    [sent[0].url, sent[0].body.reason], ['/orders/riders-map/fleet/workshop/55/decline', 'Faizabad run']);
+
+console.log('\n== H · 📍 "will he mark attendance at his regular place, or at the workshop?" ==');
+/**
+ * ⭐⭐ THE DECISION THAT USED TO BE INFERRED. Picking a registered workshop MEANT "his day
+ *    starts there" — two questions fused into one control. A planner who wanted "check in at
+ *    LaCarne as usual, ride over at 11" had no way to say so, and the rider was told his place
+ *    had changed when it had not.
+ */
+const ATT = JSON.parse(JSON.stringify(PENDING));
+ATT.pending[0].attendance = { asked: true, value: 'workshop', can_pin: true, is_today: false,
+                              regular_label: 'LaCarne', workshop_label: 'Bilal Auto' };
+boxes.wsApprovals.children = [];
+vm.runInContext('renderApprovals(' + JSON.stringify(ATT) + ');', sandbox);
+const h1 = boxes.wsApprovals.children[0];
+okT('the card asks the question', h1.innerHTML.includes('That day he marks attendance'));
+okT('  ⭐ …naming his REGULAR place, or the planner cannot weigh the two',
+    h1._q['[data-att-btns]'].innerHTML.includes('at LaCarne'));
+okT('  …and offers the workshop as the other answer',
+    h1._q['[data-att-btns]'].innerHTML.includes('at the workshop'));
+sent = []; nextResponses = [{ success: true, message: 'Approved.' }, { success: true, can_approve: true, pending: [] }];
+h1._q['[data-a="ok"]'].click();
+ok('  …and ✓ sends the pill that LOOKS selected', sent[0].body, { attendance_at: 'workshop' });
+
+boxes.wsApprovals.children = [];
+vm.runInContext('renderApprovals(' + JSON.stringify(ATT) + ');', sandbox);
+const h2 = boxes.wsApprovals.children[0];
+h2._q['[data-att-btns]'].querySelectorAll('[data-att-v]')
+    .find(b => b.getAttribute('data-att-v') === 'regular').click();
+okT('choosing "as usual" says what that means',
+    h2._q['[data-att-note]'].innerHTML.includes('Nothing about his day moves'));
+sent = []; nextResponses = [{ success: true, message: 'Approved.' }, { success: true, can_approve: true, pending: [] }];
+h2._q['[data-a="ok"]'].click();
+ok('  ⭐ …and ✓ sends it — the answer that had no way of being given', sent[0].body, { attendance_at: 'regular' });
+
+/* ⚠ A typed workshop name has no coordinates to measure an arrival against. */
+boxes.wsApprovals.children = [];
+const noWs = JSON.parse(JSON.stringify(ATT));
+noWs.pending[0].location_id = null;
+noWs.pending[0].attendance = { asked: true, value: 'regular', can_pin: false, is_today: false,
+                               regular_label: 'LaCarne', workshop_label: 'Ali Motors' };
+vm.runInContext('renderApprovals(' + JSON.stringify(noWs) + ');', sandbox);
+const h3 = boxes.wsApprovals.children[0];
+ok('with no registered workshop, "at the workshop" cannot be chosen',
+   h3._q['[data-att-btns]'].querySelectorAll('[data-att-v]')
+       .find(b => b.getAttribute('data-att-v') === 'workshop').disabled, true);
+okT('  …and the card says how to make it choosable',
+    h3._q['[data-att-note]'].innerHTML.includes('Adjust'));
+
+/* ⭐ Picking one in Adjust must make the choice answerable AT ONCE, not after a save. */
+h3._q['[data-a="adj"]'].click();
+const p3 = h3._q['[data-panel]'];
+p3._q['[data-f="loc"]'].value = '9';
+(p3._q['[data-f="loc"]']._l.change || []).forEach(f => f.call(p3._q['[data-f="loc"]']));
+ok('  ⭐ …choosing a workshop in Adjust unlocks it live',
+   h3._q['[data-att-btns]'].querySelectorAll('[data-att-v]')
+       .find(b => b.getAttribute('data-att-v') === 'workshop').disabled, false);
+sent = []; nextResponses = [{ success: true, message: 'Approved.' }, { success: true, can_approve: true, pending: [] }];
+h3._q['[data-att-btns]'].querySelectorAll('[data-att-v]')
+    .find(b => b.getAttribute('data-att-v') === 'workshop').click();
+p3._q['[data-f="go"]'].click();
+ok('  …and the answer travels with the ADJUSTED approval too',
+   [sent[0].body.location_id, sent[0].body.attendance_at], [9, 'workshop']);
+
+/* ⚠⚠ TODAY is not a question — he has already started his day somewhere. */
+boxes.wsApprovals.children = [];
+const todayCard = JSON.parse(JSON.stringify(ATT));
+todayCard.pending[0].attendance = { asked: false, value: 'regular', can_pin: true, is_today: true,
+                                    regular_label: 'LaCarne', workshop_label: 'Bilal Auto' };
+vm.runInContext('renderApprovals(' + JSON.stringify(todayCard) + ');', sandbox);
+const h4 = boxes.wsApprovals.children[0];
+okT('a SAME-DAY request does not ask', !h4.innerHTML.includes('That day he marks attendance'));
+okT('  …it states what happens instead', h4.innerHTML.includes('already at work today'));
+sent = []; nextResponses = [{ success: true, message: 'Approved.' }, { success: true, can_approve: true, pending: [] }];
+h4._q['[data-a="ok"]'].click();
+ok('  …and sends nothing, which means "as proposed"', sent[0].body, {});
+
+/* ⚠ An older server never sends the key: the card must be the pre-10-Sep one, exactly. */
+boxes.wsApprovals.children = [];
+vm.runInContext('renderApprovals(' + JSON.stringify(PENDING) + ');', sandbox);
+const h5 = boxes.wsApprovals.children[0];
+okT('a server that never heard of the question draws the OLD card',
+    !h5.innerHTML.includes('That day he marks attendance'));
+sent = []; nextResponses = [{ success: true, message: 'Approved.' }, { success: true, can_approve: true, pending: [] }];
+h5._q['[data-a="ok"]'].click();
+ok('  …and approves exactly as it always did', sent[0].body, {});
 
 console.log('\n== G · a refusal is shown in the card, not swallowed ==');
 boxes.wsApprovals.children = [];

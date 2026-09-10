@@ -1156,7 +1156,7 @@ class VanService
             return [
                 'available' => true,
                 'mine'      => $mine,
-                'carrying'  => array_values($byRider),
+                'carrying'  => $this->attachWorkshopTrips(array_values($byRider)),
                 'to_load'   => $toLoad,
                 'totals'    => [
                     'mine_total'       => count($mine),
@@ -1174,6 +1174,44 @@ class VanService
             Log::error('VanService::manifest failed', ['user' => $vanUserId, 'error' => $e->getMessage()]);
             return ['available' => true, 'mine' => [], 'carrying' => [], 'to_load' => [], 'totals' => $this->emptyTotals()];
         }
+    }
+
+    /**
+     * 🔧🚦 WHICH OF THESE RIDERS IS ON A WORKSHOP ERRAND (owner ask, 10-Sep-2026).
+     *
+     * ⭐⭐ THE RENDEZVOUS IS THE POINT. A van driver waiting at a meet-up for a man who is
+     *    sitting at Ali Motors waits for ever, and the store watching the board cannot see
+     *    why nobody is turning up. The trip is the answer, and it is the SAME `tripsFor()`
+     *    the live rider card, the pinned rider and the dispatch guard read — one derivation,
+     *    so the van board can never disagree with the board next to it.
+     *
+     * ⚠ NO ETA (`withEta: false`), deliberately. Both callers POLL — the driver's own panel
+     *   and the store board — and the workshop ETA goes through Google when it is cold, the
+     *   exact cost this panel's own ETAs were rewritten to avoid. "He is at the workshop" is
+     *   what a rendezvous needs; the minute is on the live rider card.
+     * ⚠ Only ACTIVE trips (en route / at the workshop). "Booked for today" is not a reason
+     *   the man cannot come and collect his boxes right now.
+     */
+    private function attachWorkshopTrips(array $groups): array
+    {
+        foreach ($groups as &$g0) { $g0['workshop_trip'] = null; }
+        unset($g0);
+        if (!$groups) return $groups;
+
+        try {
+            $trips = app(\App\Services\Riders\WorkshopVisitService::class)
+                ->tripsFor(array_column($groups, 'user_id'), null, false);
+            if (!$trips) return $groups;
+            foreach ($groups as &$g) {
+                $t = $trips[(int) $g['user_id']] ?? null;
+                if ($t && !empty($t['is_active'])) $g['workshop_trip'] = $t;
+            }
+            unset($g);
+        } catch (\Throwable $e) {
+            // The errand is context, never a reason the manifest fails to render.
+            Log::warning('VanService::attachWorkshopTrips failed', ['error' => $e->getMessage()]);
+        }
+        return $groups;
     }
 
     /**

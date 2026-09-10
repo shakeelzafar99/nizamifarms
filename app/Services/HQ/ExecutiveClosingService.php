@@ -2685,6 +2685,204 @@ class ExecutiveClosingService
      * Resolve the [start, end, label, isOpen] for a unit + year/month.
      * Qurbani = whole calendar year (season-to-date if the current year).
      */
+    // =====================================================================
+    // RETURNS (Sep-2026) — delivered orders the customer sent back
+    // =====================================================================
+
+    /**
+     * Level 0 — the headline card.
+     *
+     * ⭐⭐ Read from t_crm_order_return, never inferred from the order status.
+     * The status only says an order came back; it cannot say whether the money
+     * was reversed, refunded or credited, nor whether the meat went to a shelf
+     * or the bin. Those are decisions, and the record is where they live.
+     *
+     * The period is keyed on when the return was TAKEN (decided_at), not the
+     * original delivery: that is the month the money actually moved, so the card
+     * reconciles with the ledger rows the return created.
+     */
+    public function returnsSummary(string $unit, int $year, int $month): array
+    {
+        if (!$this->returnsReady()) {
+            return ['ready' => false, 'count' => 0, 'value' => 0.0];
+        }
+
+        $unit = $this->normalizeUnit($unit);
+        [$start, $end] = $this->period($unit, $year, $month);
+
+        $rows = $this->returnsBase($unit, $start, $end)
+            ->get(['r.money_action', 'r.amount', 'r.goods_action', 'r.tip_returned', 'r.tip_amount',
+                   'r.completed_at', 'r.completed_short', 'o.total_price']);
+
+        $out = [
+            'ready'          => true,
+            'count'          => $rows->count(),
+            'value'          => round((float) $rows->sum('total_price'), 2),
+            'money_back'     => round((float) $rows->sum('amount'), 2),
+            'reversed'       => $rows->where('money_action', 'reversed')->count(),
+            'refunded'       => $rows->where('money_action', 'refund')->count(),
+            'credited'       => $rows->where('money_action', 'credit')->count(),
+            'no_money'       => $rows->where('money_action', 'none')->count(),
+            'refunded_value' => round((float) $rows->where('money_action', 'refund')->sum('amount'), 2),
+            'credited_value' => round((float) $rows->where('money_action', 'credit')->sum('amount'), 2),
+            'tips_returned'  => round((float) $rows->where('tip_returned', 1)->sum('tip_amount'), 2),
+            'restocked'      => $rows->where('goods_action', 'restock')->count(),
+            'wasted'         => $rows->where('goods_action', 'wasted')->count(),
+            'awaiting'       => $rows->where('goods_action', 'restock')->whereNull('completed_at')->count(),
+            'short'          => $rows->where('completed_short', 1)->count(),
+        ];
+
+        return $out;
+    }
+
+    /** Level 1 — the returned orders behind the card. */
+    public function returnsDetail(string $unit, int $year, int $month): array
+    {
+        if (!$this->returnsReady()) {
+            return [];
+        }
+
+        $unit = $this->normalizeUnit($unit);
+        [$start, $end] = $this->period($unit, $year, $month);
+
+        return $this->returnsBase($unit, $start, $end)
+            ->leftJoin('t_sys_user as du', 'du.id', '=', 'r.decided_by')
+            ->orderByDesc('r.decided_at')
+            ->limit(500)
+            ->get([
+                'r.id', 'r.decided_at', 'r.reason', 'r.money_action', 'r.money_state', 'r.amount',
+                'r.tip_returned', 'r.tip_amount', 'r.goods_action', 'r.meat_section',
+                'r.completed_at', 'r.completed_short', 'r.short_reason',
+                'o.id as order_id', 'o.order_number', 'o.total_price', 'o.name as customer',
+                'du.fullname as who',
+            ])
+            ->map(fn ($r) => [
+                'return_id'   => (int) $r->id,
+                'order_id'    => (int) $r->order_id,
+                'order'       => $r->order_number,
+                'customer'    => $r->customer ?: '—',
+                'date'        => $r->decided_at ? Carbon::parse($r->decided_at)->format('M d') : '—',
+                'who'         => $r->who ?: 'System',
+                'reason'      => $r->reason ?: '—',
+                'value'       => round((float) $r->total_price, 2),
+                'money'       => $this->returnMoneyLabel($r->money_action),
+                'money_key'   => $r->money_action,
+                'amount'      => round((float) $r->amount, 2),
+                'tip'         => $r->tip_returned ? round((float) $r->tip_amount, 2) : 0.0,
+                'goods'       => $r->goods_action === 'wasted'
+                    ? 'Written off'
+                    : 'Back to ' . ($r->meat_section ? $r->meat_section : 'stock'),
+                'put_back'    => $r->goods_action === 'wasted'
+                    ? 'n/a'
+                    : ($r->completed_at ? ($r->completed_short ? 'Short' : 'Done') : 'Waiting'),
+                'short_reason' => $r->short_reason,
+            ])->all();
+    }
+
+    /** Level 2 — the items and the ledger rows behind ONE return. */
+    public function returnDetail(int $returnId): array
+    {
+        if (!$this->returnsReady()) {
+            return ['items' => [], 'ledger' => []];
+        }
+
+        $return = DB::table('t_crm_order_return')->where('id', $returnId)->first();
+        if (!$return) {
+            return ['items' => [], 'ledger' => []];
+        }
+
+        $items = DB::table('t_crm_order_return_item as ri')
+            ->leftJoin('t_crm_prod_product as p', 'p.id', '=', 'ri.product_id')
+            ->leftJoin('t_sys_user as u', 'u.id', '=', 'ri.scanned_by')
+            ->where('ri.return_id', $returnId)
+            ->orderBy('ri.id')
+            ->get(['ri.quantity', 'ri.unit', 'ri.destination', 'ri.barcode', 'ri.scanned_at',
+                   'p.title', 'u.fullname as who'])
+            ->map(fn ($r) => [
+                'item'        => $r->title ?: 'Item',
+                'quantity'    => round((float) $r->quantity, 3) . ' ' . $r->unit,
+                'destination' => $r->destination,
+                'how'         => $r->barcode ? 'scanned' : 'manual',
+                'who'         => $r->who ?: '—',
+                'at'          => $r->scanned_at ? Carbon::parse($r->scanned_at)->format('M d H:i') : '—',
+            ])->all();
+
+        // Every money row this return produced, so the drill can be reconciled
+        // against the ledger without leaving the screen.
+        $ledger = DB::table('t_fin_ledger')
+            ->where('order_id', $return->order_id)
+            ->whereIn('transaction_type', [
+                LedgerModel::TYPE_ORDER_REFUND,
+                LedgerModel::TYPE_INVOICE,
+                LedgerModel::TYPE_TIP_COLLECTED,
+                'customer_credit_grant',
+            ])
+            ->orderBy('id')
+            ->limit(50)
+            ->get(['id', 'transaction_date', 'transaction_type', 'description', 'amount', 'approval_status'])
+            ->map(fn ($r) => [
+                'id'     => (int) $r->id,
+                'date'   => Carbon::parse($r->transaction_date)->format('M d'),
+                'type'   => LedgerModel::typeLabel($r->transaction_type),
+                'note'   => $r->description,
+                'amount' => round((float) $r->amount, 2),
+                'status' => $r->approval_status,
+            ])->all();
+
+        return ['items' => $items, 'ledger' => $ledger];
+    }
+
+    /**
+     * The shared scope. Qurbani is excluded exactly like everywhere else here.
+     * (A Qurbani order WITH recorded payments is refused a return; one with none
+     * yet can be returned with money_action = none, so the filter still matters.)
+     */
+    private function returnsBase(string $unit, Carbon $start, Carbon $end)
+    {
+        $q = DB::table('t_crm_order_return as r')
+            ->join('t_crm_prod_order as o', 'o.id', '=', 'r.order_id')
+            ->whereBetween('r.decided_at', [$start, $end]);
+
+        if ($unit === self::UNIT_QB) {
+            QurbaniFinanceFilter::applyToOrderQuery($q, 'o', QurbaniFinanceFilter::MODE_INCLUDE);
+        } else {
+            QurbaniFinanceFilter::applyToOrderQuery($q, 'o', QurbaniFinanceFilter::MODE_EXCLUDE);
+        }
+
+        return $q;
+    }
+
+    private function returnMoneyLabel(?string $action): string
+    {
+        return match ($action) {
+            'reversed' => 'Invoice reversed',
+            'refund'   => 'Refunded',
+            'credit'   => 'To account balance',
+            default    => 'No money',
+        };
+    }
+
+    /**
+     * Dormant until the returns SQL has been run. Manual deploys put the PHP up
+     * first, and an HQ card that 500s the whole dashboard would be a poor trade
+     * for a feature nobody is using yet.
+     */
+    private function returnsReady(): bool
+    {
+        static $ready = null;
+
+        if ($ready === null) {
+            try {
+                $ready = \Schema::hasTable('t_crm_order_return')
+                    && \Schema::hasTable('t_crm_order_return_item');
+            } catch (\Throwable $e) {
+                $ready = false;
+            }
+        }
+
+        return $ready;
+    }
+
     private function period(string $unit, int $year, int $month): array
     {
         $now = Carbon::now();

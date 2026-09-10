@@ -154,6 +154,29 @@ class ExecutiveDashboardController extends Controller
         ));
     }
 
+    /** Returns — the headline card (count, value, what happened to the money). */
+    public function returns(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->returnsSummary($unit, $year, $month));
+    }
+
+    /** Returns Level 1 — the returned orders behind the card. */
+    public function returnsDetail(Request $request)
+    {
+        $this->guard();
+        [$unit, $year, $month] = $this->params($request);
+        return $this->ok($this->svc->returnsDetail($unit, $year, $month));
+    }
+
+    /** Returns Level 2 — the items put back and the ledger rows, for ONE return. */
+    public function returnDetail(Request $request)
+    {
+        $this->guard();
+        return $this->ok($this->svc->returnDetail((int) $request->get('return_id', 0)));
+    }
+
     public function customers(Request $request)
     {
         $this->guard();

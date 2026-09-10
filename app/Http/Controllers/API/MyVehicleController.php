@@ -97,6 +97,10 @@ class MyVehicleController extends Controller
             // Riders page, which no rider can open). It stays on the web fleet
             // card; showing a rider an instruction he cannot act on is noise.
             unset($v['needs_home_pin']);
+            // Same reasoning for the saved pin itself (Sep-2026): it is manager colour for
+            // the Bikes card, and only a manager can change it. A rider has no use for it
+            // here and no way to act on it.
+            unset($v['keeper_home_pin']);
 
             // ⭐ BRIEF MODE — what the one-line card on the Attendance screen needs,
             //   and nothing else.

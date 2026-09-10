@@ -7757,6 +7757,25 @@ class RiderController extends Controller
                 catch (\Throwable $e) { /* best effort */ }
             });
 
+            /**
+             * 🔧⭐⭐ "HE NEVER WENT, AND HE HAS GONE HOME" (owner ruling, 10-Sep-2026).
+             *
+             * Same-day workshop bookings have no approval cut-off any more — the cut-off only
+             * ever protected the check-in-location promise, which is already settled once the
+             * day has begun. What replaces it is this: if he checks out having never set off,
+             * the managers are told ONCE and *"it should end there"*.
+             *
+             * ⚠⚠ It does NOT close the visit. Midnight still turns it into a MISSED day for a
+             *    manager to answer — auto-resolving it here would make "he went" and "he never
+             *    went" indistinguishable, the one thing this feature must never do.
+             * ⚠ Deferred, and non-fatal: nothing about a push may delay or fail a checkout.
+             */
+            $ckUserId = (int) $user->id;
+            app()->terminating(function () use ($ckUserId) {
+                try { app(\App\Services\Riders\WorkshopVisitService::class)->alertNotGoneAtCheckout($ckUserId); }
+                catch (\Throwable $e) { /* best effort */ }
+            });
+
             // ⭐ Company-bike GOING-HOME journey (U4): arm an ETA-to-home + grace so the rider records
             // his ONE meter reading at home. NON-FATAL, only for company-bike riders with a home pin.
             $homeJourney = null;
@@ -8997,6 +9016,27 @@ class RiderController extends Controller
                 'source' => $sourceStr,
                 'created_at' => now(),
             ]);
+
+            /**
+             * 🔧⭐⭐ WORKSHOP ARRIVAL BY GEOFENCE (owner ruling, 10-Sep-2026: *"we can show at
+             *    the workshop by his geofence and location since there's no dedicated button"*).
+             *
+             * The rider presses ONE button — "going to the workshop". Getting there is proved by
+             * the heartbeat his phone already sends every five minutes, exactly as the going-home
+             * arrival below is. Nothing new runs on the device.
+             *
+             * ⚠ NON-FATAL BY CONTRACT, like its neighbour: a failure here must never cost the
+             *   rider his location update.
+             * ⚠ It also back-fills `departed_at` when he forgot to press the button — a man
+             *   standing at the workshop has demonstrably gone, and the board claiming otherwise
+             *   while his own GPS says so is the contradiction this round exists to remove.
+             */
+            try {
+                app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->stampArrival((int) $user->id, (float) $latitude, (float) $longitude);
+            } catch (\Throwable $e) {
+                \Log::warning('workshop arrival stamp skipped', ['error' => $e->getMessage()]);
+            }
 
             // ⭐ U4 — server-side home geofence: during the going-home phase, the first fix inside
             // the home radius STAMPS the true arrival time (proves time+location even if he types
@@ -11695,9 +11735,18 @@ class RiderController extends Controller
             ])
             ->get();
 
-        if ($ofd->isEmpty()) {
-            return [];
-        }
+        /**
+         * ⚠⚠ NOT AN EARLY RETURN ANY MORE. This board is built from out-for-delivery orders, so
+         *    with none it used to answer "nobody is doing anything" — which is right about
+         *    DELIVERIES and wrong about the day. A rider taking a bike to the workshop very
+         *    often has no orders at all (that is WHY he was sent), and on a quiet morning the
+         *    whole fleet can be order-free. Returning early here made the workshop status
+         *    invisible in exactly the case it exists for, and it looked like it worked because
+         *    a busy fleet still showed it.
+         *
+         * ⭐ So: nothing to compute per-order, but the workshop pass below still runs.
+         */
+        $ofdIsEmpty = $ofd->isEmpty();
 
         $riderIds = $ofd->pluck('rider_id')->unique()->filter()->values()->all();
 
@@ -11771,10 +11820,42 @@ class RiderController extends Controller
             \Log::warning('buildOngoingDispatchTracking: left-without-dispatch check failed (non-fatal)', ['error' => $e->getMessage()]);
         }
 
+        /**
+         * 🔧⭐⭐ WHO IS ON A WORKSHOP ERRAND RIGHT NOW (owner ask, 10-Sep-2026).
+         *
+         * ⚠⚠ THE FALSE ALARM THIS ENDS. Every status on this board is derived from dispatch
+         *    counts and distance to the office, so a rider sent to the workshop — doing exactly
+         *    what he was told — read as "📍 Away (GPS stale)", and if he had undispatched
+         *    orders on his name he tripped the RED "⚠ Left without dispatch" warning. The board
+         *    was accusing him of walking off the job.
+         *
+         * ⭐ ONE call for the whole board (`tripsFor`), not one per rider — this runs on every
+         *   poll of the live card. And ONE derivation shared with the riders-map, the store
+         *   phone, the van boards and the dispatch guard, so no two screens can disagree about
+         *   where he is.
+         */
+        /**
+         * ⚠⚠ NOT `$riderIds` — that is only the men with orders out. The rider this feature is
+         *    ABOUT is very often the one with nothing on his plate: he has no deliveries, so he
+         *    was sent to the workshop. Asking only about the busy ones would have hidden exactly
+         *    the case the owner asked for, and it would have looked like it worked.
+         */
+        $trips = [];
+        try {
+            $trips = app(\App\Services\Riders\WorkshopVisitService::class)->tripsFor(
+                \DB::table('t_ops_workshop_visit')
+                    ->whereDate('visit_date', \Carbon\Carbon::today()->format('Y-m-d'))
+                    ->whereIn('status', \App\Services\Riders\WorkshopVisitService::LIVE_STATUSES)
+                    ->pluck('user_id')->map(fn ($x) => (int) $x)->all()
+            );
+        } catch (\Throwable $e) {
+            \Log::warning('buildOngoingDispatchTracking: workshop trips failed (non-fatal)', ['error' => $e->getMessage()]);
+        }
+
         $isCashMethod = fn($m) => in_array(strtolower($m ?? 'cash'), ['cash', 'cash_on_delivery', 'cod']);
 
         $out = [];
-        foreach ($ofd->groupBy('rider_id') as $rid => $orders) {
+        foreach (($ofdIsEmpty ? [] : $ofd->groupBy('rider_id')) as $rid => $orders) {
             $riderName = $orders->first()->rider_name ?: "Rider #{$rid}";
             $dispatched = $orders->filter(fn($o) => !empty($o->eta_calculated_at));
             $undispatched = $orders->filter(fn($o) => empty($o->eta_calculated_at));
@@ -11822,7 +11903,19 @@ class RiderController extends Controller
             // dispatched. Those queued orders still surface via undispatched_count.
             $status = 'idle';
             $flaggedLeft = !empty($leftFlags[(int) $rid]['flagged']);
-            if ($flaggedLeft) {
+            /**
+             * ⭐⭐ THE WORKSHOP OUTRANKS EVERYTHING, including the red warning.
+             *
+             * A man riding to the workshop has left the office without dispatching, which is
+             * precisely what `left_without_dispatch` looks for — and here it is not a warning,
+             * it is the instruction he was given. Checking the trip FIRST is what turns a false
+             * accusation into a useful line, and it is the whole reason this rung exists.
+             */
+            $trip = $trips[(int) $rid] ?? null;
+            if ($trip && !empty($trip['is_active'])) {
+                $status = $trip['state'] === \App\Services\Riders\WorkshopVisitService::TRIP_AT
+                    ? 'at_workshop' : 'workshop_en_route';
+            } elseif ($flaggedLeft) {
                 $status = 'left_without_dispatch';
             } elseif ($returnInfo) {
                 $status = 'returning';
@@ -11884,6 +11977,10 @@ class RiderController extends Controller
                 'rider_id' => $rid,
                 'rider_name' => $riderName,
                 'status' => $status,
+                // 🔧 The errand itself, for the label: where, since when, and the ETA while he
+                //    is still on the road. Additive — an older page ignores it and simply shows
+                //    the status word it already knows.
+                'workshop_trip' => $trip,
                 'ofd_total' => $orders->count(),
                 'dispatched_count' => $dispatched->count(),
                 'undispatched_count' => $undispatched->count(),
@@ -11940,10 +12037,49 @@ class RiderController extends Controller
                 ];
             }
         }
+        /**
+         * 🔧⭐⭐ THE RIDER WITH NOTHING ON HIS PLATE. This board is built from orders, so a man
+         *    who has no deliveries today appears on it only if he delivered earlier (the loop
+         *    below). But "no orders" is the commonest reason he is at the workshop in the first
+         *    place — so without this pass the feature would be invisible for exactly the rider
+         *    it was asked for, on the exact card the owner pointed at.
+         *
+         * ⚠ Added BEFORE the finished-riders loop so its `already covered` check sees them and
+         *   cannot draw the same man twice as "returning".
+         */
+        $ofdRiderIds = array_values(array_unique(array_merge($ofdRiderIds, array_map(
+            fn ($r) => (int) $r['rider_id'], $out))));
+        foreach ($trips as $tuid => $trip) {
+            $tuid = (int) $tuid;
+            if (empty($trip['is_active']) || in_array($tuid, $ofdRiderIds, true)) continue;
+            $out[] = [
+                'rider_id' => $tuid,
+                'rider_name' => $trip['rider_name']
+                    ?? (\DB::table('t_sys_user')->where('id', $tuid)->value('fullname') ?: "Rider #{$tuid}"),
+                'status' => $trip['state'] === \App\Services\Riders\WorkshopVisitService::TRIP_AT
+                    ? 'at_workshop' : 'workshop_en_route',
+                'workshop_trip' => $trip,
+                'ofd_total' => 0,
+                'dispatched_count' => 0,
+                'undispatched_count' => 0,
+                'distance_to_office_m' => null,
+                'distance_to_office_display' => null,
+                'approaching_office' => null,
+                'gps_fresh' => true,
+                'gps_age_minutes' => null,
+                'gps_age_text' => null,
+                'eta_to_office_min' => null,
+                'return_to_office' => null,
+                'dispatch_batches' => [],
+                'undispatched_orders' => [],
+            ];
+            $ofdRiderIds[] = $tuid;
+        }
+
         foreach ($finishedDispatchRiders as $fr) {
             $frid = (int) $fr->rid;
             if (in_array($frid, $ofdRiderIds, true)) {
-                continue; // Already covered (still has OFD orders).
+                continue; // Already covered (still has OFD orders, or is at the workshop).
             }
             $returnInfo = $this->getReturnToOfficeInfo($frid, $officeLat, $officeLng, $radiusMeters);
             if (!$returnInfo) {
@@ -11971,9 +12107,16 @@ class RiderController extends Controller
         }
 
         // Order: warnings first, then biggest workload.
+        /**
+         * ⚠ The two workshop rungs sit just BELOW the red warning and above everything else: a
+         *   dispatcher scanning this list needs to see "do not load this man" before he sees
+         *   who is busiest, but not before a genuine left-without-dispatch alarm.
+         */
         $rank = [
-            'left_without_dispatch' => 0, 'waiting_at_office' => 1, 'returning' => 2,
-            'on_route' => 3, 'at_office' => 4, 'away_unknown' => 5, 'idle' => 6,
+            'left_without_dispatch' => 0,
+            'workshop_en_route' => 1, 'at_workshop' => 1,
+            'waiting_at_office' => 2, 'returning' => 3,
+            'on_route' => 4, 'at_office' => 5, 'away_unknown' => 6, 'idle' => 7,
         ];
         usort($out, function ($a, $b) use ($rank) {
             $ra = $rank[$a['status']] ?? 9;
@@ -12071,6 +12214,14 @@ class RiderController extends Controller
                     'undispatched_count' => $o['undispatched_count'],
                     'distance_to_office_display' => $o['distance_to_office_display'] ?? null,
                     'return_to_office' => $o['return_to_office'] ?? null,
+                    /**
+                     * 🔧 The errand itself — where, since when, the ETA — so the card can print
+                     *    the SERVER's sentence instead of composing its own.
+                     * ⚠ This map is a hand-written subset of the row, so a new key has to be
+                     *   added HERE as well as on the row; leaving it out is a silent drop that
+                     *   looks like the feature not working.
+                     */
+                    'workshop_trip' => $o['workshop_trip'] ?? null,
                 ];
                 // source 'approx' means the precise Google ETA isn't cached yet —
                 // queue this rider to be warmed after the response is sent.
@@ -15289,6 +15440,18 @@ class RiderController extends Controller
                         : null,
                 ] : null,
                 'route_lock' => $this->getRouteLockInfo($riderId),
+                /**
+                 * 🔧⭐ HIS WORKSHOP ERRAND, if he is on one (owner ask, 10-Sep-2026).
+                 *
+                 * This payload is what the store phone's PINNED-RIDER tab draws its header
+                 * from, and the owner asked for the same "going to / at the workshop" line
+                 * there as on the web card. Same `tripFor()` derivation, same sentence.
+                 * ⚠ Null for everybody else, so the chip simply does not render.
+                 */
+                'workshop_trip' => (function () use ($riderId) {
+                    try { return app(\App\Services\Riders\WorkshopVisitService::class)->tripFor($riderId); }
+                    catch (\Throwable $e) { return null; }
+                })(),
                 // ⭐ "Left office without dispatching" flag (live; auto-clears).
                 'left_without_dispatch' => $this->detectLeftWithoutDispatch([$riderId])[$riderId] ?? null,
                 // ⭐ "Returning to office" ETA (single Google call, cached) once
@@ -16238,6 +16401,36 @@ class RiderController extends Controller
                     'message' => 'Rider unassigned successfully',
                 ]);
             }
+
+            /**
+             * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling, 10-Sep-2026 — Q3: allowed, but ask.)
+             *
+             * A rider taking a bike in is not available, and an order given to him now sits
+             * still until he is back. Refusing outright would be wrong — a genuine emergency
+             * happens — so this is a QUESTION with an override, the same 409 `needs_confirmation`
+             * shape the workshop and shift engines already use for "this changes a plan somebody
+             * was told about".
+             *
+             * ⚠ An OLD client cannot send `confirm`, so it simply cannot assign to a man at the
+             *   workshop: it reads the sentence instead. Failing closed is right here — the whole
+             *   point is that this must not happen by accident.
+             */
+            try {
+                $wsTrip = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->tripFor((int) $validated['rider_id']);
+                if ($wsTrip && !empty($wsTrip['is_active']) && !$request->boolean('confirm')) {
+                    return response()->json([
+                        'success' => false,
+                        'needs_confirmation' => true,
+                        'workshop_trip' => $wsTrip,
+                        'message' => ($wsTrip['label'] ?? 'He is at the workshop')
+                            . '. Assign this order to him anyway?',
+                    ], 409);
+                }
+            } catch (\Throwable $e) {
+                // ⚠ Fail OPEN: a lookup problem must never block ordinary dispatch.
+                \Log::warning('workshop assign guard skipped', ['error' => $e->getMessage()]);
+            }
             
             // Get rider name for response
             $rider = DB::table('t_sys_user')->where('id', $validated['rider_id'])->first();
@@ -16350,6 +16543,18 @@ class RiderController extends Controller
             $order = OrderModel::findOrFail($validated['order_id']);
             $oldStatus = $order->order_status;
 
+            // ⭐⭐ RETURNS (Sep-2026) — refused on mobile, server-side.
+            // The status is already hidden from this picker (show_in_mobile = 0),
+            // but a stale APK still holds the old list, and hiding a thing is not
+            // the same as forbidding it. A return has to answer where the money
+            // goes; there is no dialog here to ask, and guessing moves real money.
+            if ($validated['status'] === \App\Services\CRM\OrderReturnService::STATUS_CODE) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Returns are taken on the web by Shabib or Taimur — the money and the stock have to be decided there. The store is asked to scan the items back afterwards.',
+                ], 422);
+            }
+
             // 🚚 An order ON THE VAN is not moved from a status picker (owner
             // ruling Aug-4) — the handover scan is what proves who took it and
             // where. Cancel/refund/hold stay allowed; everything else is steered
@@ -16377,9 +16582,11 @@ class RiderController extends Controller
                 'Status changed via Store Mode',
                 $user->id
             );
-            
+
             if (!$success) {
-                throw new \Exception('Failed to change order status');
+                // A deliberate refusal (e.g. "this order was returned") explains
+                // itself; anything else stays generic — see OrderModel::$lastStatusError.
+                throw new \Exception($order->lastStatusError ?: 'Failed to change order status');
             }
             
             \Log::info('Order status updated (Store Mode)', [
@@ -32560,6 +32767,64 @@ class RiderController extends Controller
     }
 
     /** Delivery riders + current shift + active/upcoming changes (StoreShiftsScreen data). */
+    /**
+     * 👥 USERS LIST (mobile) — every active account with whether it is on the one roster
+     * that the Shift Planner and Attendance share. The phone half of the web planner's
+     * "Users list" button.
+     *
+     * 🔒 Owner ruling 9-Sep-2026: *"this list is only for shabib abd taimur to modify"*.
+     *    Gate is `manage_user_roster`, NOT `manage_shifts` — a planner who may move shifts
+     *    still may not change who exists on the list.
+     */
+    public function shiftUsersListMobile(Request $request)
+    {
+        $me = $request->user() ?: Auth::user();
+        if (!app(\App\Services\Ops\ShiftAuthorityService::class)->canManageRoster($me, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only Shabib and Taimur can open the users list.',
+            ], 403);
+        }
+
+        return response()->json([
+            'success' => true,
+            'users' => app(\App\Services\Ops\UserRosterService::class)->list(),
+        ]);
+    }
+
+    /**
+     * 👥 Put someone on the users list, or take them off — the phone half.
+     *
+     * ⚠ Goes through the SAME writer as the web (`UserRosterService::set`), so one toggle
+     *   moves the person on both the Shift Planner and Attendance, exactly as on the desk.
+     */
+    public function toggleShiftUserMobile(Request $request)
+    {
+        $me = $request->user() ?: Auth::user();
+        if (!app(\App\Services\Ops\ShiftAuthorityService::class)->canManageRoster($me, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only Shabib and Taimur can change who is on the users list.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'user_id' => 'required|integer|exists:t_sys_user,id',
+            'on_list' => 'required|boolean',
+        ]);
+
+        $roster = app(\App\Services\Ops\UserRosterService::class);
+        $onList = (bool) $data['on_list'];
+        $warning = $onList ? null : $roster->removalWarning((int) $data['user_id']);
+        $roster->set((int) $data['user_id'], $onList, $me ? (int) $me->id : null);
+
+        return response()->json([
+            'success' => true,
+            'message' => $onList ? 'Added to the users list' : 'Removed from the users list',
+            'warning' => $warning,
+        ]);
+    }
+
     public function getStoreShiftRiders(Request $request)
     {
         if (!Auth::user()->hasMobilePermission('manage_shifts')) {
@@ -32575,10 +32840,28 @@ class RiderController extends Controller
         $shiftAuthority = app(\App\Services\Ops\ShiftAuthorityService::class);
         $shiftOpenRequests = app(\App\Services\Ops\ShiftChangeRequestService::class)->openByUser();
         $today = now()->format('Y-m-d');
+        /**
+         * 👥 ONE COMMON LIST (owner ruling Sep-2026) — *"we should have one common list
+         * which is the attendance"*. This used to INNER JOIN the rider profile on
+         * `p.active = 1`, so the phone showed ONLY ticked delivery riders while the web
+         * grid could show all staff: Shabib had 12 real shift rows and no row on mobile,
+         * and Taimur (exempt, hidden from attendance) was listed on both.
+         *
+         * The roster is now shared with the web planner through ONE helper so the two
+         * cannot drift apart again. The rider join stays a LEFT join purely to carry the
+         * phone + the `is_rider` flag for the app's Riders/All chip.
+         *
+         * ⚠ Additive for an older APK: it simply renders the longer list (and its writes
+         *   are still judged by the same ladder gate). Nothing is removed from the payload.
+         */
+        $roster = \App\Models\User::shiftPlannerRoster();
+        $rosterOffList = array_flip($roster['off_roster']);
         $riders = \DB::table('t_sys_user as u')
-            ->join('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
-            ->where('p.active', 1)->where('u.is_active', 1)
-            ->orderBy('u.fullname')->get(['u.id', 'u.fullname', 'p.phone']);
+            ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
+            ->where('u.is_active', 1)
+            ->whereIn('u.id', $roster['ids'] ?: [0])
+            ->orderBy('u.fullname')
+            ->get(['u.id', 'u.fullname', 'p.phone', \DB::raw('COALESCE(p.active, 0) as is_rider')]);
 
         // 🔧 Next workshop errand per rider — ONE query for the whole list, never per row.
         // Guarded: before workshop_visits_sep2026.sql this is simply empty.
@@ -32614,6 +32897,10 @@ class RiderController extends Controller
             $def = $svc->userDefaultLocation($r->id); // rider's default office (pre-selected on assign)
             $shiftAuth = $shiftAuthority->rowStateFor($shiftActor, (int) $r->id, true);
             $out[] = ['user_id' => $r->id, 'name' => $r->fullname,
+                // 👥 Roster flags (Sep-2026): drives the app's Riders/All chip, and the
+                //    "not in attendance" tag on a row only the safety net is keeping.
+                'is_rider' => (int) ($r->is_rider ?? 0) === 1,
+                'off_roster' => isset($rosterOffList[(int) $r->id]),
                 'has_phone' => !empty(trim((string) $r->phone)),
                 'default_location_id' => $def['location_id'],
                 'default_location_name' => $def['location_name'],
@@ -32643,6 +32930,9 @@ class RiderController extends Controller
                 'pending_requests' => $shiftOpenRequests[(int) $r->id] ?? [],
                 'changes' => $changes];
         }
+        // 👥 Does this phone get the "Users list" button? (Shabib + Taimur only.)
+        $canManageRoster = $shiftAuthority->canManageRoster($shiftActor, true);
+
         // Active office locations (for the assign screen's location bubbles).
         // ⚠ Van meet-up points live in this table too and are NOT offices — a
         //   rendezvous must never be assignable as somebody's work location.
@@ -32653,7 +32943,9 @@ class RiderController extends Controller
             ->orderByDesc('is_primary')->orderBy('location_name')
             ->get(['id', 'location_name', 'is_primary'])
             ->map(fn($l) => ['id' => (int) $l->id, 'name' => $l->location_name, 'is_primary' => (int) $l->is_primary === 1]);
-        return response()->json(['success' => true, 'riders' => $out, 'locations' => $locations]);
+        // ⚠ `can_manage_roster` is additive — an older APK ignores it and shows no button.
+        return response()->json(['success' => true, 'riders' => $out, 'locations' => $locations,
+            'can_manage_roster' => $canManageRoster]);
     }
 
     /** Per-rider MONTH shift breakdown for the manager (StoreShifts → tap rider → month view),

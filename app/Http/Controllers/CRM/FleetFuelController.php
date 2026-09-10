@@ -140,7 +140,107 @@ class FleetFuelController extends Controller
             'available'  => $svc->available(),
             'can_manage' => $this->canManageService(),
             'types'      => $svc->options(true),
+            /**
+             * ⭐ Whether this database understands vehicle classes yet. The editor draws
+             *   its Bikes/Vans halves only when this is true, so uploading the web files
+             *   before the SQL shows exactly the old single-list editor rather than a
+             *   form whose fields would be silently dropped on save.
+             */
+            'class_aware' => $svc->classAware(),
+            'classes'     => [
+                ['key' => 'bike', 'label' => 'Bikes', 'icon' => '🏍️'],
+                ['key' => 'van',  'label' => 'Vans',  'icon' => '🚚'],
+            ],
         ]);
+    }
+
+    /**
+     * ⭐⭐ "WHO WILL IGNORE THIS?" — asked BEFORE a class standard is changed.
+     *
+     * The vehicles carrying their own value for one job, so the editor can offer the
+     * choice ("leave them alone" / "put them on the new standard") instead of letting a
+     * manager change a number and never learn who did not follow it. Same endpoint for
+     * web and mobile, so the two can never show a different list.
+     */
+    public function typeExceptions(Request $request, $id)
+    {
+        if (!$this->canManageService()) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        try {
+            $class = $request->query('class');
+            $sched = new \App\Services\Riders\VehicleScheduleService();
+            $type  = app(\App\Services\Riders\MaintenanceTypeService::class)->find($id);
+
+            $out = [];
+            foreach ([\App\Models\Riders\MaintenanceTypeModel::CLASS_BIKE,
+                      \App\Models\Riders\MaintenanceTypeModel::CLASS_VAN] as $c) {
+                if ($class && $class !== 'both' && $class !== $c) continue;
+                foreach ($sched->exceptionsFor((int) $id, $c) as $row) {
+                    $row['vehicle_class'] = $c;
+                    // The standard this vehicle is currently ignoring, phrased once here
+                    // so neither client has to compose it.
+                    $std = $type ? $type->scheduleForClass($c) : null;
+                    $row['standard_label'] = $std['label'] ?? null;
+                    $row['own_label'] = \App\Models\Riders\MaintenanceTypeModel::intervalLabel(
+                        $row['interval_days'] !== null ? 'time' : 'km',
+                        $row['interval_km'], $row['interval_days']);
+                    $out[] = $row;
+                }
+            }
+
+            return response()->json([
+                'success'    => true,
+                'type_id'    => (int) $id,
+                'type_name'  => $type->type_name ?? null,
+                'exceptions' => $out,
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('typeExceptions failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not read the exceptions'], 500);
+        }
+    }
+
+    /** Mobile twins — same methods, so a phone and a desk cannot disagree. */
+    public function apiMaintenanceTypes(Request $request)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $this->mobileContext = true;
+        return $this->maintenanceTypes($request);
+    }
+
+    /**
+     * ⭐ Qasim builds the van list from his PHONE (owner, 10-Sep). He works in frozen
+     *   mode on a handset, so a web-only types editor was never an answer — the same
+     *   reasoning that put service history and corrections on mobile in the Sep-3 round.
+     */
+    public function apiSaveMaintenanceType(Request $request, $id = null)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $this->mobileContext = true;
+        return $this->saveMaintenanceType($request, $id);
+    }
+
+    public function apiDeleteMaintenanceType(Request $request, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $this->mobileContext = true;
+        return $this->deleteMaintenanceType($request, $id);
+    }
+
+    public function apiTypeExceptions(Request $request, $id)
+    {
+        if (!$this->mobileAllowed($request)) {
+            return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        }
+        $this->mobileContext = true;
+        return $this->typeExceptions($request, $id);
     }
 
     /** Create or update one type. */
@@ -163,6 +263,21 @@ class FleetFuelController extends Controller
             'resets_service_clock' => 'nullable|boolean',
             'is_active'   => 'nullable|boolean',
             'sort_order'  => 'nullable|integer|min:0|max:9999',
+            // ── vehicle class + basis (Sep-2026) ──────────────────────────────
+            'applies_to'        => 'nullable|in:bike,van,both',
+            'basis'             => 'nullable|in:km,time',
+            'interval_km_van'   => 'nullable|integer|min:0|max:200000',
+            'interval_days'     => 'nullable|integer|min:0|max:36500',
+            'interval_days_van' => 'nullable|integer|min:0|max:36500',
+            /**
+             * ⭐ The manager's answer to "N vehicles have their own schedule for this
+             *   job — should they follow the new standard too?". Absent = LEAVE THEM
+             *   ALONE, which is the safe reading and what an old page that has not been
+             *   reloaded will send. Same shape and same default as the fleet-wide
+             *   `clear_overrides` this replaces.
+             */
+            'clear_overrides'      => 'nullable|boolean',
+            'clear_overrides_class' => 'nullable|in:bike,van,both',
         ]);
 
         try {
@@ -184,6 +299,51 @@ class FleetFuelController extends Controller
             $model->type_name   = $data['type_name'];
             $model->bucket      = $data['bucket'];
             $model->interval_km = ((int) ($data['interval_km'] ?? 0)) > 0 ? (int) $data['interval_km'] : null;
+
+            /**
+             * ⭐⭐ THE CLASS STANDARDS (Sep-2026). `interval_km` above keeps its meaning
+             *    and is now explicitly the BIKE figure; the van has its own.
+             *
+             * ⚠ Guarded on the migration having run. Before it, these are silently
+             *   dropped and the type behaves exactly as it did — the same degrade-quietly
+             *   rule the pickers follow, so web files may be uploaded before the SQL.
+             */
+            if (app(\App\Services\Riders\MaintenanceTypeService::class)->classAware()) {
+                $pos = fn ($k) => ((int) ($data[$k] ?? 0)) > 0 ? (int) $data[$k] : null;
+
+                $model->applies_to = $data['applies_to']
+                    ?? ($model->applies_to ?: \App\Models\Riders\MaintenanceTypeModel::APPLIES_BIKE);
+                $model->basis = $data['basis']
+                    ?? ($model->basis ?: \App\Models\Riders\MaintenanceTypeModel::BASIS_KM);
+
+                $model->interval_km_van   = $pos('interval_km_van');
+                $model->interval_days     = $pos('interval_days');
+                $model->interval_days_van = $pos('interval_days_van');
+
+                /**
+                 * ⚠ A figure for a class this job does not serve is CLEARED rather than
+                 *   stored. A stored-but-unreachable number is the kind of thing someone
+                 *   reads six months later and believes is in force — and if the job is
+                 *   later switched to "both", it would silently come alive with a value
+                 *   nobody chose today.
+                 */
+                if ($model->applies_to === \App\Models\Riders\MaintenanceTypeModel::APPLIES_VAN) {
+                    $model->interval_km   = null;
+                    $model->interval_days = null;
+                }
+                if ($model->applies_to === \App\Models\Riders\MaintenanceTypeModel::APPLIES_BIKE) {
+                    $model->interval_km_van   = null;
+                    $model->interval_days_van = null;
+                }
+                // Likewise across the basis: a km job holds no day figures, and back.
+                if ($model->basis === \App\Models\Riders\MaintenanceTypeModel::BASIS_TIME) {
+                    $model->interval_km = null;
+                    $model->interval_km_van = null;
+                } else {
+                    $model->interval_days = null;
+                    $model->interval_days_van = null;
+                }
+            }
             // Only a REGULAR service can reset the service clock; a repair never
             // does, whatever the form sends.
             $model->resets_service_clock = $data['bucket'] === 'regular'
@@ -194,9 +354,45 @@ class FleetFuelController extends Controller
             $model->updated_by = auth()->id();
             $model->save();
 
-            $this->forgetFleetCaches();
+            /**
+             * ⭐⭐ "PUT EVERY VEHICLE ON THE NEW STANDARD" — the exceptions decision.
+             *
+             * The vehicles holding their own value for THIS job would otherwise ignore
+             * the change silently, which is exactly the complaint the old fleet-wide
+             * modal was built to answer ("it claimed bikes were unaffected without ever
+             * naming one"). The web and mobile editors ask first, using
+             * `typeExceptions` below, and send the answer here.
+             *
+             * ⭐ CLEARING, never stamping: a cleared vehicle follows the standard, so the
+             *   NEXT change reaches it too. Stamping the new number onto each would
+             *   re-create the same divergence one change later.
+             */
+            $clearedVehicles = 0;
+            if ($request->boolean('clear_overrides')) {
+                $scope = $data['clear_overrides_class'] ?? \App\Models\Riders\MaintenanceTypeModel::APPLIES_BOTH;
+                $sched = new \App\Services\Riders\VehicleScheduleService();
+                foreach ([\App\Models\Riders\MaintenanceTypeModel::CLASS_BIKE,
+                          \App\Models\Riders\MaintenanceTypeModel::CLASS_VAN] as $c) {
+                    if ($scope !== \App\Models\Riders\MaintenanceTypeModel::APPLIES_BOTH && $scope !== $c) continue;
+                    $clearedVehicles += $sched->clearFor((int) $model->id, $c);
+                }
+            }
 
-            return $this->maintenanceTypes($request);
+            $this->forgetFleetCaches();
+            // A standard is a fleet-wide settings change — the per-vehicle counters
+            // cannot express it, so bump the global one.
+            \App\Services\Riders\VehicleService::bumpServiceConfig();
+
+            $res = $this->maintenanceTypes($request);
+            if ($clearedVehicles) {
+                $payload = json_decode($res->getContent(), true);
+                $payload['cleared_vehicles'] = $clearedVehicles;
+                $payload['message'] = $clearedVehicles . ' vehicle'
+                    . ($clearedVehicles === 1 ? '' : 's')
+                    . ' had their own schedule for this job — now cleared, so they follow this too.';
+                return response()->json($payload);
+            }
+            return $res;
         } catch (\Throwable $e) {
             \Log::error('saveMaintenanceType failed', ['id' => $id, 'error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not save that type.'], 500);
@@ -504,6 +700,18 @@ class FleetFuelController extends Controller
             // type list exists — see the block below.
             'maintenance_type_id' => 'nullable|integer',
             /**
+             * ⭐⭐ WHICH MACHINE (owner ask, 10-Sep-2026: *"the maintenance records follow the
+             *    vehicle"*). Every surface that records a service is looking at a machine —
+             *    the vehicle card on the web, the vehicle sheet on the phone — so it says
+             *    which one, and the record is stamped with it instead of being re-derived
+             *    from "what was this rider on that day" every time it is read.
+             *
+             * ⚠ OPTIONAL, and absent is not an error: a rider-first form (and every APK built
+             *   before this) sends none, and `vehicleForRecord()` then falls back to the
+             *   registry, which is exactly today's behaviour.
+             */
+            'vehicle_id' => 'nullable|integer',
+            /**
              * 💰 THE BILL — OPTIONAL (owner ask, 3-Sep). Blank means exactly what it always
              *    meant: the work is recorded, no money moves, and the row reads "no bill".
              *    A figure here files a real maintenance expense against the rider and links
@@ -533,7 +741,11 @@ class FleetFuelController extends Controller
         // brake-shoe job still cannot make an overdue oil change look done.
         // "As conditions" types (Chain Set, Misc) are refused: they have no
         // countdown, so there is nothing here to record against.
-        $recordType = null;
+        $recordType   = null;
+        // ⚠ Declared out here because the recording block further down reads it. Both are
+        //   guarded on `filled('meter')`, so it is only ever used when it has been resolved —
+        //   but PHP's function scope makes that an easy thing to break later, so say it.
+        $svcVehicleId = null;
         if ($request->filled('meter')) {
             /**
              * ⭐⭐ THE TYPE IS REQUIRED (owner ruling, 2-Sep-2026). NO GUESSING.
@@ -564,18 +776,70 @@ class FleetFuelController extends Controller
             //   three different permission gates must apply it identically — this screen,
             //   completing a workshop visit, and the RIDER answering "did it get done?"
             //   (who holds no `manage_bike_service` key at all).
-            $resolved = app(\App\Services\Riders\ServiceRecordService::class)
-                ->resolveType($request->input('maintenance_type_id'));
+            /**
+             * ⭐ CLASS-AWARE (Sep-2026). The machine this rider is on today decides
+             *   which jobs exist and what they are due against, so a van service is
+             *   judged on van numbers and a bike-only job is refused on the van.
+             */
+            $rec = app(\App\Services\Riders\ServiceRecordService::class);
+            /**
+             * ⭐ ONE resolver answers all three questions below — which machine the record is
+             *   about, whether the company keeps its schedule, and which class's job list
+             *   applies. Asking three different ways is how they came to disagree.
+             */
+            $svcVehicleId = $rec->vehicleForRecord($request->input('vehicle_id'),
+                                                   (int) $data['rider_id'], $request->input('date'));
+            $klass = $rec->classFor($svcVehicleId, (int) $data['rider_id'], $request->input('date'));
+
+            /**
+             * ⭐⭐ PERSONAL MACHINES ARE NOT ON THE COMPANY SCHEDULE (owner, 10-Sep-2026).
+             *    Recording a service against one would create a countdown the company
+             *    has just said it does not keep — so it is refused with a sentence that
+             *    says what to do instead, rather than silently writing a record no
+             *    screen will ever show.
+             */
+            try {
+                $vid = $svcVehicleId;
+                if ($vid && !(new \App\Services\Riders\VehicleService())->isTrackedId((int) $vid)) {
+                    return response()->json(['success' => false, 'message' =>
+                        'This is a personal vehicle, and the company does not keep its service '
+                        . 'schedule. If the company is paying for the work, file it as a '
+                        . 'maintenance request instead.'], 422);
+                }
+            } catch (\Throwable $e) {
+                // Cannot place the machine ⇒ fall through to the old behaviour rather
+                // than blocking a legitimate recording on a lookup failure.
+            }
+
+            $resolved = $rec->resolveType($request->input('maintenance_type_id'), $klass);
             if (!$resolved['ok']) {
                 return response()->json(['success' => false, 'message' => $resolved['message']], 422);
             }
             $recordType = $resolved['type'];
         }
 
-        if (!$request->filled('meter') && !$request->filled('interval_km')) {
+        /**
+         * ⚠⚠ THE OLD SINGLE-NUMBER SCHEDULE IS RETIRED (Sep-2026), and an old APK still
+         *    posts it. It cannot be honoured — that scalar names no job, which is the
+         *    whole reason it never worked — so it is REFUSED with a sentence a person
+         *    can act on rather than accepted and ignored, which is how a manager comes
+         *    to believe he has set something he has not.
+         *
+         * ⚠ Only when it arrives ALONE. A payload carrying a meter is a real service
+         *   recording that happens to have the stale field attached; that still works,
+         *   and the schedule half is simply dropped.
+         */
+        if ($request->filled('interval_km') && !$request->filled('meter')) {
+            return response()->json(['success' => false, 'message' =>
+                'Service schedules are now set per job on the vehicle page — open the '
+                . 'machine under Vehicles and use "This vehicle\'s schedule". Please update '
+                . 'the app if you do not see it.'], 422);
+        }
+
+        if (!$request->filled('meter')) {
             return response()->json([
                 'success' => false,
-                'message' => 'Give either the odometer at the service, or a new schedule.',
+                'message' => 'Give the odometer at the service.',
             ], 422);
         }
 
@@ -606,12 +870,14 @@ class FleetFuelController extends Controller
             if ($request->filled('meter')) {
                 $serviceDate = $data['date'] ?? Carbon::today()->format('Y-m-d');
                 $recorded = app(\App\Services\Riders\ServiceRecordService::class)->record([
-                    'rider_id' => (int) $data['rider_id'],
-                    'meter'    => (int) $data['meter'],
-                    'date'     => $serviceDate,
-                    'type'     => $recordType,
-                    'actor_id' => (int) auth()->id(),
-                    'note'     => 'Recorded on the Bikes screen (no bill filed)',
+                    'rider_id'   => (int) $data['rider_id'],
+                    // ⭐ The machine, resolved above and frozen onto the row.
+                    'vehicle_id' => $svcVehicleId,
+                    'meter'      => (int) $data['meter'],
+                    'date'       => $serviceDate,
+                    'type'       => $recordType,
+                    'actor_id'   => (int) auth()->id(),
+                    'note'       => 'Recorded on the Bikes screen (no bill filed)',
                 ]);
                 if (!$recorded['ok']) {
                     return response()->json(['success' => false, 'message' => $recorded['message']], 422);
@@ -651,62 +917,39 @@ class FleetFuelController extends Controller
                     $billSaid = $bill['message'];
                 }
             }
-            // The schedule changed → how often it falls due. Never touches when
-            // it was last serviced.
-            if ($request->filled('interval_km')) {
-                $update['service_interval_km'] = ((int) $data['interval_km']) > 0
-                    ? (int) $data['interval_km'] : null;
-            }
+            /**
+             * ⚠⚠ THE SINGLE-NUMBER SCHEDULE IS NO LONGER WRITTEN FROM HERE (Sep-2026).
+             *
+             * `interval_km` arriving alone is refused at the top of this method; arriving
+             * BESIDE a meter it is simply ignored, because an old APK sends the field on
+             * every recording and a service happening must never be turned away over a
+             * stale extra. Schedules are now per (vehicle, job) —
+             * `t_ops_vehicle_service_schedule`, edited on the vehicle page.
+             *
+             * ⭐ The two legacy scalar columns are deliberately NOT cleared here. They
+             *   stay readable as the last fallback for a job that carries no standard,
+             *   so nobody's old setting silently disappears; they simply have no writer
+             *   any more.
+             */
 
             \DB::table('t_ops_rider_profile')
                 ->where('user_id', $data['rider_id'])
                 ->update($update);
 
-            // ⭐⭐ THE SCHEDULE BELONGS TO THE MACHINE (owner ruling, Aug-16).
-            //
-            //    "How often is this bike due?" is a fact about the bike, not about
-            //    whoever happens to be riding it — so when the registry can name the
-            //    machine, the override is written THERE as well. Hand the bike over
-            //    and its schedule goes with it, instead of staying behind on the old
-            //    rider's profile while the new rider's own (unrelated) override
-            //    silently takes over the bike he has just been given.
-            //
-            // ⚠ WHERE THE OVERRIDE ACTUALLY BITES (be honest about this): under the
-            //   Aug-3 rule "the schedule follows the work last done", a bike with any
-            //   TYPED clock-resetting record takes each countdown's interval from the
-            //   TYPE — overrides (machine, then rider, then company default) govern
-            //   only bikes whose history has no typed service yet. That is the same
-            //   precedence the owner approved for the Bikes chip; writing the machine
-            //   copy here keeps the fallback correct across a handover, it does not
-            //   outrank the type's own schedule.
-            //
-            // ⚠ The profile write above is deliberately KEPT: riders with no
-            //   registered machine still resolve through it. Two copies of a SETTING
-            //   is safe in a way that two copies of a derived FACT was not — a
-            //   setting has one writer (this endpoint) and a defined read order.
-            // ⚠ `last_service_meter` is deliberately NOT mirrored onto the vehicle
-            //   row. That column is the seed that silently froze and started this
-            //   whole bug; it stays demoted to one piece of evidence among many, so a
-            //   second source of truth can never grow back.
-            if (array_key_exists('service_interval_km', $update)) {
-                try {
-                    $veh = new \App\Services\Riders\VehicleService();
-                    if ($veh->available()) {
-                        $vid = (new \App\Services\Riders\VehicleResolver())
-                            ->currentVehicleFor((int) $data['rider_id']);
-                        if ($vid) {
-                            \DB::table(\App\Services\Riders\VehicleService::T_VEHICLE)
-                                ->where('id', $vid)
-                                ->update([
-                                    'service_interval_km' => $update['service_interval_km'],
-                                    'updated_at'          => now(),
-                                ]);
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    \Log::warning('Machine-level service interval not written', ['error' => $e->getMessage()]);
-                }
-            }
+            /**
+             * ⚠⚠ THE MACHINE-LEVEL MIRROR OF THE OLD SCALAR IS GONE (Sep-2026).
+             *
+             * It existed because "how often is this bike due?" is a fact about the bike
+             * rather than its rider, so the Aug-16 round copied the per-rider number onto
+             * the machine as well. That reasoning was right and is now served properly:
+             * the schedule lives in `t_ops_vehicle_service_schedule`, one row per
+             * (vehicle, job), written from the vehicle's own page.
+             *
+             * ⚠ `last_service_meter` was deliberately never mirrored here, and still is
+             *   not. That column is the seed that silently froze and started the whole
+             *   split-brain; it stays demoted to one piece of evidence among many so a
+             *   second source of truth cannot grow back.
+             */
 
             // ⚠ The derived service state is memoised per process AND cached across
             //   requests — bump the machine's evidence version so both die, or this
@@ -758,13 +1001,14 @@ class FleetFuelController extends Controller
                 //    reading — a manager must never have to go looking for that answer.
                 if (!empty($billSaid)) $said[] = $billSaid;
             }
-            if ($request->filled('interval_km')) {
-                $said[] = ((int) $data['interval_km']) > 0
-                    ? 'Now due every ' . number_format((int) $data['interval_km']) . ' km'
-                    : 'Now follows the company default';
-            }
 
-            return response()->json(['success' => true, 'message' => implode('. ', $said)]);
+
+            // ⭐ Say WHICH machine it landed on (10-Sep-2026). The record is stamped now, so
+            //   the caller can show — and a test can assert — the bike the countdown moved on
+            //   rather than trusting that the roster happened to agree.
+            return response()->json(array_filter([
+                'vehicle_id' => $svcVehicleId,
+            ], fn ($v) => $v !== null) + ['success' => true, 'message' => implode('. ', $said)]);
         } catch (\Throwable $e) {
             \Log::error('FleetFuel markServiced failed', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Could not save the change'], 500);
@@ -1366,6 +1610,14 @@ class FleetFuelController extends Controller
                 // 🔧 The manager's maintenance types, riding along for the same
                 // reason as the accounts: a separate endpoint would carry its own
                 // permission gate and lock out the very people who file claims.
+                /**
+                 * 🔧 The manager's maintenance types.
+                 * ⚠ The RAW list (both classes' numbers) — this payload is the whole
+                 *   Bikes screen and has no single machine in scope. Anything that DOES
+                 *   know its machine reads the class-resolved list off
+                 *   `vehicle-for-user` / the vehicle payload instead, which is what
+                 *   stops a van being offered a bike's interval.
+                 */
                 'maint_types'  => app(\App\Services\Riders\MaintenanceTypeService::class)->options(),
                 'can_manage_types' => $this->canManageService(),
                 // Read-only users see the numbers but must not file claims.

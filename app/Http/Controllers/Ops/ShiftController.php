@@ -531,13 +531,45 @@ class ShiftController extends Controller
     public function getUsersWithShifts(Request $request)
     {
         try {
-            // Get ALL users (no filtering - your table structure doesn't have status/deleted_at)
+            /**
+             * 👥 ONE COMMON LIST (owner ruling Sep-2026). This is the THIRD shift-assign
+             * surface ("Select users and assign them to a shift template" on Shift Types)
+             * and it used to list every active account — System Administrators included.
+             * It now draws the same attendance roster as the web grid and the mobile list.
+             */
+            $roster = \App\Models\User::shiftPlannerRoster();
+
+            /**
+             * ⚠ ONE row per person. `effective_to IS NULL` alone is NOT unique: a
+             * superseded open-ended primary is not always closed, so on this data
+             * Kanan Anoos has THREE open rows and Arslan Aslam two. Joining on that
+             * listed them 3× / 2× in the picker and showed whichever shift the join
+             * happened to pick — sometimes the OLD one.
+             *
+             * So pick the newest open row per user, the same way ShiftResolutionService
+             * resolves it (latest effective_from, id as the tie-break) — which is why
+             * the resolved shift on every other screen was right all along.
+             *
+             * ⚠ This only fixes the DISPLAY. The stale rows are still in the table;
+             *   cleaning them up is a separate data decision for the owner.
+             */
+            $latestOpen = DB::table('t_ops_user_shift_assignment')
+                ->selectRaw('user_id, MAX(COALESCE(effective_from, "1970-01-01")) as max_from')
+                ->whereNull('effective_to')
+                ->groupBy('user_id');
+
             $users = DB::table('t_sys_user as u')
-                // Only the CURRENT (open) assignment. Without this, a user with shift
-                // history would appear once per historical row now that we keep history.
+                ->where('u.is_active', 1)
+                ->whereIn('u.id', $roster['ids'] ?: [0])
+                ->leftJoinSub($latestOpen, 'lo', 'lo.user_id', '=', 'u.id')
                 ->leftJoin('t_ops_user_shift_assignment as usa', function ($j) {
                     $j->on('usa.user_id', '=', 'u.id')
-                      ->whereNull('usa.effective_to');
+                      ->whereNull('usa.effective_to')
+                      ->whereRaw('COALESCE(usa.effective_from, "1970-01-01") = lo.max_from')
+                      // Two rows on the same date → the later id wins, as the resolver does.
+                      ->whereRaw('usa.id = (SELECT MAX(x.id) FROM t_ops_user_shift_assignment x
+                                            WHERE x.user_id = u.id AND x.effective_to IS NULL
+                                              AND COALESCE(x.effective_from, "1970-01-01") = lo.max_from)');
                 })
                 ->leftJoin('t_ops_shift_template as st', 'st.id', '=', 'usa.shift_template_id')
                 ->leftJoin('t_ops_rider_profile as rp', 'rp.user_id', '=', 'u.id')

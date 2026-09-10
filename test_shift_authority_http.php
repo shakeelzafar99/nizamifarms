@@ -109,16 +109,40 @@ head('§3 the planner grid tells the screen what it may do');
 
 $w = http('GET', '/shift-planner/week?filter=all', null, $cBot)['json'];
 $rowFor = function ($data, $uid) { foreach ($data['riders'] ?? [] as $r) if ((int) $r['user_id'] === $uid) return $r; return null; };
-$rTop = $rowFor($w, $TOP);
-ok('the bottom rung SEES the top of the ladder in the grid…', (bool) $rTop, true);
-ok('…locked, not hidden (owner ruling)', $rTop['can_change'] ?? null, false);
-ok('…with a reason for the padlock tooltip', (bool) ($rTop['lock_reason'] ?? null), true);
+/**
+ * ⚠ 9-Sep-2026 — TWO DIFFERENT RULES, deliberately kept apart. They used to be provable
+ * on the same fixture; they are not any more, and conflating them hides a real bug.
+ *
+ *   · LADDER (Sep-6): a person you may not change is shown LOCKED, never hidden.
+ *     Proven below on the MIDDLE rung, who is on the roster and above the bottom rung.
+ *   · ROSTER (Sep-9): the planner lists the ATTENDANCE list. The top rung (Taimur) is
+ *     deliberately hidden from attendance — *"taimur doesnt need shifts he is exempt"* —
+ *     so he is absent from the grid for a reason that has NOTHING to do with rank.
+ *
+ * If the top rung is ever put back on the attendance list, he reappears and the ladder
+ * answers for him exactly as before — which is what the last two checks pin down.
+ */
+$rMid = $rowFor($w, $MID);
+ok('the bottom rung SEES the rung above him in the grid…', (bool) $rMid, true);
+ok('…locked, not hidden (Sep-6 owner ruling)', $rMid['can_change'] ?? null, false);
+ok('…with a reason for the padlock tooltip', (bool) ($rMid['lock_reason'] ?? null), true);
 ok('the bottom rung cannot open his own row either', $rowFor($w, $BOT)['can_change'] ?? null, false);
 ok('⚙ and he is not told the rules page exists', $w['can_manage_rules'] ?? null, false);
 
+// 👥 The top rung is off the ATTENDANCE roster, so he is off the planner entirely.
+$topVisible = DB::table('t_ops_attendance_visibility')->where('user_id', $TOP)->value('is_visible');
+ok('the top rung is hidden from attendance (the exemption)', (int) $topVisible, 0);
+ok('…so he is absent from the grid — roster, not rank', $rowFor($w, $TOP), null);
+ok('…and absent from the shared roster helper',
+    in_array($TOP, \App\Models\User::shiftPlannerRoster()['ids'], true), false);
+
 $wTop = http('GET', '/shift-planner/week?filter=all', null, $cTop)['json'];
-ok('the top may change his own row (Q3)', $rowFor($wTop, $TOP)['can_change'] ?? null, true);
-ok('⚙ and he gets the Shift rules button', $wTop['can_manage_rules'] ?? null, true);
+ok('⚙ he still gets the Shift rules button', $wTop['can_manage_rules'] ?? null, true);
+// Q3 (the top rung may always set his own shift) is a LADDER answer and still true —
+// it is simply unreachable from the grid while he is off the attendance list.
+ok('Q3 still holds at the gate: the top may set his own shift',
+    app(\App\Services\Ops\ShiftAuthorityService::class)
+        ->rowStateFor(\App\Models\User::find($TOP), $TOP)['can'], true);
 
 $wMid = http('GET', '/shift-planner/week?filter=all', null, $cMid)['json'];
 ok('the middle rung may reach the bottom rung…', $rowFor($wMid, $BOT)['can_change'] ?? null, true);

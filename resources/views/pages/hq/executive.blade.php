@@ -530,9 +530,16 @@
       card('rev',revLabel,rs(cur.revenue),revSub,'revenue'),
       card('ord',ordLabel,rsS(cur.orders),ordSub,'revenue'),
       card('kg',isQb?'Quantity booked':'Quantity sold',qtyVal,qtySub,'revenue'),
-      card('cus','Customers ordered',rsS(cur.customers),'<span class="delta up">+'+rsS(cur.new_customers)+' new</span> first-time','customers')
+      card('cus','Customers ordered',rsS(cur.customers),'<span class="delta up">+'+rsS(cur.new_customers)+' new</span> first-time','customers'),
+      // Returns (Sep-2026). Rendered from its own endpoint because it reads the
+      // return RECORD, not the order status — the status cannot say whether the
+      // money was reversed, refunded or credited. Placeholder first, filled in
+      // when the fetch lands, so a slow/dormant returns table never holds up
+      // the rest of the row.
+      card('ret','Returned','<span id="hqRetVal">—</span>','<span id="hqRetSub">loading…</span>','returns')
     ];
     $('hqKpis').innerHTML=cards.join('');
+    loadReturnsCard();
 
     // P&L flow
     var flow, plHint;
@@ -689,6 +696,13 @@
         ['Per day','orders ÷ working days = '+rsS(cur.orders)+' ÷ <span class="var">'+c.working_days+'</span> = <span class="var">'+dv.orders_per_work_day+' / day</span>'],
         ['AOV','revenue ÷ orders = '+rs(cur.revenue)+' ÷ '+rsS(cur.orders)+' = <span class="var">'+rs(dv.aov)+'</span>'],
         ['Unit rule',unitRule]]},
+      ret:{t:'Returned',v:'see card',r:[
+        ['What it counts','Delivered orders the customer <span class="var">sent back</span>, and what was decided about each one'],
+        ['Date used','the day the <span class="var">return was taken</span>, not the day the order was delivered — that is the day the money moved, so this reconciles with the ledger'],
+        ['Money','one of three: the invoice was <span class="var">reversed</span> (the cash never really landed), the money was <span class="var">refunded</span> out of the account it came into, or its value went to the customer’s <span class="var">account balance</span>'],
+        ['Revenue','a returned order <span class="var">leaves</span> delivered revenue automatically — every revenue figure here reads the order’s CURRENT status'],
+        ['Goods','restocked items only return to stock when the store <span class="var">scans them back</span>; “not yet put back” is what is still sitting off the shelf'],
+        ['Excludes','shop and Qurbani orders — those settle through their own payment flow and are refused a return for now']]},
       kg:{t:(isQb?'Quantity booked':'Quantity sold'),v:(isQb?rsS(cur.pieces)+' items':rsS(cur.kg)+' kg + '+rsS(cur.pieces)+' pcs'),r:(isQb?[
         ['Formula','Sum of line-item quantities on all <span class="var">non-cancelled</span> Qurbani orders this season — <span class="var">animals / shares</span>, not weight'],
         ['Booked vs delivered','<span class="var">'+rsS(cur.pieces)+'</span> booked · <span class="var">'+rsS(cur.delivered_pieces)+'</span> delivered so far'],
@@ -897,6 +911,34 @@
         url:function(r){return '/hq/drill/salary-employee'+qs()+(r.user_id!=null?'&user_id='+r.user_id:'&employee='+encodeURIComponent(r.employee_key||r.employee));},
         cols:['Date','Type','Amount'],map:function(r){return [esc(r.date),esc(r.type),rsS(r.amount)];}},
       note:'One row per employee — salaries actually paid this month (Payroll screen payments + any legacy salary slips), tagged to the business unit set on each employee. Click a row to see that person’s individual payments. The combined NF + Frozen view shows everyone; switch to a single unit to see just its salaries.'},
+    // RETURNS (Sep-2026). Level 1 = the orders that came back; Level 2 = what
+    // was physically put back and the ledger rows the return produced, so a
+    // return can be reconciled without leaving the panel.
+    returns:{crumb:['Returned orders'],url:function(){return '/hq/drill/returns-orders'+qs();},
+      cols:['Order','Customer','Taken','Reason','Value','Money','Back'],
+      map:function(r){return [esc(r.order),esc(r.customer),esc(r.date),esc(r.reason),rsS(r.value),
+        esc(r.money)+(r.amount>0?' <span style="color:var(--ink3,#888);font-size:11px">'+rsS(r.amount)+'</span>':'')
+          +(r.tip>0?' <span class="pillm new">tip '+rsS(r.tip)+'</span>':''),
+        (r.put_back==='Waiting'?'<span class="pillm late">Waiting</span>':(r.put_back==='Short'?'<span class="pillm late">Short</span>':esc(r.put_back)))];},
+      raw:function(r){return r;},
+      total:function(rows){var v=0,a=0;rows.forEach(function(r){v+=r.value||0;a+=r.amount||0;});
+        return ['Total','','','',rsS(v),rsS(a),''];},
+      note:'Delivered orders the customer sent back, by the day the return was TAKEN — that is the day the money moved, so this reconciles with the ledger. “Money” is what was actually done: the invoice reversed, cash refunded from the account it came into, or the value put on the customer’s account balance. “Back” is whether the store has scanned the goods into stock yet. Click a row for the items and the ledger rows.',
+      l2:{crumb:function(r){return r.order;},
+        url:function(r){return '/hq/drill/return?return_id='+r.return_id;},
+        cols:['Item','Qty','Where','How','By','At'],
+        map:function(r){return [esc(r.item),esc(r.quantity),esc(r.destination),esc(r.how),esc(r.who),esc(r.at)];},
+        rowsFrom:function(d){return (d.items||[]);},
+        // The money rows this return produced, under the goods it produced them
+        // for — so the whole return reconciles on one screen.
+        after:function(d){
+          var L=(d&&d.ledger)||[]; if(!L.length)return '';
+          return '<div class="p-note" style="border:0;padding:14px 2px 6px;font-weight:600">Ledger entries for this order</div>'
+            +'<table class="dt"><thead><tr><th>Date</th><th>Type</th><th>Note</th><th>Amount</th><th>Status</th></tr></thead><tbody>'
+            +L.map(function(r){return '<tr><td>'+esc(r.date)+'</td><td>'+esc(r.type)+'</td><td>'+esc(r.note)+'</td><td>'+rsS(r.amount)+'</td><td>'
+              +(r.status==='reversed'?'<span class="pillm late">reversed</span>':esc(r.status))+'</td></tr>';}).join('')
+            +'</tbody></table>';
+        }}},
     customers:{crumb:['Customers ordered'],url:function(){return '/hq/drill/customers'+qs();},
       cols:['Customer','Type','Orders','Spent','First'],map:function(r){return [esc(r.customer),esc(r.type)+(r.is_new?' <span class="pillm new">new</span>':''),rsS(r.orders),rsS(r.spent),esc(r.first)];}},
     banks:{crumb:['Working capital','Per-bank split'],local:true,
@@ -963,6 +1005,28 @@
       total:function(rows){var o=0,sp=0;rows.forEach(function(r){o+=r.orders;sp+=r.spent;});return [rows.length+' customers','','',rsS(o),rsS(sp)];}}
   };
   function qs(){return '?unit='+state.unit+'&year='+state.year+'&month='+state.month;}
+
+  /**
+   * Fill the Returned card. Its own request on purpose: the figures come from
+   * the return RECORD (what the manager decided about the money and the goods),
+   * which the closing payload knows nothing about. Failure is silent and the
+   * card simply reads zero — a returns table that has not been created yet must
+   * not be able to break the dashboard.
+   */
+  function loadReturnsCard(){
+    fetchJSON('/hq/drill/returns'+qs()).then(function(r){
+      var v=$('hqRetVal'), s=$('hqRetSub'); if(!v||!s)return;
+      if(!r||!r.ready||!r.count){ v.textContent='0'; s.textContent='nothing came back'; return; }
+      v.innerHTML=rsS(r.count)+' <small>'+(r.count===1?'order':'orders')+'</small>';
+      var bits=[rs(r.value)+' of goods'];
+      if(r.money_back>0)bits.push(rs(r.money_back)+' back to customers');
+      if(r.awaiting>0)bits.push('<span class="delta down">'+r.awaiting+' not yet put back</span>');
+      s.innerHTML=bits.join(' · ');
+    }).catch(function(){
+      var v=$('hqRetVal'), s=$('hqRetSub');
+      if(v)v.textContent='—'; if(s)s.textContent='could not load';
+    });
+  }
   function fmtDay(s){var d=new Date(s+'T00:00:00');return d.toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'});}
   function pill(p){var cls=p==='cash'||p==='cash (due)'?'cash':(p==='unpaid'||p==='partial'?'late':'online');return '<span class="pillm '+cls+'">'+esc(p)+'</span>';}
 
@@ -998,13 +1062,19 @@
       if(d.custom&&!l2){$('hqPBody').innerHTML=res&&(res.customers||res.rider!=null)?d.custom(res):'<div class="p-empty">Nothing here for this period.</div>';return;}
       if(!l2)drill.l1=res;
       var src=l2?d.l2:d;
-      var list=res||[];
-      if(!list.length){$('hqPBody').innerHTML='<div class="p-empty">Nothing here for this period.</div>';return;}
+      // Opt-in (Sep-2026, added for the Returns drill): a level whose endpoint
+      // answers an OBJECT rather than a bare array says which key holds its rows,
+      // and may append a second table under them. Levels without these keys are
+      // untouched — `rowsFrom` undefined means the old `res` path exactly.
+      var list=(src.rowsFrom?src.rowsFrom(res):res)||[];
+      var extra=src.after?src.after(res):'';
+      if(!list.length){$('hqPBody').innerHTML=extra||'<div class="p-empty">Nothing here for this period.</div>';return;}
       var clickable=!l2&&d.l2;
       var body='<table class="dt"><thead><tr>'+src.cols.map(function(c){return '<th>'+esc(c)+'</th>';}).join('')+'</tr></thead><tbody>';
       body+=list.map(function(r,i){var rc=clickable&&!r.no_drill;return '<tr'+(rc?' class="rowclick" onclick="hqDrillRow('+i+')"':'')+'>'+src.map(r).map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';}).join('');
       if(!l2&&d.total)body+='<tr class="total">'+d.total(list).map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>';
       body+='</tbody></table>';
+      if(extra)body+=extra;
       var dnote=(!l2)?((typeof d.note==='function')?d.note():d.note):null;
       if(dnote)body+='<div class="p-note" style="border:0;padding:12px 2px 0">'+esc(dnote)+'</div>';
       else if(clickable)body+='<div class="p-note" style="border:0;padding:12px 2px 0">Click a row for the underlying entries.</div>';

@@ -58,6 +58,21 @@ class ShiftAuthorityService
      */
     public const RULES_PERMISSION = 'manage_shift_rules';
 
+    /**
+     * 👥 Who may edit the USERS LIST — the one roster that Shift Planner and Attendance
+     * both read (`t_ops_attendance_visibility`). Owner ruling 9-Sep-2026:
+     * *"this list is only for shabib abd taimur to modify"*.
+     *
+     * Seeded by `user_roster_permission_sep2026.sql` to role 14 (Taimur) and role 10
+     * (Management / Shabib); every other role gets a visible, unticked row.
+     *
+     * ⚠ Deliberately a SEPARATE key from RULES_PERMISSION, which stays Taimur-only:
+     *   editing shift TYPES and editing WHO IS ON THE LIST are different powers.
+     * ⚠ Fails CLOSED — before the SQL runs nobody has it, so the button is simply not
+     *   shown and the roster keeps whatever membership it already has.
+     */
+    public const ROSTER_PERMISSION = 'manage_user_roster';
+
     /** Verdicts from decide(). */
     public const ALLOW    = 'allow';
     public const APPROVAL = 'approval';
@@ -132,6 +147,29 @@ class ShiftAuthorityService
                 && (bool) $user->hasMobilePermission(self::RULES_PERMISSION);
         }
         return method_exists($user, 'hasPermission') && (bool) $user->hasPermission(self::RULES_PERMISSION);
+    }
+
+    /**
+     * 👥 May this person add/remove people from the USERS LIST?
+     *
+     * The list is `t_ops_attendance_visibility`, read by BOTH the Shift Planner
+     * (`User::shiftPlannerRoster()`) and the Attendance screens — so one toggle moves a
+     * person on or off both at once. That is exactly what the owner asked for, and why
+     * the write is gated in ONE place: `AttendanceController::updateUserVisibility`,
+     * which every surface (planner web, planner mobile, the People & Rider List page)
+     * goes through.
+     *
+     * ⚠ A read-only account never passes, whatever the permission says.
+     */
+    public function canManageRoster($user, bool $mobile = false): bool
+    {
+        if (!$user) return false;
+        if (method_exists($user, 'isReadOnly') && $user->isReadOnly()) return false;
+        if ($mobile) {
+            return method_exists($user, 'hasMobilePermission')
+                && (bool) $user->hasMobilePermission(self::ROSTER_PERMISSION);
+        }
+        return method_exists($user, 'hasPermission') && (bool) $user->hasPermission(self::ROSTER_PERMISSION);
     }
 
     /** The whole rule row for one person, with the wide-open defaults for anyone unlisted. */

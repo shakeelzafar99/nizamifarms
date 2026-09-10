@@ -1267,15 +1267,19 @@ class CustomerCreditService
         // Where the other side of the entry goes depends on where the money
         // already is:
         //
-        //  · cancellation — the customer paid, we banked it, and the ledger
-        //    already called it revenue. Nothing new arrives; we are only
-        //    re-labelling revenue we can no longer keep as money we owe. So the
-        //    other side is Sales Revenue (un-recognised) and the bank is left
-        //    exactly as it is. Posting to a bank here would count the same
+        //  · cancellation, and a RETURNED order — the customer paid, we banked
+        //    it, and the ledger already called it revenue. Nothing new arrives;
+        //    we are only re-labelling revenue we can no longer keep as money we
+        //    owe. So the other side is Sales Revenue (un-recognised) and the bank
+        //    is left exactly as it is. Posting to a bank here would count the same
         //    rupees twice, because the original payment row is still applied.
         //
         //  · everything else — genuinely new money landing in an account.
-        $isReclassification = $credit->source === CustomerCreditModel::SOURCE_CANCELLATION;
+        $isReclassification = in_array(
+            $credit->source,
+            CustomerCreditModel::RECLASSIFICATION_SOURCES,
+            true
+        );
         $to = $isReclassification
             ? ConfigModel::getSalesRevenueAccount()
             : $this->holdingAccount($order, $mode);

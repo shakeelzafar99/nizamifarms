@@ -10,6 +10,7 @@
         \App\Models\FIN\LedgerModel::TYPE_SETTLEMENT => 'Settlement', \App\Models\FIN\LedgerModel::TYPE_TRANSFER => 'Transfer',
         \App\Models\FIN\LedgerModel::TYPE_ADJUSTMENT => 'Adjustment', \App\Models\FIN\LedgerModel::TYPE_SALARY_ADVANCE => 'Salary Advance',
         \App\Models\FIN\LedgerModel::TYPE_SALARY_PAYMENT => 'Salary', \App\Models\FIN\LedgerModel::TYPE_OPENING_BALANCE => 'Opening Balance',
+        \App\Models\FIN\LedgerModel::TYPE_ORDER_REFUND => 'Order Refund',
     ];
     $balNeg = $balance < -0.005;
     $balHeld = $balance > 0.005;

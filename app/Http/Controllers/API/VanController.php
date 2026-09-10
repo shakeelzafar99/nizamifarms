@@ -1123,6 +1123,23 @@ class VanController extends Controller
                 ->merge(collect($van->todaysDrivers())->pluck('user_id'))
                 ->map(fn ($v) => (int) $v)->filter()->unique()->values();
 
+            /**
+             * 🔧🚦 IS THE DRIVER HIMSELF ON A WORKSHOP ERRAND (10-Sep-2026)? A van goes in for
+             *    service too, and when it does, everything on this card — the meet-up, the
+             *    riders waiting for boxes, the return estimate — is about to stop meaning what
+             *    it says. Same `tripsFor()` the live rider card reads, asked ONCE for every
+             *    driver rather than per card.
+             * ⚠ No ETA on a polling board (see `attachWorkshopTrips`) — the minute lives on
+             *   the live rider card, which is not on a five-second loop.
+             */
+            $driverTrips = [];
+            try {
+                $driverTrips = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->tripsFor($driverIds->all(), null, false);
+            } catch (\Throwable $e) {
+                // Context, never a reason the board fails to render.
+            }
+
             $warm = [];
             $warmReturn = [];
             $vans = [];
@@ -1182,7 +1199,11 @@ class VanController extends Controller
                     $rpos = $this->lastFix($g['user_id']);
                     $eta  = null;
                     // Same stale rule as the van's own ETA above.
+                    // 🔧 …and no arrival time at all for a man on a workshop errand: he is
+                    //    not coming here, so the figure would be the board inventing a
+                    //    meeting. Same rule `enrichWithRiderState` applies for the driver.
                     if ($rpos && VanService::gpsState($rpos) !== 'stale'
+                        && empty($g['workshop_trip'])
                         && $stop && $stop['latitude'] !== null) {
                         // ⭐ AFTER HIS REMAINING STOPS. A rider four drops from
                         //    finishing used to read "6 min" here, so the store and
@@ -1198,6 +1219,9 @@ class VanController extends Controller
                         'orders'   => $g['total'],
                         'handed'   => $g['handed'],
                         'packets'  => $g['packets'],
+                        // 🔧 …and whether he can come at all. `manifest()` attached it, so the
+                        //    store board and the driver's own panel read one derivation.
+                        'workshop_trip' => $g['workshop_trip'] ?? null,
                         'eta'      => $eta,
                         'has_gps'  => $rpos !== null,
                         // 🗺 His marker on the live map, and how far he still has
@@ -1238,6 +1262,9 @@ class VanController extends Controller
                     'driver_user_id' => $did,
                     'driver_name'    => $name,
                     'mode'           => $mode,
+                    // 🔧 The driver's own errand — null unless he is actually on one.
+                    'driver_trip'    => (($t = $driverTrips[(int) $did] ?? null) && !empty($t['is_active']))
+                                        ? $t : null,
                     'headline'       => $this->panelHeadline($mode, $name, $stop, $m),
                     // Present only while he is genuinely on his way back.
                     'return_eta'     => $returnEta,
@@ -1355,6 +1382,30 @@ class VanController extends Controller
             if (!empty($g['complete'])) {
                 $g['state'] = 'collected';
                 $g['detail'] = 'collected';
+                continue;
+            }
+
+            /**
+             * 🔧 HE IS ON A WORKSHOP ERRAND (Sep-10 2026), so he is not converging on this
+             *    rendezvous at all. Answered HERE, before the arithmetic, for two reasons:
+             *
+             *    ⭐ the derived words must never contradict the errand — "2 stops first ·
+             *      ~4:32" beside "at Ali Motors" is the board telling a driver to wait for
+             *      a man who is not coming;
+             *    ⭐ and the ETA it skips is a chained, cache-warming calculation done per
+             *      rider on a POLLING endpoint — a meeting that cannot happen is not worth
+             *      computing an arrival time for.
+             *
+             * ⚠ `position` is still sent: where he actually is remains true, and the
+             *   driver's live map is honest about it.
+             */
+            if (!empty($g['workshop_trip'])) {
+                $g['state']           = 'workshop';
+                $g['detail']          = $g['workshop_trip']['label'] ?? 'at the workshop';
+                $g['remaining_stops'] = 0;
+                $g['eta']             = null;
+                $g['position']        = $this->positionPayload($this->lastFix((int) $g['user_id']),
+                    $stop['latitude'] ?? null, $stop['longitude'] ?? null);
                 continue;
             }
 

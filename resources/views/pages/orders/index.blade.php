@@ -1731,7 +1731,22 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
            : (open > 0 ? ('📋 ' + open + ' assigned') : '✓ On duty · free');
     var cls = '';
     var gpsLost = (typeof riderGpsLostMidDelivery === 'function') && riderGpsLostMidDelivery(gps, disp);
-    if(status === 'left_without_dispatch'){ st = '⚠ Left w/o dispatch · ' + (disp.undispatched_count||0); cls = 'nfrc-red'; }
+    /* 🔧⭐⭐ THE WORKSHOP ERRAND, on the card the owner asked for (10-Sep-2026).
+         Checked BEFORE everything else, including the red warning and the GPS-lost line:
+         a man riding to the workshop has left the office without dispatching and his GPS is
+         moving away, which is exactly what those two alarms look for — and here it is not an
+         alarm, it is the instruction he was given. Amber, because "do not give this man an
+         order" is the one thing the dispatcher must read off this row.
+         ⚠ The sentence is the SERVER's (`workshop_trip.label`) — the same words the store
+         phone, the van board and the push all use, so the ETA cannot be phrased two ways. */
+    var wsTrip = disp.workshop_trip || null;
+    if(status === 'workshop_en_route' || status === 'at_workshop'){
+      st = (wsTrip && wsTrip.label) ? wsTrip.label
+         : (status === 'at_workshop' ? '🔧 At the workshop' : '🔧 Going to the workshop');
+      if(open > 0){ st += ' · ' + open + ' assigned'; }
+      cls = 'nfrc-amber';
+    }
+    else if(status === 'left_without_dispatch'){ st = '⚠ Left w/o dispatch · ' + (disp.undispatched_count||0); cls = 'nfrc-red'; }
     else if(gpsLost){ st = '📍 GPS lost · ' + (disp.dispatched_count||0) + ' left'; cls = 'nfrc-amber'; dot = '#ef4444'; }
     else if(status === 'on_route'){ st = '🚚 On route · ' + (disp.dispatched_count||0) + ' left'; }
     else if(status === 'returning'){ var m = (disp.return_to_office && disp.return_to_office.minutes != null) ? disp.return_to_office.minutes : null; st = '↩️ Returning' + (m != null ? (' · ~' + m + 'min') : '') + (disp.undispatched_count > 0 ? (' · ' + disp.undispatched_count + ' to go') : ''); cls = 'nfrc-blue'; }
@@ -1746,6 +1761,14 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
     var offCls = offDuty ? ' nfrc-off' : '';
     var offTag = offDuty ? '<span class="nfrc-offtag" title="No attendance check-in today">off duty</span>' : '';
     var rowTitle = 'Click to show only ' + name + "'s orders" + (offDuty ? ' — not checked in today' : '');
+    /* The hover line spells the errand out in full: where, since when, and the ETA. The chip
+       itself has to stay short enough to sit in a 300px card. */
+    if(wsTrip){
+      rowTitle = (wsTrip.label || 'At the workshop')
+        + (wsTrip.visit_time ? ' · appointment ' + wsTrip.visit_time : '')
+        + (wsTrip.vehicle_name ? ' · ' + wsTrip.vehicle_name : '')
+        + ' — do not assign him orders.';
+    }
     return '<div class="nfrc-row '+cls+offCls+selCls+'" data-rider="'+id+'" onclick="nfFilterTableByRider('+id+", '"+safe+"')\" title=\""+esc(rowTitle)+"\">"
       + '<span class="nfrc-dot" style="background:'+dot+'"></span>'
       + '<span class="nfrc-nm" title="'+esc(name)+'">'+esc(name)+'</span>'
@@ -2824,6 +2847,11 @@ document.addEventListener('DOMContentLoaded', function(){
 {{-- Ignore-reason picker. Included unconditionally: the approvals drawer is gated on
      $canViewShopify but the Shopify table's own Ignore button is not, and both use it. --}}
 @include('pages.orders.partials.ignore-reason-modal')
+{{-- Returning a delivered order (Sep-2026). Included unconditionally so the
+     script that defines window.nfCanReturnOrders always runs; the modal itself
+     only opens from the status pill, which is only clickable when that flag is
+     true and the server re-checks the permission on both of its endpoints. --}}
+@include('pages.orders.partials.return-modal')
 
 @endsection
 
@@ -8699,7 +8727,17 @@ function openQuickStatusChange(orderId, currentStatus) {
                         body: JSON.stringify(payload)
                 });
                 const j = await res.json();
-                    
+
+                    // RETURNS (Sep-2026): "Returned" picked from this list on a delivered
+                    // order that has NO invoice (auto-post off) — the only delivered case
+                    // that reaches this picker. The server refuses and names the form;
+                    // open it here so the picker is a door, not a dead end.
+                    if (!j.success && j.error_type === 'use_return_form' && typeof window.nfOpenReturnForm === 'function') {
+                        document.getElementById('quickStatusModal')?.remove();
+                        window.nfOpenReturnForm(orderId);
+                        return;
+                    }
+
                     // Check if confirmation is required (ledger will be reversed)
                     if (!j.success && j.requires_confirmation && j.confirmation_data) {
                         const data = j.confirmation_data;
@@ -12560,7 +12598,9 @@ function getCellContent(order, columnId) {
                 'processing': { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700', icon: '' },
                 'completed': { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: '' },
                 'cancelled': { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', icon: '' },
-                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '' },
+                // 'refunded' is the code behind the label "Returned" (Sep-2026) —
+                // reused because it already sits in every closed-status list.
+                'refunded': { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700', icon: '↩' },
                 'on-hold': { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', icon: '' },
                 'new': { bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700', icon: '' },
                 'out_for_delivery': { bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-700', icon: '' },
@@ -12574,11 +12614,31 @@ function getCellContent(order, columnId) {
             const restrictStatusChange = hasLedgerForStatus && isDeliveredForStatus;
             
             if (restrictStatusChange) {
-                // Show non-clickable badge with lock indicator
+                // A delivered, invoiced order is locked out of the status picker on
+                // purpose. Sep-2026: there is now exactly ONE thing that may still
+                // happen to it — the customer brings it back — so for the people
+                // allowed to take a return the lock becomes that door instead of a
+                // dead end. Everyone else keeps the plain locked badge.
+                const label = status === 'refunded'
+                    ? 'Returned'
+                    : status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+                if (window.nfCanReturnOrders) {
+                    return `<button type="button" onclick="event.stopPropagation(); nfOpenReturnForm(${order.id})" class="inline-flex items-center rounded text-xs font-medium border ${config.bg} ${config.border} ${config.text} hover:opacity-80 transition cursor-pointer" style="padding: 2px 6px; gap: 2px; line-height: 1.3;" title="Delivered and invoiced — click to return this order">
+                                ${label}
+                                <span style="font-size: 10px;">↩</span>
+                            </button>`;
+                }
                 return `<span class="inline-flex items-center rounded text-xs font-medium border ${config.bg} ${config.border} ${config.text} opacity-75" style="padding: 2px 6px; gap: 2px; line-height: 1.3;" title="Status change restricted for delivered orders with ledger entry">
                             ${config.icon ? '<span style="font-size: 10px;">' + config.icon + '</span>' : ''}
-                            ${status.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}
+                            ${label}
                             <span style="font-size: 10px;">🔒</span>
+                        </span>`;
+            }
+
+            // A returned order is never re-opened from the pill either.
+            if (status === 'refunded') {
+                return `<span class="inline-flex items-center rounded text-xs font-medium border ${config.bg} ${config.border} ${config.text}" style="padding: 2px 6px; gap: 2px; line-height: 1.3;" title="This order was returned">
+                            <span style="font-size: 10px;">↩</span> Returned
                         </span>`;
             }
             

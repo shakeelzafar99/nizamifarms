@@ -75,14 +75,16 @@ ok('a booker who is not a planner exists (Qasim\'s shape)', (bool) $booker, null
 // A plain rider with a bike, not on the ladder.
 $res = new VehicleResolver();
 $rider = null; $riderVid = 0;
+// ⚠ COMPANY machine (owner ruling, 10-Sep): `schedule()` refuses a personal bike outright.
+$vsvcSeam = new \App\Services\Riders\VehicleService();
 foreach (DB::table('t_ops_rider_profile')->where('active', 1)->pluck('user_id') as $uid) {
     if (DB::table(A::T_AUTHORITY)->where('user_id', $uid)->exists()) continue;
-    $v = $res->currentVehicleFor((int) $uid);
-    if (!$v) continue;
+    $v = (int) ($res->currentVehicleFor((int) $uid) ?: 0);
+    if (!$v || !$vsvcSeam->isTrackedId($v)) continue;
     $u = User::find((int) $uid);
     if ($u && (int) $u->is_active === 1) { $rider = $u; $riderVid = (int) $v; break; }
 }
-ok('a plain rider with a bike exists', (bool) $rider, null, true);
+ok('a plain rider with a COMPANY bike exists', (bool) $rider, null, true);
 if (!$booker || !$rider || !$top) { echo "fixtures missing — stopping\n"; exit(1); }
 
 $soon = now()->addDays(3)->format('Y-m-d');

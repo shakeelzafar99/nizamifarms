@@ -264,11 +264,31 @@ class BikeServiceClock
             $type = app(\App\Services\Riders\MaintenanceTypeService::class)
                 ->find($req->maintenance_type_id ?? null);
 
-            $interval = (new \App\Services\Riders\ServiceIntervalResolver())->intervalFor(
+            /**
+             * ⭐⭐ CLASS-AWARE (Sep-2026). The number frozen here must be the one the
+             *    manager was looking at, and on a van that is the VAN's figure. Passing
+             *    the machine's class is the whole difference: before this, approving a
+             *    van claim froze a bike interval onto a permanent record.
+             */
+            $veh   = new \App\Services\Riders\VehicleService();
+            $class = $veh->classOf($vehicleId ? (int) $vehicleId : null);
+
+            $r = (new \App\Services\Riders\ServiceIntervalResolver())->resolveFor(
                 $vehicleId ? (int) $vehicleId : null,
-                $type ? (int) $type->interval_km : null,
+                $class,
+                $type,
                 (int) $req->requester_user_id
             );
+
+            /**
+             * ⚠ A TIME-BASED job has no kilometre due-point, so nothing is frozen —
+             *   `service_due_km` stays null rather than being filled with a figure in
+             *   the wrong unit. The countdown for those jobs is derived from the
+             *   service DATE, which is already on the row and cannot go stale.
+             */
+            if (($r['basis'] ?? 'km') !== 'km') return;
+
+            $interval = (int) ($r['km'] ?? 0);
             if ($interval <= 0) return;
 
             DB::table('t_req_master')->where('id', $req->id)

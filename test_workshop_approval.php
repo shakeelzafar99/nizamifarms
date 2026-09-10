@@ -77,15 +77,22 @@ ok('a BOOKER exists who is not a planner (Qasim-shaped)', (bool) $booker, null, 
 ok('a PLANNER exists (Shabib / Farooq / Taimur-shaped)', (bool) $planner, null, true);
 if (!$booker || !$planner) { echo "\nfixtures missing — stopping.\n"; exit(1); }
 
-$res = new VehicleResolver();
+/**
+ * ⚠ COMPANY machines only (owner ruling, 10-Sep-2026): a workshop day cannot be booked for a
+ *   personal bike at all, so a fixture that grabbed the first rider with ANY machine could pick
+ *   one and fail every assertion below for the right reason in the wrong place.
+ */
+$res  = new VehicleResolver();
+$vsvc = new \App\Services\Riders\VehicleService();
 foreach (DB::table('t_ops_rider_profile')->pluck('user_id') as $uid) {
-    if (!$res->currentVehicleFor((int) $uid)) continue;
+    $vv = (int) ($res->currentVehicleFor((int) $uid) ?: 0);
+    if (!$vv || !$vsvc->isTrackedId($vv)) continue;
     $u = User::find((int) $uid);
     if (!$u) continue;
     if (!$rider) { $rider = $u; continue; }
     if (!$otherRider && (int) $u->id !== (int) $rider->id) { $otherRider = $u; break; }
 }
-ok('two riders with machines exist', (bool) ($rider && $otherRider), null, true);
+ok('two riders with COMPANY machines exist', (bool) ($rider && $otherRider), null, true);
 if (!$rider || !$otherRider) { echo "\nfixtures missing — stopping.\n"; exit(1); }
 
 $vid  = (int) $res->currentVehicleFor((int) $rider->id);
@@ -309,6 +316,82 @@ ok('a place that is not ticked as a workshop is refused',
         ['location_id' => $notWs])['message'], 'not ticked as a workshop'), true);
 
 // ═══════════════════════════════════════════════════════════════════════════════
+head('§5b 📍 "will he mark attendance at his regular place, or at the workshop?" (owner ask 10-Sep)');
+
+/**
+ * ⭐⭐ THE DECISION THAT USED TO BE INFERRED. Before this, picking a registered workshop MEANT
+ *    "his day starts there" — two different questions fused into one control. A planner who
+ *    wanted "check in at LaCarne as usual, ride over at 11" could not say so, and the rider was
+ *    told his place had changed when it had not.
+ */
+$attProp = (int) $wv->schedule($booker, ['vehicle_id' => $vid, 'user_id' => $rider->id,
+                                         'visit_date' => $soon, 'location_id' => $wsA,
+                                         'confirm_replace' => 1])['visit_id'];
+$card = collect($wv->pendingApprovals($planner))->firstWhere('id', $attProp);
+ok('the approval card carries the question', isset($card['attendance']), true);
+ok('  …it IS asked for a future day', $card['attendance']['asked'] ?? null, true);
+ok('  …a workshop is chosen, so it can be pinned', $card['attendance']['can_pin'] ?? null, true);
+ok('  ⭐ …and it names his REGULAR place, or the planner cannot weigh the two',
+   is_string($card['attendance']['regular_label'] ?? null)
+   && $card['attendance']['regular_label'] !== '', true);
+ok('  …the default is the pre-10-Sep inference, so an untouched card behaves as before',
+   $card['attendance']['value'] ?? null, 'workshop');
+
+/* ⭐ "He checks in as usual and rides over" — the answer that had no way of being given. */
+$rA = $wv->approve($planner, $attProp, ['attendance_at' => 'regular']);
+ok('approving with "at his regular place" succeeds', $rA['ok'], true);
+ok('  ⭐ …and NOTHING is pinned, even though a workshop was picked', $pinRow($attProp), null);
+ok('  …the message does not claim his place moved',
+   str_contains((string) $rA['message'], 'checks in at the workshop'), false);
+/**
+ * ⚠⚠ FOUND ON THE DEVICE (10-Sep). The planner's own answer came back as
+ *    "⚠ His check-in place was not changed" — a decision reported as a failure. The ⚠ is
+ *    reserved for a pin that was WANTED and did not happen.
+ */
+ok('  ⚠ …and a DECISION is never reported as a warning',
+   str_contains((string) $rA['message'], '⚠'), false);
+ok('  ⭐ …it states what will actually happen that morning',
+   str_contains((string) $rA['message'], 'checks in as usual'), true);
+
+/* …and the other answer still does what it always did. */
+$attProp2 = (int) $wv->schedule($booker, ['vehicle_id' => $vid, 'user_id' => $rider->id,
+                                          'visit_date' => $soon, 'location_id' => $wsA,
+                                          'confirm_replace' => 1])['visit_id'];
+ok('approving with "at the workshop" pins his day',
+   $wv->approve($planner, $attProp2, ['attendance_at' => 'workshop'])['ok'], true);
+ok('  …to that workshop', (int) ($pinRow($attProp2)->location_id ?? 0), $wsA);
+
+/* ⚠ A typed workshop name has no coordinates to measure an arrival against. */
+$attProp3 = (int) $wv->schedule($booker, ['vehicle_id' => $vid2, 'user_id' => $otherRider->id,
+                                          'visit_date' => $soon, 'workshop' => 'Ali Motors',
+                                          'confirm_replace' => 1])['visit_id'];
+$rC = $wv->approve($planner, $attProp3, ['attendance_at' => 'workshop']);
+ok('"at the workshop" with no REGISTERED workshop is refused', $rC['ok'], false);
+ok('  …and says what to do about it',
+   str_contains((string) $rC['message'], 'pick a registered workshop'), true);
+$cardC = collect($wv->pendingApprovals($planner))->firstWhere('id', $attProp3);
+ok('  …the card had already said the choice was unavailable',
+   [$cardC['attendance']['can_pin'] ?? null, $cardC['attendance']['value'] ?? null], [false, 'regular']);
+
+/**
+ * ⚠⚠ TODAY IS NOT A QUESTION. He has already started his day somewhere; moving his check-in
+ *    place backwards would mark him late — or remote — for a place nobody had told him to go
+ *    to when he clocked in. `book()` forces `regular` for today, and `approve()` refuses to
+ *    take anything else from a client that sends it anyway.
+ */
+$attToday = (int) $wv->schedule($booker, ['vehicle_id' => $vid, 'user_id' => $rider->id,
+                                          'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'),
+                                          'location_id' => $wsA, 'confirm_replace' => 1])['visit_id'];
+$cardT = collect($wv->pendingApprovals($planner))->firstWhere('id', $attToday);
+ok('a SAME-DAY request does not ask the question', $cardT['attendance']['asked'] ?? null, false);
+ok('  …and answers "his regular place"', $cardT['attendance']['value'] ?? null, 'regular');
+ok('  ⭐ …and sending "workshop" anyway does NOT move his check-in place',
+   (function () use ($wv, $planner, $attToday, $pinRow) {
+       $wv->approve($planner, $attToday, ['attendance_at' => 'workshop']);
+       return $pinRow($attToday);
+   })(), null);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 head('§6 declining — the reason travels back, the rider never knew');
 
 $dec = (int) $wv->schedule($booker, ['vehicle_id' => $vid2, 'user_id' => $otherRider->id,
@@ -392,33 +475,93 @@ ok('  …and a planner can still approve it', (function () use ($wv, $planner, $
     return $r['ok'] && $statusOf($x) === 'scheduled';
 })(), true);
 
+/**
+ * ⭐⭐ OWNER RULING, 10-Sep-2026: **THE DAY ITSELF HAS NO CUT-OFF.**
+ *
+ * *"for same day bookings no need for cut off time unless the rider didnt go at all and
+ * checked out then we should send a notification to the managers and it should end there."*
+ *
+ * ⚠⚠ THIS REVERSES THE THREE ASSERTIONS THAT USED TO LIVE HERE, and the reversal is the
+ *    point, so read why before putting them back. The cut-off protects ONE promise: that a
+ *    rider hears about a change to WHERE HE CHECKS IN before he leaves home. Once the day has
+ *    arrived that promise is already kept or already broken, and nothing an approver does can
+ *    change it. Holding a same-day breakdown to "should have been decided by 07:00" meant a
+ *    bike that broke at 11:00 could not be sent in until tomorrow — the case this whole round
+ *    exists for.
+ *
+ * ⚠ Note the clock: `$cut` for TOMORROW falls at 07:00 TOMORROW, so the instant we step past
+ *   it, "tomorrow" has become TODAY. That is exactly the boundary being tested.
+ */
 \Carbon\Carbon::setTestNow($cut->copy()->addMinute());
 $sweep = $wv->escalateProposals();
-ok('one minute AFTER the cut-off it is auto-DECLINED', in_array($esc, $sweep['declined'], true), true);
-ok('  …never auto-approved', $statusOf($esc), 'declined');
-ok('  ⚠ …and approve() refuses on the same clock', (function () use ($wv, $planner, $booker, $vid, $rider, $tm, $wsA, $cut) {
-    /**
-     * ⚠ The proposal is now BOOKED BEFORE the cut-off and only DECIDED after it — which is
-     *   the real shape of this failure: a planner opening the card too late. Since 7-Sep a
-     *   proposal cannot be created past its own cut-off at all (`schedule()` refuses it as
-     *   dead on arrival), so building the fixture the old way returned no visit_id.
-     */
+ok('one minute after the old cut-off — the day has arrived, so it SURVIVES',
+   in_array($esc, $sweep['declined'], true), false);
+ok('  …still a live proposal for the planners', $statusOf($esc), 'proposed');
+ok('  …and there is no deadline to print on their card',
+   (function () use ($wv, $planner, $esc) {
+       foreach ($wv->pendingApprovals($planner) as $r) {
+           if ((int) $r['id'] === $esc) return $r['approve_by'];
+       }
+       return 'not-found';
+   })(), null);
+ok('  ⚠ …and approve() now ACCEPTS it on the day', (function () use ($wv, $planner, $booker, $vid, $rider, $tm, $wsA, $cut, $statusOf) {
     \Carbon\Carbon::setTestNow($cut->copy()->subMinutes(30));
     $y = (int) $wv->schedule($booker, ['vehicle_id' => $vid, 'user_id' => $rider->id,
                                        'visit_date' => $tm, 'location_id' => $wsA, 'confirm_replace' => 1])['visit_id'];
     \Carbon\Carbon::setTestNow($cut->copy()->addMinute());
     $r = $wv->approve($planner, $y);
-    return !$r['ok'] && str_contains($r['message'], 'Too late');
+    return $r['ok'] && $statusOf($y) === 'scheduled';
 })(), true);
-ok('  …the planners’ card says when to decide by',
-   (function () use ($wv, $planner) {
-       $q = $wv->pendingApprovals($planner);
-       return $q && !empty($q[0]['approve_by']);
-   })(), true);
-ok('  …with a reason the booker can read',
-   str_contains((string) DB::table(WV::T_VISIT)->where('id', $esc)->value('decline_reason'), 'Not approved in time'), true);
-ok('  …and by nobody, because it was time that killed it',
-   DB::table(WV::T_VISIT)->where('id', $esc)->value('declined_by'), null);
+
+/**
+ * ⭐⭐ A FUTURE day still has a real cut-off — enforced AT THE DOOR, which is where it always
+ *    actually mattered.
+ *
+ * ⚠⚠ AND A CORRECTION TO WHAT THIS SECTION USED TO CLAIM. The sweep's candidate query is
+ *    `visit_date <= today`, so a proposal for a FUTURE day was never a candidate for the
+ *    auto-decline in the first place — the cut-off branch only ever fired for a visit dated
+ *    today. Now that today is exempt (owner ruling), that branch is unreachable in practice
+ *    and the sweep's real job is closing days that have PASSED. Both facts are asserted here
+ *    rather than left to be rediscovered: a probe was needed to see it, because the old
+ *    assertion passed for the wrong reason (its "future" visit had become today).
+ */
+ok('a future day is still refused at the door once its cut-off has gone', (function () use ($wv, $booker, $vid2, $otherRider, $wsA) {
+    $day = \Carbon\Carbon::today()->addDays(2)->format('Y-m-d');
+    /**
+     * ⚠ BOTH knobs are needed to put the cut-off on the PREVIOUS EVENING, and it took a probe
+     *   to see why: cut-off = min(shift start, appointment) − lead. This rider's shift starts
+     *   at 13:00, so even a 12-hour lead lands at 01:00 ON the visit day. A 06:00 appointment
+     *   is what moves the minimum early enough for 12 hours to reach back over midnight.
+     */
+    DB::table('t_fin_config')->updateOrInsert(['config_key' => 'WORKSHOP_APPROVAL_LEAD_MIN'],
+                                              ['config_value' => '720']);   // 12h
+    // 06:00 − 12h = 18:00 the evening before; stand one hour past it, day still in the future.
+    \Carbon\Carbon::setTestNow(\Carbon\Carbon::today()->addDay()->setTime(19, 0));
+    $r = $wv->schedule($booker, ['vehicle_id' => $vid2, 'user_id' => $otherRider->id,
+                                 'visit_date' => $day, 'visit_time' => '06:00',
+                                 'location_id' => $wsA, 'confirm_replace' => 1]);
+    $ok = empty($r['ok']) && str_contains((string) ($r['message'] ?? ''), 'Too late');
+    DB::table('t_fin_config')->where('config_key', 'WORKSHOP_APPROVAL_LEAD_MIN')
+        ->update(['config_value' => '60']);
+    return $ok;
+})(), true);
+
+/**
+ * ⚠⚠ AND THE DAY THAT SIMPLY PASSED. With TODAY exempt from the cut-off, a proposal nobody
+ *    answered would otherwise sit in the planners' queue for ever — the sweep used to catch it
+ *    on its way through the cut-off test. It is now closed explicitly, with its own reason.
+ */
+ok('a proposal whose day has gone is closed with a reason', (function () use ($wv, $booker, $vid2, $otherRider, $wsA, $statusOf) {
+    \Carbon\Carbon::setTestNow(\Carbon\Carbon::today()->setTime(5, 0));
+    $p = (int) ($wv->schedule($booker, ['vehicle_id' => $vid2, 'user_id' => $otherRider->id,
+                                        'visit_date' => \Carbon\Carbon::today()->format('Y-m-d'),
+                                        'location_id' => $wsA, 'confirm_replace' => 1])['visit_id'] ?? 0);
+    if (!$p) return 'no fixture';
+    \Carbon\Carbon::setTestNow(\Carbon\Carbon::today()->addDay()->setTime(9, 0));   // the day after
+    $sw = $wv->escalateProposals();
+    return in_array($p, $sw['declined'], true) && $statusOf($p) === 'declined'
+        && str_contains((string) DB::table(WV::T_VISIT)->where('id', $p)->value('decline_reason'), 'day passed');
+})(), true);
 
 /**
  * ⚠ A proposal made TODAY for TODAY, before the cut-off, survives the sweep. Killing it in the
@@ -555,8 +698,31 @@ head('§12 the TAP — a manager’s push must land somewhere he can act');
  */
 $fb  = file_get_contents(__DIR__ . '/app/Services/FirebaseService.php');
 $rt  = file_get_contents(__DIR__ . '/../NizamiFarmsMobile/src/services/notificationService.js');
+/**
+ * ⚠⚠ THE INTENT, NOT A HEAD-COUNT. This asserted `substr_count(...) === 8`, so it went red the
+ *    moment the trip round added its own manager pushes — reporting "16, want 8" as if a
+ *    regression, when in fact every one of the new ones was correctly tagged. A test that has to
+ *    be edited whenever the feature grows teaches people to edit it without reading it.
+ *
+ * What actually matters: inside `notifyWorkshopVisit`, EVERY push aimed at a permission GROUP
+ * carries `$mgr` (which is `$data + ['audience' => 'manager']`), because a manager tapping one
+ * must land on a screen he can act on. So: find the method, find every group send, and check
+ * none of them passes the bare `$data`.
+ */
+$wsMethod = (function (string $src): string {
+    $i = strpos($src, 'public function notifyWorkshopVisit');
+    if ($i === false) return '';
+    $depth = 0; $started = false;
+    for ($j = $i; $j < strlen($src); $j++) {
+        if ($src[$j] === '{') { $depth++; $started = true; }
+        elseif ($src[$j] === '}') { $depth--; if ($started && $depth === 0) return substr($src, $i, $j - $i + 1); }
+    }
+    return '';
+})($fb);
+ok('notifyWorkshopVisit was found to inspect', $wsMethod !== '', null, true);
+preg_match_all('/sendToPermissionGroup\(\s*\$?\w+\s*,\s*\[[^\]]*\]\s*,\s*\$(\w+)/s', $wsMethod, $grp);
 ok('every manager-bound workshop push is tagged for the router',
-   substr_count($fb, "\$mgr + ['event'"), 8);
+   [count($grp[1]) >= 8, array_values(array_unique($grp[1]))], [true, ['mgr']]);
 // The first `], $…` after each rider notifyUser is that call's own data argument.
 preg_match_all('/notifyUser\(\$riderId, \[[^\]]*\], \$(\w+)/', $fb, $riderArgs);
 ok('  …and none of the RIDER pushes is (his tap still opens My Vehicle)',

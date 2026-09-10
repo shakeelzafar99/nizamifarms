@@ -2,6 +2,7 @@
 
 namespace App\Services\Riders;
 
+use App\Models\Riders\MaintenanceTypeModel;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -40,6 +41,28 @@ use Illuminate\Support\Facades\DB;
  * ⭐ Real per-bike-per-job schedules ("this bike does oil every 800 km") need a row per
  *   pair, not a scalar — that is Phase 2 (`t_ops_vehicle_service_schedule`). It slots in
  *   as step 0 here and no consumer has to change again.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ⭐⭐ SEP-2026: PHASE 2 LANDED, AND THE QUESTION GREW A CLASS.
+ *
+ * `resolveFor()` is now the real entry point and the order is:
+ *
+ *   0. this VEHICLE's own row for this JOB   (t_ops_vehicle_service_schedule)
+ *   1. the JOB's standard FOR THIS CLASS     (bike vs van columns on the type)
+ *   2. the bike's legacy scalar   ┐ km only, kept read-only so nobody's old
+ *   3. the rider's legacy scalar  │ setting silently disappears. All three
+ *   4. the company config key     ┘ writers are retired; these are fallbacks.
+ *   5. COMPANY_DEFAULT_KM
+ *
+ * Two things follow from the class, and they are the whole point:
+ *   • a van is judged against van numbers, never a bike's;
+ *   • a job with no number for this class has NO countdown and raises NO alert,
+ *     instead of quietly borrowing the other class's figure.
+ *
+ * ⚠⚠ STEPS 2-5 ARE KILOMETRES, so they apply to km-based jobs ONLY. A time-based
+ *    job with no days figure is "as conditions" — falling back to a kilometre
+ *    number would silently change what the countdown MEANS, which is worse than
+ *    having no countdown.
  */
 class ServiceIntervalResolver
 {
@@ -57,6 +80,14 @@ class ServiceIntervalResolver
     public const DUE_SOON_KM = 150;
 
     /**
+     * The same idea for a TIME-based job (owner ruling, 10-Sep-2026: three days).
+     * ⚠ Deliberately NOT derived from DUE_SOON_KM — they are different units
+     *   answering to different judgement, and tying them together would make one
+     *   of the two move whenever the other was tuned.
+     */
+    public const DUE_SOON_DAYS = 3;
+
+    /**
      * ⭐ THE state rule, in ONE place (Aug-27 2026). `overdue` / `due_soon` / `ok` /
      *   `unknown` was decided by four separate hand-written ternaries (two in
      *   VehicleService, two in FleetFuelService), each carrying its own literal 150.
@@ -69,6 +100,150 @@ class ServiceIntervalResolver
         if ($dueInKm === null) return 'unknown';
         if ($dueInKm < 0) return 'overdue';
         return $dueInKm <= self::DUE_SOON_KM ? 'due_soon' : 'ok';
+    }
+
+    /** The same rule for a time-based job. Same four words, so consumers do not branch. */
+    public static function stateForDays(?int $dueInDays): string
+    {
+        if ($dueInDays === null) return 'unknown';
+        if ($dueInDays < 0) return 'overdue';
+        return $dueInDays <= self::DUE_SOON_DAYS ? 'due_soon' : 'ok';
+    }
+
+    /**
+     * ⭐⭐ THE ONE ANSWER, class-aware and basis-aware (Sep-2026).
+     *
+     * @param  ?int    $vehicleId  the machine, if the registry can name one
+     * @param  ?string $class      'bike' | 'van' — normally $vehicle->vtype
+     * @param  object|null $type   a maintenance type row (model or stdClass)
+     * @param  ?int    $riderId    for the legacy per-rider fallback only
+     *
+     * @return array{basis:string, km:?int, days:?int, has:bool, source:string,
+     *               from_type:bool, label:string, source_label:?string,
+     *               standard_km:?int, standard_days:?int}
+     */
+    public function resolveFor(?int $vehicleId, ?string $class, $type, ?int $riderId = null): array
+    {
+        $class = MaintenanceTypeModel::normaliseClass($class);
+
+        // The job's own standard for this class — and whether it applies at all.
+        $std = $this->standardFor($type, $class);
+        $basis = $std['basis'];
+
+        $blank = [
+            'basis' => $basis, 'km' => null, 'days' => null, 'has' => false,
+            'source' => 'none', 'from_type' => false,
+            'label' => MaintenanceTypeModel::intervalLabel($basis, null, null),
+            'source_label' => null,
+            'standard_km' => $std['km'], 'standard_days' => $std['days'],
+        ];
+
+        // Not offered to this kind of machine ⇒ there is nothing to answer.
+        if (!$std['applies']) {
+            return $blank;
+        }
+
+        // ── 0. this vehicle's own row for this job ────────────────────────────
+        $typeId = is_object($type) ? (int) ($type->id ?? 0) : 0;
+        $ovr = (new VehicleScheduleService())->forVehicleType($vehicleId, $typeId ?: null);
+        if ($ovr) {
+            if ($basis === MaintenanceTypeModel::BASIS_TIME && $ovr['days'] !== null) {
+                return $this->shape($basis, null, $ovr['days'], 'vehicle_job', false, $std);
+            }
+            if ($basis === MaintenanceTypeModel::BASIS_KM && $ovr['km'] !== null) {
+                return $this->shape($basis, $ovr['km'], null, 'vehicle_job', false, $std);
+            }
+        }
+
+        // ── 1. the job's standard for this class ──────────────────────────────
+        if ($basis === MaintenanceTypeModel::BASIS_TIME) {
+            // ⚠ No kilometre fallback for a time job — see the class note above.
+            return $std['days'] !== null
+                ? $this->shape($basis, null, $std['days'], 'type', true, $std)
+                : $blank;
+        }
+        if ($std['km'] !== null) {
+            return $this->shape($basis, $std['km'], null, 'type', true, $std);
+        }
+
+        // ── 2-5. the legacy kilometre fallbacks, for a job carrying no standard ──
+        $legacy = $this->explain($vehicleId, null, $riderId);
+        return $this->shape($basis, (int) $legacy['km'], null, $legacy['source'], false, $std);
+    }
+
+    /** One shape, built once, so no branch above can forget a key. */
+    private function shape(string $basis, ?int $km, ?int $days, string $source,
+                           bool $fromType, array $std): array
+    {
+        $out = [
+            'basis'        => $basis,
+            'km'           => $km,
+            'days'         => $days,
+            /**
+             * ⚠⚠ "HAS A SCHEDULE" MEANS A REAL ONE — a standard for this class, or this
+             *    vehicle's own exception. NOT the legacy kilometre fallback.
+             *
+             *    Caught by test_record_service_typed §7: with `has` set from "is there a
+             *    number", the company-default fallback gave *every* type a countdown, so
+             *    "Misc / Overhauling" and "General Repair" — the two jobs that exist
+             *    precisely BECAUSE they are done as conditions arise — appeared on the
+             *    schedule panel with an invented 1,000 km due point. Worse, the recorder
+             *    refuses those same jobs ("no due date to reset"), so the panel would have
+             *    shown a countdown nothing on earth could reset. That is the Brake Shoe
+             *    bug of Aug-3 turned inside out.
+             *
+             *    The number is still RETURNED for callers that legitimately want a
+             *    last-resort figure (the frozen `service_due_km`); it simply does not
+             *    count as the job having a schedule.
+             */
+            'has'          => in_array($source, ['type', 'vehicle_job'], true)
+                                && ($km !== null || $days !== null),
+            'source'       => $source,
+            'from_type'    => $fromType,
+            'label'        => MaintenanceTypeModel::intervalLabel($basis, $km, $days),
+            'source_label' => null,
+            'standard_km'   => $std['km'],
+            'standard_days' => $std['days'],
+        ];
+        $out['source_label'] = self::sourceLabel($out);
+        return $out;
+    }
+
+    /**
+     * The type's own standard for a class, tolerant of both a model and a raw
+     * stdClass from a `DB::table()` select — the fleet screens use the latter for
+     * speed, and both must reach the same answer.
+     *
+     * @return array{applies:bool, basis:string, km:?int, days:?int}
+     */
+    private function standardFor($type, string $class): array
+    {
+        if (!$type) {
+            return ['applies' => true, 'basis' => MaintenanceTypeModel::BASIS_KM,
+                    'km' => null, 'days' => null];
+        }
+        if ($type instanceof MaintenanceTypeModel) {
+            $s = $type->scheduleForClass($class);
+            return ['applies' => $type->appliesToClass($class), 'basis' => $s['basis'],
+                    'km' => $s['km'], 'days' => $s['days']];
+        }
+
+        // Raw row. Missing columns = the migration has not run ⇒ bike numbers for
+        // everyone, which is exactly the pre-feature behaviour.
+        $applies = $type->applies_to ?? MaintenanceTypeModel::APPLIES_BIKE;
+        $basis   = $type->basis ?? MaintenanceTypeModel::BASIS_KM;
+        $ok = ($applies === MaintenanceTypeModel::APPLIES_BOTH) || ($applies === $class);
+
+        $pos = fn ($v) => ($v !== null && (int) $v > 0) ? (int) $v : null;
+        if ($basis === MaintenanceTypeModel::BASIS_TIME) {
+            $d = $class === MaintenanceTypeModel::CLASS_VAN
+                ? ($type->interval_days_van ?? null) : ($type->interval_days ?? null);
+            return ['applies' => $ok, 'basis' => $basis, 'km' => null, 'days' => $pos($d)];
+        }
+        $km = $class === MaintenanceTypeModel::CLASS_VAN
+            ? ($type->interval_km_van ?? null) : ($type->interval_km ?? null);
+        return ['applies' => $ok, 'basis' => MaintenanceTypeModel::BASIS_KM,
+                'km' => $pos($km), 'days' => null];
     }
 
     private static array $vehicleMemo = [];
@@ -184,6 +359,9 @@ class ServiceIntervalResolver
     public static function sourceLabel(array $explained): ?string
     {
         switch ($explained['source'] ?? '') {
+            // ⭐ Sep-2026: the real per-vehicle per-job exception. Worth naming
+            //   loudly — it is the one number on the screen a person chose by hand.
+            case 'vehicle_job': return 'this vehicle\'s own schedule';
             case 'vehicle':  return 'this bike\'s own schedule';
             case 'rider':    return 'the rider\'s own schedule';
             case 'company':
@@ -199,5 +377,7 @@ class ServiceIntervalResolver
         self::$riderMemo = [];
         self::$typeMemo = [];
         self::$configMemo = null;
+        VehicleScheduleService::flush();
+        MaintenanceTypeService::flushSchemaMemo();
     }
 }

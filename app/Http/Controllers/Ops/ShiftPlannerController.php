@@ -23,6 +23,30 @@ class ShiftPlannerController extends Controller
     }
 
     /**
+     * 👥 The USERS LIST behind the planner's "Users list" button — every active account
+     * with whether it is on the one roster that Shift Planner and Attendance share.
+     *
+     * 🔒 Gated: only Shabib and Taimur (owner ruling 9-Sep). Refused rather than returned
+     *    empty, so a hand-rolled request cannot enumerate accounts.
+     * ⚠ Read-only. The toggle goes to POST /attendance/update-visibility — the ONE writer.
+     */
+    public function usersList(Request $request)
+    {
+        $me = $request->user() ?: auth()->user();
+        if (!app(\App\Services\Ops\ShiftAuthorityService::class)->canManageRoster($me)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only Shabib and Taimur can open the users list.',
+            ], 403);
+        }
+
+        return response()->json([
+            'success' => true,
+            'users' => app(\App\Services\Ops\UserRosterService::class)->list(),
+        ]);
+    }
+
+    /**
      * Save/update a rider's WhatsApp contact number (unified location =
      * t_ops_rider_profile.phone) from the planner's "add number" prompt. Upserts
      * by user_id; never touches other profile fields.
@@ -90,14 +114,27 @@ class ShiftPlannerController extends Controller
         $dateList = array_column($days, 'date');
         $today = now()->format('Y-m-d');
 
-        $filter = $request->input('filter', 'riders');
+        /**
+         * 👥 ONE COMMON LIST (owner ruling Sep-2026) — the roster is the ATTENDANCE list,
+         * shared with the mobile planner via User::shiftPlannerRoster(). The Delivery
+         * Rider tick no longer decides who can be scheduled.
+         *
+         * ⚠ 9-Sep follow-up: the Riders/Everyone chips are GONE — *"now no need to
+         *   differentiate between riders only and everyone"*. The page shows the one list,
+         *   and the "Users list" button edits who is on it. `filter` is still accepted and
+         *   ignored so an old bookmark or a cached JS bundle cannot 500 or show a subset.
+         */
         $search = trim((string) $request->input('search', ''));
+
+        $roster = \App\Models\User::shiftPlannerRoster();
+        $offRoster = array_flip($roster['off_roster']);
 
         $users = DB::table('t_sys_user as u')
             ->leftJoin('t_sys_user_role as ur', 'ur.user_id', '=', 'u.id')
             ->leftJoin('t_sys_role as r', 'r.id', '=', 'ur.role_id')
             ->leftJoin('t_ops_rider_profile as p', 'p.user_id', '=', 'u.id')
             ->where('u.is_active', 1)
+            ->whereIn('u.id', $roster['ids'] ?: [0])
             ->when($search !== '', fn($q) => $q->where('u.fullname', 'like', '%' . $search . '%'))
             ->select(
                 'u.id as user_id',
@@ -112,9 +149,13 @@ class ShiftPlannerController extends Controller
             ->orderBy('u.fullname')
             ->get();
 
-        if ($filter === 'riders') {
-            $users = $users->filter(fn($u) => (int) $u->is_rider === 1);
-        }
+        // ⚠ Kept ONLY by the safety net (live shift row / open request while hidden from
+        //   attendance) — the grid tags the row so the planner knows why it is here.
+        $users = $users->map(function ($u) use ($offRoster) {
+            $u->off_roster = isset($offRoster[(int) $u->user_id]) ? 1 : 0;
+            return $u;
+        });
+
 
         // Holidays in the week (date => name).
         $holidayNames = DB::table('t_ops_public_holidays')
@@ -279,6 +320,9 @@ class ShiftPlannerController extends Controller
                 'user_id' => $uid,
                 'name' => $u->fullname,
                 'role' => $u->role_name,
+                'is_rider' => (int) ($u->is_rider ?? 0) === 1,
+                // ⚠ Only the safety net is keeping this row here — see User::shiftPlannerRoster().
+                'off_roster' => (int) ($u->off_roster ?? 0) === 1,
                 'has_phone' => (int) ($u->has_phone ?? 0) === 1,
                 'can_change' => $rowState['can'],
                 'lock_reason' => $rowState['reason'],
@@ -362,6 +406,12 @@ class ShiftPlannerController extends Controller
              *   button. Everyone else does not see that the page exists.
              */
             'can_manage_rules' => $authority->canManageRules($me),
+            /**
+             * 👥 Users list — only Shabib and Taimur (owner ruling 9-Sep). Everyone else
+             *   does not see the button. ⚠ Advisory only: the write itself is refused by
+             *   AttendanceController::updateUserVisibility, the one door onto the list.
+             */
+            'can_manage_roster' => $authority->canManageRoster($me),
             'template_create' => $authority->templateCreateState($me),
             // The workshops a planner may move a proposal to while approving it.
             'workshops' => app(\App\Services\Riders\WorkshopVisitService::class)->workshopLocations(),

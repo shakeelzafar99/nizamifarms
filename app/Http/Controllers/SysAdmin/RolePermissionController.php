@@ -28,6 +28,9 @@ class RolePermissionController extends Controller
             'view_status_history' => 'View Status History',
             'assign_riders' => 'Assign Riders to Orders',
             'bulk_operations' => 'Bulk Operations (status, rider assign)',
+            // Sep-2026 — returning a DELIVERED order. Not a view permission: it
+            // decides where the customer's money goes and writes stock off.
+            'return_orders' => 'Return a Delivered Order (money + stock)',
             
             // Invoices & Quantities
             'view_invoices' => 'View Invoices',

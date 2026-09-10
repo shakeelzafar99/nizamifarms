@@ -1943,6 +1943,11 @@ function dtRenderOngoing(ongoing) {
 
     const meta = {
         left_without_dispatch: {label: '⚠️ Left without dispatch', bg: '#fee2e2', color: '#991b1b', border: '#fca5a5'},
+        /* 🔧 The workshop errand — same two rungs the orders-page card draws, from the same
+             `getRidersLiveStatus` feed. The LABEL is replaced at render time by the server's
+             own `workshop_trip.label` when it is present; these are the fallbacks. */
+        workshop_en_route:     {label: '🔧 Going to the workshop',  bg: '#fef3c7', color: '#92400e', border: '#fcd34d'},
+        at_workshop:           {label: '🔧 At the workshop',        bg: '#fef3c7', color: '#92400e', border: '#fcd34d'},
         waiting_at_office:     {label: '🏠 Waiting at office',      bg: '#fef9c3', color: '#854d0e', border: '#fde68a'},
         returning:             {label: '↩️ Returning to office',    bg: '#e0f2fe', color: '#075985', border: '#bae6fd'},
         on_route:              {label: '🚚 On route',               bg: '#dcfce7', color: '#166534', border: '#bbf7d0'},
@@ -1952,7 +1957,12 @@ function dtRenderOngoing(ongoing) {
     };
 
     const cards = ongoing.map(r => {
-        const m = meta[r.status] || meta.idle;
+        const m0 = meta[r.status] || meta.idle;
+        /* 🔧 The server writes the sentence (where, since when, the ETA) so this card, the
+             orders-page card, the store phone and the push all say the same thing. The map
+             above only supplies the colours and a fallback word. */
+        const m = (r.workshop_trip && r.workshop_trip.label)
+            ? Object.assign({}, m0, {label: r.workshop_trip.label}) : m0;
         const dist = r.distance_to_office_display ? `<span class="dt-badge gray">📍 ${r.distance_to_office_display} from office</span>` : '';
         // GPS freshness badge (now / minutes ago / stale / none)
         const ageMin = (r.gps_age_minutes !== null && r.gps_age_minutes !== undefined) ? r.gps_age_minutes : null;

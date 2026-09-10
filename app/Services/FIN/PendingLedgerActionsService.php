@@ -68,6 +68,7 @@ class PendingLedgerActionsService
         LedgerModel::TYPE_SALARY_PAYMENT   => 'Salary',
         LedgerModel::TYPE_ADJUSTMENT       => 'Adjustment',
         LedgerModel::TYPE_SETTLEMENT       => 'Settlement',
+        LedgerModel::TYPE_ORDER_REFUND     => 'Order Refund',
     ];
 
     /**

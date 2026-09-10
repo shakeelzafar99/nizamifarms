@@ -40,6 +40,18 @@ class DashboardAnalyticsService
     protected const VALID_REVENUE_STATUSES = ['delivered', 'completed', 'processing'];
 
     /**
+     * The statuses an order must STILL be in for a past delivery to count as
+     * money (Sep-2026). Matches HQ ExecutiveClosingService::DELIVERED_STATUSES.
+     *
+     * ⚠ Deliberately narrower than VALID_REVENUE_STATUSES above, which includes
+     * `processing` because those queries look at open orders too. Anything that
+     * joins the delivered-history row must use THIS one: history says an order
+     * was once delivered and never un-says it, so a cancelled or returned order
+     * stays in that join forever unless the current status is checked as well.
+     */
+    protected const VALID_DELIVERED_STATUSES = ['delivered', 'completed'];
+
+    /**
      * Get revenue-related KPIs (excluding Shopify)
      */
     public function getRevenueKPIs($startDate, $endDate)
@@ -423,6 +435,12 @@ class DashboardAnalyticsService
             // once-a-year "spike" that drowns the regular months.
             $data = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
                 ->tap(function ($q) {
                     \App\Services\QurbaniFinanceFilter::applyToOrderQuery(
@@ -553,6 +571,12 @@ class DashboardAnalyticsService
             // Join via SKU which is reliable across all orders
             $data = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
                 ->leftJoin('t_crm_prod_product_variant as v', 'li.sku', '=', 'v.sku')
                 ->leftJoin('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
@@ -667,6 +691,12 @@ class DashboardAnalyticsService
             // Payment method from order, customer type from customer table
             $dbData = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->leftJoin('t_crm_prod_customer as c', 'o.customer_id', '=', 'c.id')
                 ->select(
                     DB::raw('DATE(h.delivered_at) as date_key'),
@@ -701,6 +731,12 @@ class DashboardAnalyticsService
             // Get quantity per day from line items
             $qtyData = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
                 ->select(
                     DB::raw('DATE(h.delivered_at) as date_key'),
@@ -797,6 +833,12 @@ class DashboardAnalyticsService
             // Join via variant (using variant_id first, then fallback to SKU matching)
             $data = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->join('t_crm_prod_order_line_item as li', 'o.id', '=', 'li.order_id')
                 ->leftJoin('t_crm_prod_product_variant as v', function($join) {
                     $join->on('li.variant_id', '=', 'v.id')
@@ -1161,6 +1203,12 @@ class DashboardAnalyticsService
         // profit" matches the Reports tab definition exactly.
         $invoiceData = DB::table('t_crm_prod_order as o')
             ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+            // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+            // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+            // delivered and then cancelled or RETURNED counted as revenue here for good.
+            // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+            // all EIGHT queries in this file were the outlier.
+            ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
             ->leftJoin('t_fin_ledger as l', function($join) {
                 $join->on('l.order_id', '=', 'o.id')
                      ->where('l.transaction_type', '=', LedgerModel::TYPE_INVOICE)
@@ -1352,6 +1400,12 @@ class DashboardAnalyticsService
             // Get delivered orders with delivery details
             $query = DB::table('t_crm_prod_order as o')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->leftJoin('t_fin_ledger as l', function($join) {
                     $join->on('l.order_id', '=', 'o.id')
                          ->where('l.transaction_type', '=', LedgerModel::TYPE_INVOICE)
@@ -1617,6 +1671,12 @@ class DashboardAnalyticsService
             $data = DB::table('t_crm_prod_order_line_item as li')
                 ->join('t_crm_prod_order as o', 'li.order_id', '=', 'o.id')
                 ->join(DB::raw('(SELECT order_id, MIN(changed_at) as delivered_at FROM t_crm_order_status_history WHERE status_code = "delivered" GROUP BY order_id) as h'), 'o.id', '=', 'h.order_id')
+                // ⚠⚠ Sep-2026. The join above asks "was this order EVER delivered" — right for
+                // the DATE, wrong for the MONEY. History never un-says a delivery, so an order
+                // delivered and then cancelled or RETURNED counted as revenue here for good.
+                // Every other revenue surface (HQ, Reports) filters on the CURRENT status;
+                // all EIGHT queries in this file were the outlier.
+                ->whereIn('o.order_status', self::VALID_DELIVERED_STATUSES)
                 ->leftJoin('t_crm_prod_product_variant as v', 'li.sku', '=', 'v.sku')
                 ->leftJoin('t_crm_prod_product as p', 'v.product_id', '=', 'p.id')
                 ->whereBetween('h.delivered_at', [$startDate->format('Y-m-d 00:00:00'), $endDate->format('Y-m-d 23:59:59')])

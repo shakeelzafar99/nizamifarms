@@ -48,6 +48,7 @@ class AccountActivityService
         'supply_purchase'  => 'Storage stock purchase',
         'invoice'          => 'Invoice',
         'order_payment'    => 'Order Payment',
+        'order_refund'     => 'Order Refund',
     ];
 
     /**

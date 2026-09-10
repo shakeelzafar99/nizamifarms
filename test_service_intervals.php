@@ -56,19 +56,43 @@ $svc = new VehicleService();
 $res = new ServiceIntervalResolver();
 
 head('§1 the resolver — one order, stated once');
-ok('the job\'s own schedule wins', $res->explain(AY, 2000, KANAN)['source'], 'type');
-ok('  …and it is the number returned', $res->explain(AY, 2000, KANAN)['km'], 2000);
-ok('no job schedule → the bike\'s own', $res->explain(AY, null, KANAN)['source'], 'vehicle');
-ok('  …AY-4771 carries 1,200', $res->explain(AY, null, KANAN)['km'], 1200);
-ok('no bike scalar → the rider\'s legacy one', $res->explain(BCN, null, KANAN)['source'], 'rider');
-ok('nothing anywhere → the company default', $res->explain(null, null, null)['source'], 'company');
-ok('  …which is 1,200 on this database', $res->companyDefault(), 1200);
-ok('a zero job schedule counts as absent', $res->explain(AY, 0, KANAN)['source'], 'vehicle');
-ok('from_type is only true for the job\'s own', $res->explain(AY, null, KANAN)['from_type'], false);
-ok('the label explains a non-type number',
-   ServiceIntervalResolver::sourceLabel($res->explain(AY, null, KANAN)), 'this bike\'s own schedule');
-ok('  …and says nothing when it IS the job\'s own',
-   ServiceIntervalResolver::sourceLabel($res->explain(AY, 2000, KANAN)), null);
+/**
+ * ⚠⚠ THIS SECTION USED TO ASSERT LIVE REPLICA VALUES ("AY-4771 carries 1,200", "the
+ *    company default is 1,200 on this database") and went red when the data moved on
+ *    — the scalar was cleared and the config key is 1,000 now. A suite that fails
+ *    because production data changed teaches people to ignore it, so the fallback
+ *    chain now SEEDS the ladder it is about to walk, inside the usual rolled-back
+ *    transaction. It tests the rule, not the day's numbers.
+ */
+DB::beginTransaction();
+try {
+    DB::table('t_ops_vehicle')->where('id', AY)->update(['service_interval_km' => 1200]);
+    DB::table('t_ops_vehicle')->where('id', BCN)->update(['service_interval_km' => null]);
+    DB::table('t_ops_rider_profile')->where('user_id', KANAN)->update(['service_interval_km' => 900]);
+    DB::table('t_fin_config')->updateOrInsert(['config_key' => 'BIKE_SERVICE_INTERVAL_KM'],
+                                              ['config_value' => '1200']);
+    flushAll();
+    $res = new ServiceIntervalResolver();
+
+    ok('the job\'s own schedule wins', $res->explain(AY, 2000, KANAN)['source'], 'type');
+    ok('  …and it is the number returned', $res->explain(AY, 2000, KANAN)['km'], 2000);
+    ok('no job schedule → the bike\'s own', $res->explain(AY, null, KANAN)['source'], 'vehicle');
+    ok('  …the seeded 1,200', $res->explain(AY, null, KANAN)['km'], 1200);
+    ok('no bike scalar → the rider\'s legacy one', $res->explain(BCN, null, KANAN)['source'], 'rider');
+    ok('  …the seeded 900', $res->explain(BCN, null, KANAN)['km'], 900);
+    ok('nothing anywhere → the company default', $res->explain(null, null, null)['source'], 'company');
+    ok('  …the seeded 1,200', $res->companyDefault(), 1200);
+    ok('a zero job schedule counts as absent', $res->explain(AY, 0, KANAN)['source'], 'vehicle');
+    ok('from_type is only true for the job\'s own', $res->explain(AY, null, KANAN)['from_type'], false);
+    ok('the label explains a non-type number',
+       ServiceIntervalResolver::sourceLabel($res->explain(AY, null, KANAN)), 'this bike\'s own schedule');
+    ok('  …and says nothing when it IS the job\'s own',
+       ServiceIntervalResolver::sourceLabel($res->explain(AY, 2000, KANAN)), null);
+} finally {
+    DB::rollBack();
+    flushAll();
+    $res = new ServiceIntervalResolver();
+}
 
 head('§2 ⭐⭐ the regression that caused the bug');
 // Editing ONE type used to move ANOTHER type's effective interval, because the per-bike
@@ -250,40 +274,46 @@ try {
 
     $alerts = (new \App\Services\Riders\BikeServiceAlerts())->due();
     $mine = array_values(array_filter($alerts, fn ($a) => $a['vehicle_id'] === OWN_BIKE));
-    ok('his own bike raises an alert', count($mine) >= 1, true, true);
-    if ($mine) {
-        ok('  …for the staged job', $mine[0]['type_name'], 'Oil Change');
-        ok('  …in the overdue state', $mine[0]['state'], 'overdue');
-        // ⭐⭐ THE FIX: no open assignment, yet the keeper is its OWNER — the man who
-        //   must actually take it to the mechanic — resolved by the same ownership
-        //   rule his day-legs and claims use.
-        ok('  …and its keeper is the OWNER, despite no open assignment',
-           $mine[0]['keeper_user_id'], RAJAB);
-        // The alert's interval is the schedule's interval — panel and push agree.
-        $schedRow = null;
-        foreach ((new VehicleService())->serviceScheduleFor(OWN_BIKE,
-                 (new VehicleService())->currentMeterFor(OWN_BIKE)) as $s) {
-            if ($s['id'] === $mine[0]['type_id']) $schedRow = $s;
-        }
-        ok('  …and its interval equals the schedule panel\'s',
-           $mine[0]['interval_km'], $schedRow['interval_km'] ?? null);
-    }
 
-    // The banner: Rajab sees his own bike's alert WHILE holding the van.
+    /**
+     * ⚠⚠ THIS ASSERTION IS THE REVERSE OF WHAT IT WAS, AND DELIBERATELY SO.
+     *
+     * The Aug-27 round fixed a real gap: an own bike went silent the moment its
+     * rider took the van, because `keeper_user_id` is the OPEN assignment and one
+     * open row per rider releases the personal machine. The fix routed the alert to
+     * its OWNER instead, so the man who must take it to the mechanic heard about it.
+     *
+     * On 10-Sep-2026 the owner ruled the question away entirely: *"own bikes
+     * maintenance is not with the company so we aren't tracking them or setting them
+     * either. this is only for company bikes and van."* A personal machine is no
+     * longer on any schedule, so there is nothing to be late for and nobody to tell.
+     *
+     * ⭐ The `ownerOf()` fallback in BikeServiceAlerts::due() is KEPT — it still
+     *   answers "whose machine is this" for any COMPANY machine that has no open
+     *   assignment today, which is the same gap one class over. Only its
+     *   personal-bike case is now unreachable.
+     */
+    ok('a personal bike raises NO alert — it is not on the company schedule',
+       count($mine), 0);
+
+    // The banner agrees: Rajab hears nothing about his own bike.
     $rajab = \App\Models\SysAdmin\UserModel::find(RAJAB);
     $seen = (new \App\Services\Riders\BikeServiceAlerts())->forUser($rajab);
-    ok('Rajab is shown his own bike\'s alert while holding the van',
-       in_array(OWN_BIKE, array_column($seen, 'vehicle_id'), true), true);
-    // …worded as HIS (keeper stripped for a non-manager).
-    $his = array_values(array_filter($seen, fn ($a) => $a['vehicle_id'] === OWN_BIKE));
-    ok('  …with the keeper fields stripped (he IS the keeper)',
-       !isset($his[0]['keeper_user_id']), true);
+    ok('  …and its owner is not shown one either',
+       in_array(OWN_BIKE, array_column($seen, 'vehicle_id'), true), false);
 
-    // And it is NOT broadcast to other riders.
+    // Nor is anybody else.
     $asim = \App\Models\SysAdmin\UserModel::find(ASIM);
     $asimSees = (new \App\Services\Riders\BikeServiceAlerts())->forUser($asim);
     ok('another rider does not hear about it',
        in_array(OWN_BIKE, array_column($asimSees, 'vehicle_id'), true), false);
+
+    // …and the schedule panel says the same thing, so screen and push agree.
+    ok('  …its schedule panel is empty',
+       (new VehicleService())->serviceScheduleFor(OWN_BIKE,
+            (new VehicleService())->currentMeterFor(OWN_BIKE)), []);
+    ok('  …and its headline says so in words',
+       (new VehicleService())->overallServiceStateFor(OWN_BIKE, 5200)['state'], 'not_tracked');
 
     // A company machine holds today's behaviour: keeper = the open assignment.
     $ay = array_values(array_filter($alerts, fn ($a) => $a['vehicle_id'] === 1));

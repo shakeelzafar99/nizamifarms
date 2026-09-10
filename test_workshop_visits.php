@@ -62,17 +62,23 @@ foreach (User::where('is_active', '1')->get() as $u) {
     if (method_exists($u, 'isReadOnly') && $u->isReadOnly()) continue;
     if (!$manager && $u->hasPermission(WV::PERMISSION)) $manager = $u;
 }
-$res = new VehicleResolver();
+/**
+ * ⚠ COMPANY machines only (owner ruling, 10-Sep-2026): `schedule()` refuses a personal bike
+ *   outright, so picking the first rider with ANY machine could seed the whole suite with one
+ *   and fail every assertion for the right reason in the wrong place.
+ */
+$res  = new VehicleResolver();
+$vsvc = new \App\Services\Riders\VehicleService();
 foreach (DB::table('t_ops_rider_profile')->pluck('user_id') as $uid) {
-    $v = $res->currentVehicleFor((int) $uid);
-    if (!$v) continue;
+    $v = (int) ($res->currentVehicleFor((int) $uid) ?: 0);
+    if (!$v || !$vsvc->isTrackedId($v)) continue;
     $u = User::find((int) $uid);
     if (!$u) continue;
     if (!$rider) { $rider = $u; continue; }
     if (!$otherRider && (int) $u->id !== (int) $rider->id) { $otherRider = $u; break; }
 }
 ok('a manager holding schedule_workshop exists', (bool) $manager, null, true);
-ok('two riders with machines exist', (bool) ($rider && $otherRider), null, true);
+ok('two riders with COMPANY machines exist', (bool) ($rider && $otherRider), null, true);
 if (!$manager || !$rider || !$otherRider) { echo "\nfixtures missing — stopping.\n"; exit(1); }
 
 // Maintenance types — discovered, for the Phase 3 completion sections.

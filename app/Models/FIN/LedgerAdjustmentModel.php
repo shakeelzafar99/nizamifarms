@@ -254,6 +254,20 @@ class LedgerAdjustmentModel extends BaseModel
         // order-based). Unsettled invoices keep the existing apply behaviour below.
         // Sep-2026: "settled WITH cash" — a free order's Rs 0 invoice is auto-settled at
         // posting with no cash behind it, so a re-price falls through and reopens it below.
+        // RETURNED ORDER guard (Sep-2026): the refund / credit was computed from THIS
+        // amount and stands against it. Re-pricing the invoice afterwards would leave
+        // the counter-entry answering to a figure that no longer exists. Absorb it as
+        // a comment-only record, exactly like the post-settlement case below.
+        if ($ledger->transaction_type === LedgerModel::TYPE_INVOICE && $ledger->order_id
+            && app(\App\Services\CRM\OrderReturnService::class)->isLocked((int) $ledger->order_id)) {
+            $ledger->comments = ($ledger->comments ?? '') .
+                " | Correction Rs. " . number_format($ledger->amount, 2) . " → Rs. " . number_format($this->new_amount, 2) .
+                " ABSORBED — order was RETURNED, refund/credit already stands (adjustment #{$this->id})";
+            $ledger->save();
+            Log::info("Ledger adjustment ABSORBED (order returned)", ['adjustment_id' => $this->id, 'ledger_id' => $ledger->id]);
+            return;
+        }
+
         if ($ledger->transaction_type === LedgerModel::TYPE_INVOICE && $ledger->isSettledWithCash()) {
             $ledger->comments = ($ledger->comments ?? '') .
                 " | Post-settlement correction Rs. " . number_format($ledger->amount, 2) . " → Rs. " . number_format($this->new_amount, 2) .

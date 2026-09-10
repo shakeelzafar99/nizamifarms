@@ -164,6 +164,13 @@ class WorkshopVisitController extends Controller
             // ⭐ The planner may also move his START TIME for that one day (Danish's 09:00
             //   visit against a 09:30 shift). Nothing else in the flow could fix that.
             'shift_template_id' => 'nullable|integer',
+            /**
+             * 📍 "Will he mark attendance at his regular place, or at the workshop?"
+             *    (owner ask, 10-Sep-2026). ⚠ ABSENT still means "as proposed" — an older
+             *    APK sends nothing and gets exactly the pre-10-Sep inference, so approving
+             *    from a phone that has not been updated behaves as it always did.
+             */
+            'attendance_at'     => 'nullable|in:regular,workshop',
         ]);
         $user = $request->user() ?: auth()->user();
         $res  = $this->visits->approve($user, (int) $id, $data, $this->mobileContext);
@@ -286,6 +293,74 @@ class WorkshopVisitController extends Controller
         $this->notify('accepted', (int) $id, $user);
         return response()->json(['success' => true, 'message' => $res['message']]);
     }
+
+    /**
+     * ⭐⭐ "WORKSHOP JAA RAHA HOON" — the rider sets off (owner ask, 10-Sep-2026).
+     *
+     * The ONE manual step of the trip. Arrival is the geofence's job (no button, by ruling)
+     * and the end is the outcome prompt that already exists — so this endpoint is the whole
+     * of the new rider-facing surface.
+     *
+     * ⚠ 409, not 422, when open orders block it: it is a QUESTION with a remedy attached, not
+     *   a validation failure, and both clients already know that shape from `confirm_replace`.
+     *   `force` is honoured for a MANAGER only (the service enforces that, not this method).
+     */
+    public function depart(Request $request, $id)
+    {
+        $request->validate(['force' => 'nullable|boolean']);
+        $user = $request->user() ?: auth()->user();
+        $res  = $this->visits->depart($user, (int) $id,
+                                      ['force' => $request->boolean('force')], $this->mobileContext);
+        if (!$res['ok']) {
+            return response()->json([
+                'success' => false,
+                'message' => $res['message'],
+                'blocked_by_orders' => (bool) ($res['blocked_by_orders'] ?? false),
+                'orders'  => $res['orders'] ?? null,
+            ], !empty($res['blocked_by_orders']) ? 409 : 422);
+        }
+        return response()->json([
+            'success' => true,
+            'message' => $res['message'],
+            'trip'    => $res['trip'] ?? null,
+            'assigned_warning' => $res['assigned_warning'] ?? null,
+        ]);
+    }
+
+    /**
+     * ⭐⭐ EVERY ERRAND IN PROGRESS — the ONE source the store side reads.
+     *
+     * The phone banner, the web corner notice and the pushes all come from here, so "who is
+     * away at a workshop right now" cannot be answered two different ways on two screens.
+     *
+     * ⚠ AUDIENCE: whoever assigns work (`assign_riders`), the shift planners, and the workshop
+     *   alert holders. A rider gets an EMPTY list rather than a 403 — the banner then simply
+     *   never renders for him, which is how every other notice on these screens behaves.
+     */
+    public function live(Request $request)
+    {
+        $user = $request->user() ?: auth()->user();
+        if (!$user) return response()->json(['success' => true, 'trips' => []]);
+
+        $may = false;
+        try {
+            $may = $this->visits->canSchedule($user, $this->mobileContext)
+                || $this->visits->canApprove($user, $this->mobileContext)
+                || (method_exists($user, 'hasMobilePermission') && $user->hasMobilePermission('assign_riders'))
+                || (method_exists($user, 'hasPermission') && $user->hasPermission('assign_riders'))
+                || (method_exists($user, 'hasMobilePermission')
+                    && $user->hasMobilePermission(\App\Services\Riders\WorkshopVisitService::ALERT_PERMISSION));
+        } catch (\Throwable $e) {
+            $may = false;
+        }
+        if (!$may) return response()->json(['success' => true, 'trips' => []]);
+
+        return response()->json(['success' => true, 'trips' => $this->visits->liveTrips()]);
+    }
+
+    /** Mobile twins — same methods, so the phone and the desk cannot drift. */
+    public function apiDepart(Request $r, $id) { $this->mobileContext = true; return $this->depart($r, $id); }
+    public function apiLive(Request $r)        { $this->mobileContext = true; return $this->live($r); }
 
     public function cancel(Request $request, $id)
     {
@@ -450,17 +525,39 @@ class WorkshopVisitController extends Controller
              *   scheduled service needs no re-picking.
              */
             $rec  = app(\App\Services\Riders\ServiceRecordService::class);
-            $type = $rec->resolveType($data['maintenance_type_id'] ?? $visit['maintenance_type_id']);
+            /**
+             * ⭐ CLASS-AWARE (Sep-2026): the visit names the machine, so the job is
+             *   judged against that machine's own schedule — a van completion resolves
+             *   against van figures, and a bike-only job on the van is refused with a
+             *   sentence instead of recording a service nothing counts down.
+             */
+            $vKlass = !empty($visit['vehicle_id'])
+                ? (new \App\Services\Riders\VehicleService())->classOf((int) $visit['vehicle_id'])
+                : null;
+            $type = $rec->resolveType($data['maintenance_type_id'] ?? $visit['maintenance_type_id'], $vKlass);
             if (!$type['ok']) {
                 return response()->json(['success' => false, 'message' => $type['message']], 422);
             }
             $recorded = $rec->record([
-                'rider_id' => (int) $visit['user_id'],
-                'meter'    => (int) $data['meter'],
-                'date'     => substr((string) $visit['visit_date'], 0, 10),
-                'type'     => $type['type'],
-                'actor_id' => (int) $user->id,
-                'note'     => 'Workshop visit #' . (int) $id
+                'rider_id'   => (int) $visit['user_id'],
+                /**
+                 * ⭐⭐ THE VISIT NAMES THE MACHINE — so the record is stamped with it rather
+                 *    than re-derived from "what was this rider on that day" (owner ask,
+                 *    10-Sep-2026).
+                 *
+                 * ⚠⚠ THIS IS THE CASE THE DERIVATION GETS WRONG, and it is the ordinary one:
+                 *    the bike goes IN, the manager puts him on a spare for the day, and the
+                 *    registry then answers "the spare". The oil change was credited to a bike
+                 *    that never had one, the visit read done with a `service_log_id`, and the
+                 *    real machine's countdown kept running with nothing saying why. The bike
+                 *    that went to the workshop is right here on the visit; use it.
+                 */
+                'vehicle_id' => !empty($visit['vehicle_id']) ? (int) $visit['vehicle_id'] : null,
+                'meter'      => (int) $data['meter'],
+                'date'       => substr((string) $visit['visit_date'], 0, 10),
+                'type'       => $type['type'],
+                'actor_id'   => (int) $user->id,
+                'note'       => 'Workshop visit #' . (int) $id
                     . ((int) $visit['user_id'] === (int) $user->id ? ' — confirmed by the rider' : ''),
             ]);
             if (!$recorded['ok']) {
@@ -519,9 +616,19 @@ class WorkshopVisitController extends Controller
         return response()->json([
             'success' => true,
             'visit'   => $v,
-            // What the prompt needs to ask for: the job it was booked for, and every
-            // scheduled type in case it turned out to be a different one.
-            'types'   => $v ? app(\App\Services\Riders\ServiceRecordService::class)->scheduledTypes() : [],
+            /**
+             * What the prompt needs to ask for: the job it was booked for, and every
+             * scheduled type in case it turned out to be a different one.
+             * ⭐ Narrowed to the VISIT'S OWN MACHINE (Sep-2026) — a van driver is not
+             *   offered a bike's jobs, and the figures shown are the ones that machine
+             *   actually follows.
+             */
+            'types'   => $v
+                ? app(\App\Services\Riders\ServiceRecordService::class)->scheduledTypes(
+                    !empty($v['vehicle_id'])
+                        ? (new \App\Services\Riders\VehicleService())->classOf((int) $v['vehicle_id'])
+                        : null)
+                : [],
         ]);
     }
 
@@ -554,41 +661,20 @@ class WorkshopVisitController extends Controller
         $out['pending_approvals'] = $this->visits->pendingApprovals($user, $this->mobileContext);
         $out['can_approve']       = $this->visits->canApprove($user, $this->mobileContext);
 
-        // ⚠ No cron on prod — the day-before reminder rides on this poll and fires once
-        //   per visit (`reminded_at`). Deferred so a slow push never delays the banner.
+        /**
+         * ⏰ ONE implementation (10-Sep-2026): the day-before reminder, the 17:00 planner
+         *    nudge and the auto-decline live in `FleetSweepService::workshop()`, which is
+         *    also what the `fleet:sweep` cron runs. This poll keeps calling it — the cron
+         *    covers a day nobody opens the screen, the poll covers a day the cron is off —
+         *    and every push is once-only by construction, so the two cannot double-send.
+         * ⚠ Deferred so a slow push never delays the banner.
+         */
         try {
             app()->terminating(function () {
-                foreach ($this->visits->dueReminders() as $v) {
-                    try {
-                        app(\App\Services\FirebaseService::class)
-                            ->notifyWorkshopVisit('reminder', (int) $v['id'], 0);
-                    } catch (\Throwable $e) {
-                    }
-                }
-                /**
-                 * ⭐⭐ …AND THE APPROVAL ESCALATION, on the same ride. Nudge the planners at
-                 *    17:00 the day before; auto-DECLINE a proposal whose day arrived with
-                 *    nobody having looked, and tell the person who booked it.
-                 * ⚠ Never auto-approve: silence must not send a rider to a place no planner
-                 *   ever agreed to.
-                 */
                 try {
-                    $esc = $this->visits->escalateProposals();
-                    foreach ($esc['nudge'] as $id) {
-                        try {
-                            app(\App\Services\FirebaseService::class)
-                                ->notifyWorkshopVisit('approval_reminder', (int) $id, 0);
-                        } catch (\Throwable $e) {
-                        }
-                    }
-                    foreach ($esc['declined'] as $id) {
-                        try {
-                            app(\App\Services\FirebaseService::class)
-                                ->notifyWorkshopVisit('auto_declined', (int) $id, 0);
-                        } catch (\Throwable $e) {
-                        }
-                    }
+                    app(\App\Services\Riders\FleetSweepService::class)->workshop();
                 } catch (\Throwable $e) {
+                    \Log::warning('workshop sweep (poll) failed', ['error' => $e->getMessage()]);
                 }
             });
         } catch (\Throwable $e) {

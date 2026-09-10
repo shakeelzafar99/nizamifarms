@@ -61,6 +61,19 @@ class BikeServiceAlerts
             if (!$svc->available()) return [];
 
             foreach ($svc->all(false) as $v) {
+                /**
+                 * ⭐⭐ PERSONAL MACHINES ARE NOT ON THE COMPANY SCHEDULE (owner ruling,
+                 *    10-Sep-2026), so they can never be late for one. `serviceScheduleFor`
+                 *    already returns nothing for them — this skip is belt and braces and,
+                 *    more usefully, it says WHY at the place a reader will ask.
+                 *
+                 * ⚠ This REVERSES part of the Aug-27 round, which routed an own bike's
+                 *   alert to its owner when the van released its assignment. The
+                 *   `ownerOf()` fallback below is kept: it still answers "whose machine
+                 *   is this" for a COMPANY machine with no open assignment.
+                 */
+                if ((int) ($v['is_company'] ?? 0) !== 1) continue;
+
                 $meter = isset($v['current_meter']) && $v['current_meter'] !== null
                     ? (int) $v['current_meter'] : null;
                 if ($meter === null) continue;      // no reading = nothing measurable
@@ -83,6 +96,30 @@ class BikeServiceAlerts
                 // a parked spare is the fleet's problem, not a rider's.
                 $keeperId   = $v['keeper_user_id'] ?? null;
                 $keeperName = $v['keeper_name'] ?? null;
+                /**
+                 * ⭐⭐ THE MAN ON THE BIKE **TODAY** OUTRANKS THE ASSIGNMENT (10-Sep-2026).
+                 *
+                 * `keeper_user_id` is the open assignment. A manager's DAY OVERRIDE ("Kanan
+                 * is on AY-4771 today") does not touch that row — it lives on the attendance
+                 * row — so this push went to whoever held the assignment while the BANNER,
+                 * which asks `currentVehicleFor`, correctly showed it to Kanan. Two surfaces,
+                 * two riders, one bike. And once the push ledger became per-keeper, the man
+                 * actually riding it was never buzzed at all.
+                 *
+                 * `riderForVehicleDay(bike, today)` answers with the override first and the
+                 * assignment otherwise — the same precedence every meter and claim reader
+                 * uses — so the alert now follows the rider the registry says has it today.
+                 * ⚠ Fails through to the assignment on any lookup wobble; never to nobody.
+                 */
+                try {
+                    $todays = (new VehicleResolver())->riderForVehicleDay((int) $v['id'], date('Y-m-d'));
+                    if ($todays && (int) $todays !== (int) $keeperId) {
+                        $keeperId   = (int) $todays;
+                        $keeperName = DB::table('t_sys_user')->where('id', $todays)->value('fullname') ?: $keeperName;
+                    }
+                } catch (\Throwable $e) {
+                    // keep the assignment holder
+                }
                 if (!$keeperId) {
                     $owner = (new RiderDayLegs())->ownerOf((int) $v['id']);
                     if ($owner) {
@@ -111,6 +148,11 @@ class BikeServiceAlerts
                         'current_meter'  => $meter,
                         'keeper_user_id' => $keeperId,
                         'keeper_name'    => $keeperName,
+                        // ── class + basis, Sep-2026 (additive) ──────────────────
+                        'vtype'          => $v['vtype'] ?? 'bike',
+                        'basis'          => $t['basis'] ?? 'km',
+                        'due_in_days'    => $t['due_in_days'] ?? null,
+                        'due_text'       => $t['due_text'] ?? null,
                         'alert_key'      => $this->keyFor((int) $v['id'], (int) $t['id'],
                                                           $t['last_meter'], $t['state']),
                         'message'        => $this->message($v['name'], $t),
@@ -118,10 +160,16 @@ class BikeServiceAlerts
                 }
             }
 
-            // Overdue before due-soon, then the worst overrun first.
+            /**
+             * Overdue before due-soon, then the worst overrun first.
+             * ⚠ "Worst" has to be unit-free now that a job can count in days: 5 km over
+             *   and 5 days over are not the same overrun, and sorting them on one number
+             *   would rank a mildly late oil change above a badly late annual job. The
+             *   fraction of the cycle already run is comparable across both.
+             */
             usort($out, function ($a, $b) {
                 if ($a['state'] !== $b['state']) return $a['state'] === 'overdue' ? -1 : 1;
-                return ($a['due_in_km'] ?? 0) <=> ($b['due_in_km'] ?? 0);
+                return $this->overrunFraction($a) <=> $this->overrunFraction($b);
             });
         } catch (\Throwable $e) {
             Log::warning('BikeServiceAlerts::due failed', ['error' => $e->getMessage()]);
@@ -151,13 +199,36 @@ class BikeServiceAlerts
             . ($lastMeter === null ? 'none' : (int) $lastMeter) . ':' . $state, 0, 64);
     }
 
-    /** One sentence a manager or rider can act on without opening anything. */
+    /**
+     * How far through its own cycle is this job? Lower = more urgent, and the figure
+     * is a ratio, so a kilometre job and a time job can be ranked against each other.
+     */
+    private function overrunFraction(array $a): float
+    {
+        $isTime = ($a['basis'] ?? 'km') === 'time';
+        $left   = $isTime ? ($a['due_in_days'] ?? null) : ($a['due_in_km'] ?? null);
+        if ($left === null) return 0.0;
+        $span = $isTime ? 0 : (int) ($a['interval_km'] ?? 0);
+        return $span > 0 ? ((int) $left / $span) : (float) (int) $left;
+    }
+
+    /**
+     * One sentence a manager or rider can act on without opening anything.
+     *
+     * ⚠ The unit comes from the row's own `due_text`, composed by VehicleService so
+     *   that a 90-DAY job can never be announced as "90 km". Falls back to the old
+     *   kilometre phrasing when the key is absent, which is any row built by an older
+     *   code path.
+     */
     private function message(string $vehicleName, array $t): string
     {
-        return $t['state'] === 'overdue'
-            ? $vehicleName . ' — ' . $t['name'] . ' is ' . number_format(abs((int) $t['due_in_km']))
-                . ' km overdue.'
-            : $vehicleName . ' — ' . $t['name'] . ' due in ' . number_format((int) $t['due_in_km']) . ' km.';
+        $text = $t['due_text'] ?? null;
+        if (!$text) {
+            $text = ((int) $t['due_in_km'] < 0)
+                ? number_format(abs((int) $t['due_in_km'])) . ' km overdue'
+                : 'due in ' . number_format((int) $t['due_in_km']) . ' km';
+        }
+        return $vehicleName . ' — ' . $t['name'] . ' ' . $text . '.';
     }
 
     /**
@@ -200,14 +271,20 @@ class BikeServiceAlerts
             if (!$isManager) {
                 $alerts = array_map(function ($a) {
                     unset($a['keeper_user_id'], $a['keeper_name']);
-                    // 🗣 The rider must act on this — he is the one who takes the bike in —
-                    // so his copy is Roman Urdu (owner ruling). The manager list above keeps
-                    // the English `message` built by message(); this is the only fork.
-                    $km = number_format(abs((int) ($a['due_in_km'] ?? 0)));
-                    $job = $a['type_name'] ?? 'service';
-                    $a['message'] = ($a['state'] ?? '') === 'overdue'
-                        ? 'Aap ki bike ka ' . $job . ' ' . $km . ' km late ho chuka hai.'
-                        : 'Aap ki bike ka ' . $job . ' ' . $km . ' km baad hai.';
+                    /**
+                     * 🗣 The rider must act on this — he is the one who takes the machine
+                     * in — so his copy is Roman Urdu (owner ruling). The manager list
+                     * above keeps the English `message` built by message(); this is the
+                     * only fork.
+                     *
+                     * ⭐ Sep-2026, two things that used to be wrong here:
+                     *   • the van's driver was told about "aap ki BIKE" — it says
+                     *     **gaari** for a van now, from the row's own `vtype`;
+                     *   • a time-based job would have been announced in kilometres,
+                     *     because the unit was hard-coded. The amount and its unit now
+                     *     come from the row, so the two can never disagree.
+                     */
+                    $a['message'] = self::riderMessage($a);
                     return $a;
                 }, $alerts);
             }
@@ -217,6 +294,48 @@ class BikeServiceAlerts
             Log::warning('BikeServiceAlerts::forUser failed', ['error' => $e->getMessage()]);
             return [];
         }
+    }
+
+    /**
+     * ⭐⭐ THE RIDER'S SENTENCE, IN ONE PLACE (review find, 10-Sep-2026).
+     *
+     * The in-app banner (`forUser`) and the PUSH (`FirebaseService::notifyServiceDue`)
+     * each composed this line themselves. When the banner learned to say *gaari* for a
+     * van and *din* for a time-based job, the push did not — so the same alert read
+     * "aap ki gaari ka … 12 din" on screen and "aap ki bike ka … 0 km" in the
+     * notification tray. Two copies of one sentence is how that happens; now there is one.
+     *
+     * 🗣 Roman Urdu: the rider must ACT on this (owner copy rule). The manager list keeps
+     *    the English `message` built by message().
+     *
+     * @return array{title:string, body:string}  — the push needs both, the banner the body
+     */
+    public static function riderMessage(array $a): string
+    {
+        return self::riderCopy($a)['body'];
+    }
+
+    public static function riderCopy(array $a): array
+    {
+        $isTime  = ($a['basis'] ?? 'km') === 'time';
+        $machine = ($a['vtype'] ?? 'bike') === 'van' ? 'gaari' : 'bike';
+        $job     = $a['type_name'] ?? 'service';
+        $overdue = ($a['state'] ?? '') === 'overdue';
+
+        if ($isTime) {
+            $amount = number_format(abs((int) ($a['due_in_days'] ?? 0))) . ' din';
+        } else {
+            $amount = number_format(abs((int) ($a['due_in_km'] ?? 0))) . ' km';
+        }
+
+        return [
+            'title' => $overdue
+                ? '🛢 Aap ki ' . $machine . ' ki service late ho chuki hai'
+                : '🛢 Aap ki ' . $machine . ' ki service aane wali hai',
+            'body'  => $overdue
+                ? 'Aap ki ' . $machine . ' ka ' . $job . ' ' . $amount . ' late ho chuka hai.'
+                : 'Aap ki ' . $machine . ' ka ' . $job . ' ' . $amount . ' baad hai.',
+        ];
     }
 
     /** Drop the ones this user has already waved away (per user, per cycle). */
@@ -262,6 +381,20 @@ class BikeServiceAlerts
      * Dedupe is per ALERT KEY in `t_ops_service_alert_push`, so a bike 800 km
      * overdue buzzes once, not every half hour — and because the key carries the
      * last-service meter, the NEXT cycle is free to buzz again on its own merits.
+     *
+     * ⚠⚠ …PER KEEPER, THOUGH (Sep-10 2026, found reviewing "do the alerts follow a mid-day
+     *    rider change?"). The BANNER followed the registry correctly — it is recomputed from
+     *    `ownerOf()` on every read — but the PUSH deduped on the alert key alone, which
+     *    carries no person. So when a bike changed hands at 14:00 with an overdue job on it,
+     *    the row saying "already pushed" was still there, and the man who now had the bike
+     *    was never buzzed. He would see it only if he happened to open the app.
+     *
+     * ⭐ Fixed WITHOUT schema: `pushKeyFor()` appends the keeper to the key used for the
+     *   PUSH ledger only. The DISMISSAL key is deliberately left alone — a manager who
+     *   dismissed "Oil change on NF-4 is overdue" means the job, not the man, and re-raising
+     *   it in his face because the bike changed hands would be a nag, not news.
+     * ⚠ On the first sweep after this ships, every OUTSTANDING alert pushes once more
+     *   (its ledger row has the old, keeper-free key). One extra buzz per open alert, once.
      */
     public function pushDue(): int
     {
@@ -271,7 +404,7 @@ class BikeServiceAlerts
             $alerts = $this->due();
             if (!$alerts) return 0;
 
-            $fresh = array_values(array_filter($alerts, fn ($a) => !$this->alreadyPushed($a['alert_key'])));
+            $fresh = array_values(array_filter($alerts, fn ($a) => !$this->alreadyPushed($this->pushKeyFor($a))));
             if (!$fresh) return 0;
 
             $fb = new \App\Services\FirebaseService();
@@ -279,7 +412,7 @@ class BikeServiceAlerts
                 try {
                     $fb->notifyServiceDue($a);
                     DB::table('t_ops_service_alert_push')->updateOrInsert(
-                        ['alert_key' => $a['alert_key']], ['pushed_at' => now()]
+                        ['alert_key' => $this->pushKeyFor($a)], ['pushed_at' => now()]
                     );
                     $sent++;
                 } catch (\Throwable $e) {
@@ -294,6 +427,21 @@ class BikeServiceAlerts
             Log::warning('BikeServiceAlerts::pushDue failed', ['error' => $e->getMessage()]);
         }
         return $sent;
+    }
+
+    /**
+     * The key this alert is deduped under IN THE PUSH LEDGER — the alert key plus whoever
+     * holds the machine right now, so a handover is a new push and not a silent one.
+     *
+     * ⚠ `keeper_user_id` is null when nobody holds it (the alert then goes to managers
+     *   only); `:u0` keeps those deduped as one, which is right — they are one message.
+     * ⚠ Still inside `t_ops_service_alert_push.alert_key`'s VARCHAR(64): the longest real
+     *   alert key is ~22 chars and this adds at most 8.
+     */
+    public function pushKeyFor(array $alert): string
+    {
+        return substr(((string) ($alert['alert_key'] ?? '')) . ':u'
+            . (int) ($alert['keeper_user_id'] ?? 0), 0, 64);
     }
 
     private function alreadyPushed(string $key): bool

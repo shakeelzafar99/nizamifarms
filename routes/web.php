@@ -184,6 +184,10 @@ Route::middleware(['auth'])->group(function () {
         Route::get('/drill/expense', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'expenseDetail']);
         Route::get('/drill/salaries', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'salaries']);
         Route::get('/drill/salary-employee', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'salaryDetail']);
+        // Returns (Sep-2026): card → the orders behind it → one order's items + ledger rows.
+        Route::get('/drill/returns', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'returns']);
+        Route::get('/drill/returns-orders', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'returnsDetail']);
+        Route::get('/drill/return', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'returnDetail']);
         Route::get('/drill/customers', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'customers']);
         Route::get('/drill/receivables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'receivables']);
         Route::get('/drill/payables', [\App\Http\Controllers\HQ\ExecutiveDashboardController::class, 'payables']);
@@ -301,6 +305,15 @@ Route::middleware(['auth'])->group(function () {
     // ✏️ Correct the odometer / job on a maintenance CLAIM (approved ones included). The money
     //    fields stay locked behind editClaim — see FleetFuelController::correctClaimReading.
     Route::post('/orders/riders-map/fleet/claim-readings/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'correctClaimReading'])->where('id', '[0-9]+')->name('fleet.claim-reading.correct');
+    // 🏠 RIDER HOME LOCATION (Sep-2026) — read/save/remove from the Bikes tab, where a
+    //    manager is already looking at the machine that sleeps there. The SAME controller
+    //    methods back the phone (see routes/api.php), over RiderHomePinService, so the two
+    //    surfaces cannot drift. Reading needs Bikes view rights; changing needs
+    //    `assign_vehicles`, checked inside the controller.
+    // ⚠ ABOVE nothing dangerous — 'home-pin' is its own path segment, not an id.
+    Route::get('/orders/riders-map/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'homePinShow'])->where('userId', '[0-9]+')->name('fleet.home-pin.show');
+    Route::post('/orders/riders-map/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'homePinSave'])->where('userId', '[0-9]+')->name('fleet.home-pin.save');
+    Route::delete('/orders/riders-map/fleet/home-pin/{userId}', [\App\Http\Controllers\CRM\VehicleController::class, 'homePinClear'])->where('userId', '[0-9]+')->name('fleet.home-pin.clear');
     // 🧾 "Which recorded service is this bill for?" — the picker's list.
     Route::get('/orders/riders-map/fleet/unbilled-services', [\App\Http\Controllers\CRM\FleetFuelController::class, 'unbilledServices'])->name('fleet.unbilled-services');
     Route::post('/orders/riders-map/fleet/default-interval', [\App\Http\Controllers\CRM\FleetFuelController::class, 'setDefaultInterval'])->name('orders.riders-map.fleet.default-interval');
@@ -315,6 +328,9 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/riders-map/fleet/maintenance-types', [\App\Http\Controllers\CRM\FleetFuelController::class, 'saveMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.create');
     Route::post('/orders/riders-map/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'saveMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.save');
     Route::delete('/orders/riders-map/fleet/maintenance-types/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'deleteMaintenanceType'])->name('orders.riders-map.fleet.maintenance-types.delete');
+    // ⭐ "Which vehicles hold their own value for this job?" — asked BEFORE a class
+    //   standard changes, so the manager decides what happens to them.
+    Route::get('/orders/riders-map/fleet/maintenance-types/{id}/exceptions', [\App\Http\Controllers\CRM\FleetFuelController::class, 'typeExceptions'])->name('orders.riders-map.fleet.maintenance-types.exceptions');
     // ✏️ Correct a PENDING fuel/maintenance claim a rider already filed.
     Route::post('/orders/riders-map/fleet/claim/{id}/edit', [\App\Http\Controllers\CRM\FleetFuelController::class, 'editClaim'])->name('orders.riders-map.fleet.claim-edit');
     // 🏍️🚚 VEHICLE REGISTRY (Aug-2026) — bikes and the van as assignable machines.
@@ -375,6 +391,11 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/orders/riders-map/fleet/vehicles/{id}', [\App\Http\Controllers\CRM\VehicleController::class, 'show'])->name('orders.riders-map.fleet.vehicles.show');
     // The month's kilometres day by day — lazy, only when a manager asks for it.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/days', [\App\Http\Controllers\CRM\VehicleController::class, 'days'])->name('orders.riders-map.fleet.vehicles.days');
+    // ⭐⭐ THE PER-VEHICLE PER-JOB SCHEDULE (Sep-2026) — what replaced the single-number
+    //   "This bike's schedule" prompt. Gated on `manage_bike_service`, NOT
+    //   `assign_vehicles`: Qasim owns maintenance and holds no assignment key.
+    Route::get('/orders/riders-map/fleet/vehicles/{id}/schedule', [\App\Http\Controllers\CRM\VehicleController::class, 'schedule'])->name('orders.riders-map.fleet.vehicles.schedule');
+    Route::post('/orders/riders-map/fleet/vehicles/{id}/schedule', [\App\Http\Controllers\CRM\VehicleController::class, 'saveSchedule'])->name('orders.riders-map.fleet.vehicles.schedule.save');
     // 🛢 Service-due banner (dismissable). Audience is decided inside the service,
     // not by a route permission — see BikeServiceAlerts::forUser().
     Route::get('/orders/riders-map/fleet/service-alerts', [\App\Http\Controllers\CRM\VehicleController::class, 'serviceAlerts'])->name('orders.riders-map.fleet.service-alerts');
@@ -409,6 +430,10 @@ Route::middleware(['auth'])->group(function () {
     Route::post('/orders/riders-map/fleet/workshop/{id}/accept', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'accept'])->name('fleet.workshop.accept')->where('id', '[0-9]+');
     Route::post('/orders/riders-map/fleet/workshop/{id}/cancel', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'cancel'])->name('fleet.workshop.cancel')->where('id', '[0-9]+');
     Route::post('/orders/riders-map/fleet/workshop/{id}/done', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'done'])->name('fleet.workshop.done')->where('id', '[0-9]+');
+    // 🚦 The trip: a manager may press "he has gone" for a rider who forgot; `live` feeds the
+    //    corner notice on the orders page so nobody assigns work to a man at the workshop.
+    Route::post('/orders/riders-map/fleet/workshop/{id}/depart', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'depart'])->name('fleet.workshop.depart')->where('id', '[0-9]+');
+    Route::get('/orders/riders-map/fleet/workshop/live', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'live'])->name('fleet.workshop.live');
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
     // Who loses this machine if it is taken back — feeds the "and what about him?" prompt.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'releasePreview'])->name('orders.riders-map.fleet.vehicles.preview-release');
@@ -445,6 +470,16 @@ Route::middleware(['auth'])->group(function () {
     // reaching Laravel on prod (its own 404) before any code existed.
     Route::get('/orders/scan-help/pending', [OrderController::class, 'scanHelpPending'])->name('orders.scan-help.pending');
     Route::post('/orders/scan-help/decide', [OrderController::class, 'scanHelpDecide'])->name('orders.scan-help.decide');
+
+    // RETURNS (Sep-2026) — a delivered order comes back. Money + goods, decided
+    // on a form; see OrderReturnService.
+    // ⚠ `/orders/returns/...` is three segments, so the /orders/{id} catch-all
+    // below cannot swallow it — but these still sit ABOVE it, like every other
+    // static orders path here, because that rule has been broken twice.
+    Route::get('/orders/returns/pending', [\App\Http\Controllers\CRM\OrderReturnController::class, 'pending'])->name('orders.returns.pending');
+    Route::get('/orders/returns/{returnId}/detail', [\App\Http\Controllers\CRM\OrderReturnController::class, 'detail'])->name('orders.returns.detail');
+    Route::get('/orders/{id}/return/preview', [\App\Http\Controllers\CRM\OrderReturnController::class, 'preview'])->name('orders.return.preview');
+    Route::post('/orders/{id}/return', [\App\Http\Controllers\CRM\OrderReturnController::class, 'store'])->name('orders.return.store');
     // Receipt printout field config (operations "More" menu). Static paths before /orders/{id}.
     // ⚠ The path deliberately avoids the words "config"/"settings": the host's StackProtect bot
     // filter challenges /settings-shaped URLs BEFORE they reach Laravel (verified Aug-2026 — see
@@ -537,6 +572,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'index'])->name('riders.index');
     Route::post('/riders', [\App\Http\Controllers\CRM\RiderProfileController::class, 'store'])->name('riders.store');
     Route::get('/riders/{id}', [\App\Http\Controllers\CRM\RiderProfileController::class, 'show'])->name('riders.show');
+    // 🏠 Removing a home location is its OWN action — never a side effect of an empty box or
+    //    of unticking "company bike" (owner ruling, 10-Sep-2026). Gated on `assign_vehicles`
+    //    inside the controller, the same key the Bikes tab and the phone ask.
+    Route::post('/riders/{id}/home-pin/clear', [\App\Http\Controllers\CRM\RiderProfileController::class, 'destroyHomePin'])->where('id', '[0-9]+')->name('riders.home-pin.clear');
     /**
      * ⚰ RETIRED 7-Sep-2026 — `POST /riders/shift` is gone. It was the legacy door: it wrote
      *   raw `t_ops_rider_profile.shift_start/shift_end` and had NO permission check at all,
@@ -661,6 +700,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/shift-planner', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'index'])->name('shift-planner.index');
     Route::get('/shift-planner/week', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'weekData'])->name('shift-planner.week');
     Route::post('/shift-planner/update-phone', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'updatePhone'])->name('shift-planner.update-phone');
+    // 👥 Users list — who is on the shared Shift Planner + Attendance roster.
+    //    Gated inside the controller to Shabib + Taimur; the WRITE is /attendance/update-visibility.
+    Route::get('/shift-planner/users-list', [\App\Http\Controllers\Ops\ShiftPlannerController::class, 'usersList'])->name('shift-planner.users-list');
 
     /**
      * ⚙ SHIFT RULES (Sep-2026) — who may change whose shift, and the approval queue.

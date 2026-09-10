@@ -43,6 +43,35 @@ class OrderRiderController extends Controller
             ]);
         }
 
+        /**
+         * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling, 10-Sep-2026 — allowed, but ask.)
+         *
+         * The desk twin of the guard in `RiderController::assignRiderToOrder`, reading the SAME
+         * `tripFor()` derivation, so a dispatcher on the web and one on the phone are told the
+         * same thing about the same man at the same moment.
+         *
+         * ⚠ `confirm` overrides it — a real emergency must still be dispatchable. An old page
+         *   cannot send the flag and therefore cannot assign to him by accident.
+         * ⚠ Placed BEFORE the ledger work below: refusing after money has moved would leave the
+         *   order half-assigned.
+         */
+        try {
+            $wsTrip = app(\App\Services\Riders\WorkshopVisitService::class)
+                ->tripFor((int) $data['rider_user_id']);
+            if ($wsTrip && !empty($wsTrip['is_active']) && !$request->boolean('confirm')) {
+                return response()->json([
+                    'success' => false,
+                    'needs_confirmation' => true,
+                    'workshop_trip' => $wsTrip,
+                    'message' => ($wsTrip['label'] ?? 'He is at the workshop')
+                        . '. Assign this order to him anyway?',
+                ], 409);
+            }
+        } catch (\Throwable $e) {
+            // ⚠ Fail OPEN: a lookup problem must never block ordinary dispatch.
+            \Log::warning('workshop assign guard skipped (web)', ['error' => $e->getMessage()]);
+        }
+
         // ================================================================
         // LEDGER CHANGE DETECTION FOR RIDER ASSIGNMENT
         // ================================================================
@@ -57,6 +86,17 @@ class OrderRiderController extends Controller
                 $newRiderId = (int)$data['rider_user_id'];
                 
                 if ($oldRiderId && $oldRiderId != $newRiderId) {
+                    // RETURNED (Sep-2026): the invoice is frozen — its refund / credit
+                    // counter-entry already stands. Re-posting it on a new rider would
+                    // move the money twice.
+                    if (app(\App\Services\CRM\OrderReturnService::class)->isLocked((int) $order->id)) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Cannot change rider: ' . \App\Services\CRM\OrderReturnService::LOCK_MESSAGE,
+                            'error_type' => 'order_returned'
+                        ], 422);
+                    }
+
                     // Check if ledger is settled WITH cash (a free order's auto-settled
                     // Rs 0 invoice moved no money — it simply reposts on the new rider)
                     if ($ledger->isSettledWithCash()) {

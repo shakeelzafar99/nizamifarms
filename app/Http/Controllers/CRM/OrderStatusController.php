@@ -232,6 +232,21 @@ class OrderStatusController extends Controller
             'credit_stranded_payment' => 'nullable|boolean'
         ]);
 
+        // ⭐⭐ RETURNS (Sep-2026) — "Returned" is never just a status pick.
+        // It has to answer where the money goes and what happens to the goods,
+        // and both answers post real ledger rows. This endpoint cannot ask, so
+        // it refuses and points at the form that can. Without this refusal the
+        // status dropdown would be a silent back door to a returned order with
+        // no money handled and no stock decision ever taken.
+        if ($request->status_code === \App\Services\CRM\OrderReturnService::STATUS_CODE) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Use the “Return order” form to return an order — it has to record what happens to the money and the goods.',
+                'error_type'  => 'use_return_form',
+                'return_form' => true,
+            ], 422);
+        }
+
         // Capture the status the order is in BEFORE the change, for the bring-back check below.
         $bringBackFromStatus = OrderModel::where('id', $request->order_id)->value('order_status');
 
@@ -360,6 +375,18 @@ class OrderStatusController extends Controller
             'status_code' => 'required|string|exists:t_crm_order_status_master,status_code',
             'notes' => 'nullable|string|max:1000'
         ]);
+
+        // ⚠⚠ Never in bulk. A return is one decision PER ORDER — whose money,
+        // how much, which shelf — and bulk has no confirmation handshake, no van
+        // guard and no per-order dialog. Ticking fifty orders and picking
+        // "Returned" would post fifty refunds nobody chose.
+        if ($request->status_code === \App\Services\CRM\OrderReturnService::STATUS_CODE) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Orders cannot be returned in bulk — each return has its own money and stock decision. Use the “Return order” form on one order at a time.',
+                'error_type' => 'use_return_form',
+            ], 422);
+        }
 
         $result = $this->statusService->bulkChangeStatus(
             $request->order_ids,

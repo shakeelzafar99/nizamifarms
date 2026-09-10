@@ -186,6 +186,15 @@ class TipsFundService
             return 0.0;
         }
 
+        // A RETURNED order (Sep-2026) only gives the tip back when the manager
+        // said so. If they chose to keep it, the customer was refunded the
+        // invoice LESS the tip, so the fund must go on holding it for the rider —
+        // see OrderReturnService::executeMoney(). The reversal path never gets
+        // here with a live invoice, so it needs no special case.
+        if ($this->tipReturnedOnReturn((int) $order->id)) {
+            return 0.0;
+        }
+
         $tip = round((float) ($order->tip_amount ?? 0), 2);
         if ($tip < self::EPSILON) {
             return 0.0;
@@ -196,6 +205,39 @@ class TipsFundService
         }
 
         return $this->invoiceRowApplied($order) ? $tip : 0.0;
+    }
+
+    /**
+     * Did a return decide that this order's tip goes back to the customer?
+     *
+     * ⚠ Dormant-safe: the returns table may not exist yet (manual deploys put the
+     * PHP up before the SQL), and this runs inside live money transactions.
+     * Missing table ⇒ false ⇒ exactly today's behaviour.
+     */
+    private function tipReturnedOnReturn(int $orderId): bool
+    {
+        static $hasTable = null;
+
+        if ($hasTable === null) {
+            try {
+                $hasTable = \Illuminate\Support\Facades\Schema::hasTable('t_crm_order_return');
+            } catch (\Throwable $e) {
+                $hasTable = false;
+            }
+        }
+
+        if (!$hasTable) {
+            return false;
+        }
+
+        try {
+            return (bool) DB::table('t_crm_order_return')
+                ->where('order_id', $orderId)
+                ->where('tip_returned', 1)
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /** The order's FIRST delivery, compared on the date alone (prod runs +2h). */

@@ -2,6 +2,7 @@
 
 namespace App\Services\Riders;
 
+use App\Models\Riders\MaintenanceTypeModel;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -32,16 +33,150 @@ use Illuminate\Support\Facades\Schema;
 class ServiceRecordService
 {
     /** Active maintenance types that actually have a countdown to reset. */
-    public function scheduledTypes(): array
+    /**
+     * The jobs that can be RECORDED, for one kind of machine (class-aware Sep-2026).
+     *
+     * ⚠ `has_schedule`, not `interval_km > 0`: a TIME-based job counts down in days
+     *   and reports 0 km by design, so the old test would have hidden it from every
+     *   picker and left it with a visible countdown nothing could reset — exactly the
+     *   Brake Shoe bug from Aug-3, one unit over.
+     *
+     * @param ?string $class 'bike' | 'van' — null keeps the pre-class behaviour
+     */
+    public function scheduledTypes(?string $class = null): array
     {
         try {
+            $svc  = app(MaintenanceTypeService::class);
+            $rows = $class === null ? $svc->options() : $svc->optionsFor($class);
             return array_values(array_filter(
-                app(MaintenanceTypeService::class)->options(),
-                fn ($t) => (int) ($t['interval_km'] ?? 0) > 0
+                $rows,
+                fn ($t) => !empty($t['has_schedule']) || (int) ($t['interval_km'] ?? 0) > 0
             ));
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    /** The class of the machine this rider is on today — for the pickers and gates. */
+    public function classForRider(?int $riderId, ?string $date = null): ?string
+    {
+        return $this->classFor(null, $riderId, $date);
+    }
+
+    /**
+     * ⭐⭐ WHICH MACHINE IS THIS SERVICE ABOUT? — THE ONE ANSWER (owner ask, 10-Sep-2026:
+     *    *"the maintenance records follow the vehicle, and the registry decides which user
+     *    is writing it"*).
+     *
+     * Every door that records work asks THIS, and nothing else:
+     *   • the workshop completion         → the VISIT names the machine, explicitly;
+     *   • the Bikes screen / vehicle card → the CARD is a machine, so it sends its id;
+     *   • the rider's own "ho gaya?"      → the visit again;
+     *   • a rider-first form with no machine in scope, or an older client
+     *                                     → the registry, `vehicleForDay(rider, date)`.
+     *
+     * ⚠⚠ WHY AN EXPLICIT ID MUST WIN. The registry answers "what is this man on THAT DAY",
+     *    which stops being the same question as "which bike was serviced" the moment the two
+     *    diverge — and taking a bike to the workshop is precisely when they diverge, because
+     *    the manager hands him a spare while it is in. Deriving then credits the oil change
+     *    to the spare, silently, while the real machine's countdown keeps running.
+     *
+     * ⚠ An id that names no vehicle is IGNORED rather than trusted — it falls through to the
+     *   registry, which is the old behaviour and never worse than it.
+     */
+    public function vehicleForRecord($explicitVehicleId, ?int $riderId, ?string $date = null): ?int
+    {
+        $day = $date ?: \Carbon\Carbon::today()->format('Y-m-d');
+        $vid = (int) ($explicitVehicleId ?: 0);
+        try {
+            if ($vid > 0 && (new VehicleService())->find($vid)) return $vid;
+        } catch (\Throwable $e) {
+            // fall through to the registry — a lookup wobble must not lose the recording
+        }
+        if (!$riderId) return null;
+        try {
+            $d = (new VehicleResolver())->vehicleForDay((int) $riderId, $day);
+            return $d ? (int) $d : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * The class (bike|van) whose schedule this recording is judged against — resolved from
+     * the MACHINE when one is known, and only then from the rider's day.
+     * ⚠ Same precedence as `vehicleForRecord`, deliberately: the job list a form offers and
+     *   the machine the record lands on must never come from two different answers.
+     */
+    public function classFor($vehicleId, ?int $riderId, ?string $date = null): ?string
+    {
+        $vid = $this->vehicleForRecord($vehicleId, $riderId, $date);
+        if (!$vid) return null;
+        try {
+            return (new VehicleService())->classOf($vid);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** @internal memo for logStampsVehicle(); a class static so a test can reset it. */
+    private static ?bool $logVehMemo = null;
+
+    /**
+     * Does `t_fleet_service_log` carry the machine yet? (`service_log_vehicle_sep2026.sql`)
+     *
+     * ⚠ Memoised per process and consulted by every reader in VehicleService too, so there
+     *   is ONE answer to "may I trust the stamp" rather than six schema calls per render.
+     */
+    public static function logStampsVehicle(): bool
+    {
+        if (self::$logVehMemo !== null) return self::$logVehMemo;
+        try {
+            self::$logVehMemo = Schema::hasTable('t_fleet_service_log')
+                && Schema::hasColumn('t_fleet_service_log', 'vehicle_id');
+        } catch (\Throwable $e) {
+            self::$logVehMemo = false;
+        }
+        return self::$logVehMemo;
+    }
+
+    /** Test seam — see the ALTER-inside-a-transaction trap in the workshop round. */
+    public static function flushSchemaMemo(): void { self::$logVehMemo = null; }
+
+    /**
+     * ⭐⭐ WHICH MACHINE DOES THIS LOG ROW BELONG TO — the ONE rule every reader applies.
+     *
+     * The stamp when there is one (a recorded fact), the registry when there is not (a row
+     * filed before the column existed). Nothing else may decide this, or the countdown, the
+     * history list, the meter chain and the alert sweep start disagreeing about one row.
+     *
+     * @param object|array $row  needs `user_id` and `service_date`, plus `vehicle_id` when
+     *                           the caller selected it (it must, once the column exists)
+     */
+    public static function logVehicleOf($row, ?VehicleResolver $resolver = null): ?int
+    {
+        $get = fn (string $k) => is_array($row) ? ($row[$k] ?? null) : ($row->$k ?? null);
+
+        $stamped = $get('vehicle_id');
+        if (self::logStampsVehicle() && $stamped !== null && (int) $stamped > 0) {
+            return (int) $stamped;
+        }
+        $uid = (int) ($get('user_id') ?: 0);
+        if (!$uid) return null;
+        try {
+            $res = $resolver ?: new VehicleResolver();
+            $d   = substr((string) $get('service_date'), 0, 10);
+            $v   = $res->vehicleForDay($uid, $d);
+            return $v ? (int) $v : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** The columns a per-machine reader must select — `vehicle_id` only once it exists. */
+    public static function logVehicleCols(string $prefix = ''): array
+    {
+        return self::logStampsVehicle() ? [$prefix . 'vehicle_id'] : [];
     }
 
     /**
@@ -111,17 +246,17 @@ class ServiceRecordService
                 ->whereDate('l.service_date', '>=', \Carbon\Carbon::today()->subDays($days)->format('Y-m-d'))
                 ->orderByDesc('l.service_date')->orderByDesc('l.id')
                 ->limit(40)
-                ->get(['l.id', 'l.meter', 'l.service_date', 'l.maintenance_type_id',
-                       'l.request_id', 't.type_name', 't.bucket']);
+                ->get(array_merge(['l.id', 'l.user_id', 'l.meter', 'l.service_date',
+                                   'l.maintenance_type_id', 'l.request_id', 't.type_name', 't.bucket'],
+                                  self::logVehicleCols('l.')));
 
             $out = [];
             foreach ($rows as $r) {
                 if (isset($live[(int) $r->id])) continue;   // a live bill already speaks for it
-                // ⚠ The machine is resolved the SAME way the countdowns resolve it, so the
-                //   vehicle page never offers a service that belongs to a different bike.
-                $vid = null;
-                try { $vid = (new VehicleResolver())->vehicleForDay($riderId, substr((string) $r->service_date, 0, 10)); }
-                catch (\Throwable $e) { $vid = null; }
+                // ⚠ The machine is resolved the SAME way the countdowns resolve it — the
+                //   stamp first, the registry for a row filed before the stamp existed — so
+                //   the vehicle page never offers a service that belongs to a different bike.
+                $vid = self::logVehicleOf($r);
                 if ($vehicleId && (int) $vid !== (int) $vehicleId) continue;
 
                 $out[] = [
@@ -278,9 +413,9 @@ class ServiceRecordService
      *
      * @return array{ok: bool, type: ?object, message: string}
      */
-    public function resolveType($typeId): array
+    public function resolveType($typeId, ?string $class = null): array
     {
-        $scheduled = $this->scheduledTypes();
+        $scheduled = $this->scheduledTypes($class);
 
         if (empty($typeId)) {
             if ($scheduled) {
@@ -298,6 +433,30 @@ class ServiceRecordService
         if (!$type) {
             return ['ok' => false, 'type' => null, 'message' => 'That maintenance type no longer exists.'];
         }
+        /**
+         * ⚠⚠ THE TEST IS "does this job count down ON THIS MACHINE", not "does it have
+         *    a kilometre figure" (Sep-2026). Two ways the old check was now wrong:
+         *    a TIME-based job has no km and would have been refused as "as conditions",
+         *    and a job with a bike figure but no VAN figure would have been accepted on
+         *    the van and then had nothing to reset.
+         */
+        if ($class !== null) {
+            $sched = $type->scheduleForClass($class);
+            if (!$type->appliesToClass($class)) {
+                return ['ok' => false, 'type' => null, 'message' =>
+                    '"' . $type->type_name . '" is not on the schedule for '
+                    . ($class === MaintenanceTypeModel::CLASS_VAN ? 'vans' : 'bikes') . '.'];
+            }
+            if (!$sched['has']) {
+                return ['ok' => false, 'type' => null, 'message' =>
+                    '"' . $type->type_name . '" has no schedule for '
+                    . ($class === MaintenanceTypeModel::CLASS_VAN ? 'vans' : 'bikes')
+                    . ' yet, so there is no due date to reset. Set one under ⚙️ Types, or '
+                    . 'file it as a maintenance request to keep the bill and the photo with it.'];
+            }
+            return ['ok' => true, 'type' => $type, 'message' => ''];
+        }
+
         if ((int) $type->interval_km <= 0) {
             // "As conditions" work (Chain Set, Misc) has no countdown, so there is
             // nothing here to record against.
@@ -328,6 +487,44 @@ class ServiceRecordService
                     'message' => 'A rider and an odometer reading are both needed.'];
         }
 
+        /**
+         * ⭐⭐ THE MACHINE, RESOLVED ONCE AND FROZEN (owner ask, 10-Sep-2026). Callers that
+         *    know the bike — the workshop visit, a vehicle card — pass it; everyone else
+         *    falls back to the registry exactly as before. See `vehicleForRecord()` for why
+         *    an explicit id has to win.
+         */
+        $vehicleId = $this->vehicleForRecord($in['vehicle_id'] ?? null, $riderId, $date);
+
+        /**
+         * ⚠⚠ A DROPPED DIGIT MUST NOT PASS AS A SERVICE (10-Sep-2026). Nothing checked the
+         *    odometer here, and the evidence readers silently SKIP an implausible row — so
+         *    "36500" typed as "3650" gave a receipt, a log row, a visit marked done, and a
+         *    countdown that never reset, with nothing anywhere saying why.
+         *
+         * ⭐ The SAME spine every meter reading is judged against (`readingPlausibleFor`),
+         *   so what this door accepts is exactly what the countdown will later count. A
+         *   back-dated service at a genuinely lower odometer sits inside the machine's own
+         *   range and passes; only a number the machine could never have shown is refused.
+         * ⚠ Fails OPEN when the machine is unknown or the check throws — a guard must never
+         *   be the reason a real service cannot be recorded.
+         */
+        if ($vehicleId) {
+            try {
+                $veh = new VehicleService();
+                if (!$veh->readingPlausibleFor($vehicleId, $meter)) {
+                    $cur  = $veh->currentMeterFor($vehicleId);
+                    $name = $veh->find($vehicleId)['name'] ?? 'that machine';
+                    return ['ok' => false, 'service_log_id' => null, 'moved_clock' => false,
+                            'message' => number_format($meter) . ' km does not fit ' . $name . '\'s own readings'
+                                . ($cur !== null ? ' (it was last seen at ' . number_format($cur) . ' km)' : '')
+                                . '. Check the odometer — a missing digit here would record a service '
+                                . 'that no countdown can use.'];
+                }
+            } catch (\Throwable $e) {
+                // A plausibility wobble must never lose a real recording.
+            }
+        }
+
         try {
             $logId = null;
 
@@ -343,7 +540,10 @@ class ServiceRecordService
              *   still happens in that case, so nothing regresses.
              */
             if ($type && Schema::hasTable('t_fleet_service_log')) {
-                $logId = (int) DB::table('t_fleet_service_log')->insertGetId([
+                $logId = (int) DB::table('t_fleet_service_log')->insertGetId(
+                    // ⭐ The stamp, when the column exists. Schema-guarded so this file is
+                    //   safe to upload before service_log_vehicle_sep2026.sql runs.
+                    (self::logStampsVehicle() && $vehicleId ? ['vehicle_id' => $vehicleId] : []) + [
                     'user_id'             => $riderId,
                     'maintenance_type_id' => (int) $type->id,
                     'meter'               => $meter,
@@ -375,9 +575,12 @@ class ServiceRecordService
                 ]);
             }
 
-            $this->bustCaches($riderId);
+            // ⚠ The MACHINE's caches, not just the rider's — the record may be for a bike he
+            //   is not on today, which is the whole reason the stamp exists.
+            $this->bustCaches($riderId, $vehicleId);
 
             return ['ok' => true, 'service_log_id' => $logId, 'moved_clock' => $movedClock,
+                    'vehicle_id' => $vehicleId,
                     'message' => $this->receipt($type, $meter, $date, $movedClock)];
         } catch (\Throwable $e) {
             Log::error('ServiceRecordService::record failed', ['rider' => $riderId, 'error' => $e->getMessage()]);
@@ -467,7 +670,9 @@ class ServiceRecordService
             }
 
             $this->rebuildProfileStamp((int) $row->user_id);
-            $this->bustCaches((int) $row->user_id);
+            // ⚠ The machine the row is ABOUT — a correction to a service on a bike he no
+            //   longer holds must still clear that bike's countdown cache.
+            $this->bustCaches((int) $row->user_id, self::logVehicleOf($row));
             return ['ok' => true, 'message' => 'Service record corrected.' . $mirrored];
         } catch (\Throwable $e) {
             Log::error('ServiceRecordService::amend failed', ['log' => $logId, 'error' => $e->getMessage()]);
@@ -617,6 +822,8 @@ class ServiceRecordService
             }
             $row = DB::table('t_fleet_service_log')->where('id', $logId)->first();
             if (!$row) return ['ok' => false, 'message' => 'That service record no longer exists.'];
+            // ⚠ Read BEFORE the delete — afterwards there is no row to resolve the machine from.
+            $wasFor = self::logVehicleOf($row);
 
             DB::table('t_fleet_service_log')->where('id', $logId)->delete();
             // ⚠ A visit that produced this record must stop pointing at a row that is gone.
@@ -628,7 +835,7 @@ class ServiceRecordService
             } catch (\Throwable $e) { /* the visit stays, it just loses the link */ }
 
             $this->rebuildProfileStamp((int) $row->user_id);
-            $this->bustCaches((int) $row->user_id);
+            $this->bustCaches((int) $row->user_id, $wasFor);
 
             /**
              * ⚠⚠ DELETING A SERVICE NEVER DELETES MONEY (review, 3-Sep). When this record was
@@ -715,7 +922,14 @@ class ServiceRecordService
      *   from evidence gathered before this write and tells the user the service he just
      *   recorded has not happened.
      */
-    public function bustCaches(int $riderId): void
+    /**
+     * @param ?int $vehicleId ⭐ THE MACHINE THE RECORD IS ABOUT, when the caller knows it
+     *        (10-Sep-2026). This used to bump only `currentVehicleFor($rider)` — what he is
+     *        holding NOW — which is the wrong machine in exactly the case that matters: the
+     *        bike is at the workshop and he has been given a spare. The service then landed
+     *        on the right bike and the right bike's cached countdown was never cleared.
+     */
+    public function bustCaches(int $riderId, ?int $vehicleId = null): void
     {
         try {
             $vid = (new VehicleResolver())->currentVehicleFor($riderId);
@@ -723,6 +937,9 @@ class ServiceRecordService
             $vid = null;
         }
         VehicleService::bumpServiceEvidence($vid ? (int) $vid : null);
+        if ($vehicleId && (int) $vehicleId !== (int) $vid) {
+            VehicleService::bumpServiceEvidence((int) $vehicleId);
+        }
 
         // Targeted only — a global flush would also wipe unrelated caches.
         try {

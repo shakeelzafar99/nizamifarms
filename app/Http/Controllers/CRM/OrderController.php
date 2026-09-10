@@ -79,6 +79,13 @@ class OrderController extends Controller
         $canViewShopify = $user->hasPermission('view_shopify_orders');
         $canViewAllOrders = $user->hasPermission('view_all_orders');
 
+        // RETURNS (Sep-2026) — may this user take a delivered order back?
+        // Asked through the service so the web page, the API and the status
+        // endpoint all answer the identical question (permission, then the
+        // config-email / taimur|shabib fallback that identifies Shabib, who
+        // shares the Management role with others).
+        $canReturnOrders = app(\App\Services\CRM\OrderReturnService::class)->userCanReturn($user);
+
         // If trying to view Shopify but don't have permission, redirect to main orders
         if ($source === 'shopify' && !$canViewShopify) {
             return redirect()->route('orders.index', ['source' => 'other'])
@@ -271,7 +278,7 @@ class OrderController extends Controller
             ]);
         }
 
-        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'user', 'paymentProofMap', 'automationBanners'));
+        return view('pages.orders.index', compact('orders', 'source', 'tab', 'shopifyCount', 'approvalsCount', 'otherCount', 'openCount', 'canViewShopify', 'canViewAllOrders', 'canReturnOrders', 'user', 'paymentProofMap', 'automationBanners'));
     }
 
     /**
@@ -2218,6 +2225,14 @@ class OrderController extends Controller
                         // ruling Aug-4): the handover scan is what proves who took it
                         // and where. The rest of the edit still saves.
                         $vanBlock = \App\Services\Riders\VanService::manualChangeBlock($order, $submittedStatus);
+                        // ⭐⭐ RETURNS (Sep-2026): the edit form's dropdown cannot ask
+                        // where the money goes or which shelf the meat lands on, so it
+                        // must not be able to set "Returned". The rest of the edit
+                        // still saves — only the status is refused, with the door named.
+                        if ($vanBlock === null
+                            && $submittedStatus === \App\Services\CRM\OrderReturnService::STATUS_CODE) {
+                            $vanBlock = 'To return this order use the “Return order” button — it records what happens to the money and the goods. The rest of your changes were saved.';
+                        }
                         if ($vanBlock !== null) {
                             $statusChangeWarning = $vanBlock;
                         } else {
@@ -2289,6 +2304,17 @@ class OrderController extends Controller
                             ], 422);
                         }
                         
+                        // RETURNED (Sep-2026): the invoice is frozen — a refund row or
+                        // credit grant already stands against it. Reversing + re-posting
+                        // it here would move the money a second time.
+                        if (app(\App\Services\CRM\OrderReturnService::class)->isLocked((int) $order->id)) {
+                            return response()->json([
+                                'success' => false,
+                                'message' => 'Cannot change payment method: ' . \App\Services\CRM\OrderReturnService::LOCK_MESSAGE,
+                                'error_type' => 'order_returned'
+                            ], 422);
+                        }
+
                         // Payment method can be changed - handle it
                         try {
                             $result = $this->handlePaymentMethodChange($order, $ledger, $newPaymentMethod);

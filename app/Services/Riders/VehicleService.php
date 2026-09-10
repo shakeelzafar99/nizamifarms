@@ -2,6 +2,7 @@
 
 namespace App\Services\Riders;
 
+use App\Models\Riders\MaintenanceTypeModel;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -67,7 +68,14 @@ class VehicleService
     private static array $rawReadingsMemo = [];
     /** [vehicleId => [[m,d],…]] machine-KEYED readings (meter log + handover meter). */
     private static array $machineReadMemo = [];
-    private static $typesMemo = null;
+    /**
+     * [class => Collection] — the scheduled jobs, PER VEHICLE CLASS (Sep-2026).
+     * ⚠ Was a single static shared by the whole fleet; keyed by class now, because a
+     *   render that touches a bike and the van must not serve one the other's list.
+     */
+    private static array $typesMemo = [];
+    /** [vehicleId => row] — vtype + is_company, asked once per machine per render. */
+    private static array $vehicleRowMemo = [];
 
     /**
      * How far back the FIRST keeper's history reaches (see attributionWindows).
@@ -532,10 +540,25 @@ class VehicleService
         }
 
         try {
-            $types = $this->scheduledTypes();
+            /**
+             * ⭐⭐ ONLY COMPANY MACHINES ARE ON A SCHEDULE (owner ruling, 10-Sep-2026):
+             *    *"own bikes maintenance is not with the company so we aren't tracking
+             *    them or setting them either. this is only for company bikes and van."*
+             *
+             * ⚠ Returning an EMPTY schedule (rather than an "unknown" state) is what
+             *   makes every consumer do the right thing without being told: the panel
+             *   draws no countdown, `overallServiceStateFor` finds no row to speak for
+             *   the headline, and the alert sweep has nothing to raise. One rule, in
+             *   one place, and the screens say WHY via `isTracked()`.
+             */
+            $vRow = $this->vehicleRowFor($vehicleId);
+            if (!$this->isTracked($vRow)) return self::$scheduleMemo[$memoKey] = [];
+
+            $class = MaintenanceTypeModel::normaliseClass($vRow->vtype ?? null);
+            $types = $this->scheduledTypesFor($class);
             if ($types->isEmpty()) return self::$scheduleMemo[$memoKey] = [];
 
-            $last = $this->coveredServiceEvidence($vehicleId, $types);
+            $last = $this->coveredServiceEvidence($vehicleId, $types, $class);
 
             /**
              * ⭐⭐ ONE RESOLVER FOR "HOW OFTEN IS THIS JOB DUE?" (Aug-27 2026).
@@ -573,22 +596,45 @@ class VehicleService
                 $keeperId = null;
             }
 
+            $today = Carbon::today();
+
             $out = [];
             foreach ($types as $t) {
                 $l     = $last[(int) $t->id] ?? null;
                 $lastM = $l['m'] ?? null;
+                $lastD = $l['d'] ?? null;
 
-                $explained = $resolver->explain($vehicleId, (int) $t->interval_km, $keeperId);
-                $interval  = (int) $explained['km'];
+                // ⭐⭐ ONE call answers class, basis and every override step.
+                $r        = $resolver->resolveFor($vehicleId, $class, $t, $keeperId);
+                $isTime   = $r['basis'] === MaintenanceTypeModel::BASIS_TIME;
+                $interval = (int) ($r['km'] ?? 0);
                 // Kept for compatibility: true whenever the number did NOT come from the
-                // job's own schedule, which is the only case a screen must explain.
-                $overridden = !$explained['from_type'];
+                // job's own standard, which is the only case a screen must explain.
+                $overridden = !$r['from_type'];
 
                 // A countdown needs BOTH ends; anything less stays null rather
                 // than inventing one from a made-up reference (same rule as the
-                // rider panel).
-                $dueIn = ($lastM !== null && $currentMeter !== null)
+                // rider panel). For a TIME job the two ends are dates, not meters.
+                $dueIn = (!$isTime && $lastM !== null && $currentMeter !== null)
                     ? $interval - ($currentMeter - $lastM) : null;
+
+                $dueInDays = null;
+                $dueAtDate = null;
+                if ($isTime && $r['days'] !== null && $lastD) {
+                    try {
+                        $due       = Carbon::parse($lastD)->addDays((int) $r['days']);
+                        $dueAtDate = $due->format('Y-m-d');
+                        // ⚠ Whole days between calendar dates, signed — NOT diffInDays,
+                        //   which is absolute and would report an overdue job as early.
+                        $dueInDays = $today->diffInDays($due, false);
+                    } catch (\Throwable $e) {
+                        $dueInDays = null;
+                    }
+                }
+
+                $state = $isTime
+                    ? ServiceIntervalResolver::stateForDays($dueInDays)
+                    : ServiceIntervalResolver::stateFor($dueIn);
 
                 $out[] = [
                     'id'          => (int) $t->id,
@@ -598,16 +644,33 @@ class VehicleService
                     // read by overallServiceStateFor when it picks the headline.
                     'resets_clock' => !empty($t->resets_service_clock),
                     'interval_km' => $interval,
-                    // True when the number did NOT come from this job's own schedule —
+                    // True when the number did NOT come from this job's own standard —
                     // so a screen can say WHERE it came from instead of just printing it.
                     'interval_overridden' => $overridden,
-                    'type_interval_km'    => (int) $t->interval_km,
-                    // 'type' | 'vehicle' | 'rider' | 'company' | 'fallback', plus the
-                    // short human label the screens print. Additive keys.
-                    'interval_source'     => $explained['source'],
-                    'interval_source_label' => ServiceIntervalResolver::sourceLabel($explained),
+                    // ⚠ THE CLASS'S standard, not the bike column — this is what the
+                    //   "(this vehicle's own schedule)" line is measured against, and
+                    //   on a van it must be the van figure or the explanation lies.
+                    'type_interval_km'    => (int) ($r['standard_km'] ?? 0),
+                    // 'vehicle_job' | 'type' | 'vehicle' | 'rider' | 'company' | 'fallback',
+                    // plus the short human label the screens print. Additive keys.
+                    'interval_source'     => $r['source'],
+                    'interval_source_label' => $r['source_label'],
+                    // ── class + basis, Sep-2026 (additive; old clients ignore them) ──
+                    'vehicle_class'  => $class,
+                    'basis'          => $r['basis'],
+                    'interval_days'  => $r['days'],
+                    'standard_days'  => $r['standard_days'],
+                    // ⭐ ONE flag for "does this job count down at all", whatever the unit.
+                    'has_schedule'   => (bool) $r['has'],
+                    // ⭐⭐ THE PHRASING IS THE SERVER'S TOO. Six screens compose "every
+                    //   N km" and "due in N km" by hand; with two units that is twelve
+                    //   places to get wrong, so the sentence ships with the number.
+                    'interval_label' => $r['label'],
+                    'due_text'       => self::dueText($state, $isTime, $dueIn, $dueInDays),
+                    'due_in_days'    => $dueInDays,
+                    'due_at_date'    => $dueAtDate,
                     'last_meter'  => $lastM,
-                    'last_at'     => $l['d'] ?? null,
+                    'last_at'     => $lastD,
                     'last_by'     => $l['by'] ?? null,
                     'assumed'     => !empty($l['assumed']),
                     // ⭐ Set when this countdown was refreshed by a BIGGER job rather
@@ -615,10 +678,10 @@ class VehicleService
                     // Oil + Tuning" so a manager is never left wondering why a type he
                     // has no record of reads as freshly done.
                     'covered_by'  => $l['covered_by'] ?? null,
-                    'due_at_km'   => $lastM !== null ? $lastM + $interval : null,
+                    'due_at_km'   => (!$isTime && $lastM !== null) ? $lastM + $interval : null,
                     'due_in_km'   => $dueIn,
                     // ⭐ ONE state rule — alerts fire off this, so no local ternary.
-                    'state'       => ServiceIntervalResolver::stateFor($dueIn),
+                    'state'       => $state,
                 ];
             }
             try {
@@ -706,11 +769,20 @@ class VehicleService
                             ->leftJoin('t_sys_user as u', 'u.id', '=', 'l.user_id')
                             ->whereNotNull('l.maintenance_type_id')
                             ->whereNotNull('l.meter')
-                            ->get(['l.user_id', 'l.maintenance_type_id', 'l.meter',
-                                   'l.service_date', 'u.fullname']) as $row) {
+                            ->get(array_merge(['l.user_id', 'l.maintenance_type_id', 'l.meter',
+                                               'l.service_date', 'u.fullname'],
+                                              ServiceRecordService::logVehicleCols('l.'))) as $row) {
                     $d = substr((string) $row->service_date, 0, 10);
                     if (!$this->plausibleServiceMeter((int) $row->meter, $vehicleId, $d)) continue;
-                    if ($resolver->vehicleForDay((int) $row->user_id, $d) !== $vehicleId) continue;
+                    /**
+                     * ⭐⭐ THE STAMP FIRST, THE REGISTRY ONLY FOR OLD ROWS (10-Sep-2026).
+                     *    `vehicleForDay` answers "what was he on that day", which stops being
+                     *    the same question as "which bike was serviced" the moment the two
+                     *    diverge — and a bike going INTO the workshop is exactly when they do,
+                     *    because the manager hands him a spare while it is in. See
+                     *    `ServiceRecordService::logVehicleOf()`.
+                     */
+                    if (ServiceRecordService::logVehicleOf($row, $resolver) !== $vehicleId) continue;
                     $tid = (int) $row->maintenance_type_id;
                     if (self::beatsEvidence((int) $row->meter, $d, $last[$tid] ?? null)) {
                         $last[$tid] = ['m' => (int) $row->meter, 'd' => $d,
@@ -729,18 +801,130 @@ class VehicleService
      * Every machine asks the same question, so this was one query per bike per
      * surface for a list that changes about twice a year.
      */
-    private function scheduledTypes()
+    /**
+     * ⭐⭐ THE JOBS THAT COUNT DOWN **ON THIS KIND OF MACHINE** (Sep-2026).
+     *
+     * ⚠⚠ WHAT USED TO BE HERE: `where('interval_km', '>', 0)` against ONE list for
+     *    the whole fleet. That single condition is why the van was judged against
+     *    bike numbers — "Oil Change every 1,000 km" on a 75,000 km van — and why a
+     *    van job could not exist at all. The filter now happens per class, in PHP,
+     *    because "does this job apply, and does it have a number here" is a question
+     *    about two columns chosen by a third, and SQL would have to repeat that rule.
+     *
+     * ⚠ Memoised PER CLASS. The old memo was a single static; sharing it across
+     *   classes would hand the van the bike list on the second call of a render that
+     *   touched both — which is every fleet screen this company has.
+     */
+    private function scheduledTypesFor(?string $class)
     {
-        if (self::$typesMemo !== null) return self::$typesMemo;
+        $class = MaintenanceTypeModel::normaliseClass($class);
+        if (isset(self::$typesMemo[$class])) return self::$typesMemo[$class];
         try {
-            if (!self::hasTbl('t_fleet_maintenance_types')) return self::$typesMemo = collect();
-            return self::$typesMemo = DB::table('t_fleet_maintenance_types')
-                ->where('is_active', 1)->where('interval_km', '>', 0)
+            if (!self::hasTbl('t_fleet_maintenance_types')) return self::$typesMemo[$class] = collect();
+
+            $cols = ['id', 'type_name', 'interval_km', 'bucket', 'resets_service_clock'];
+            // Pre-SQL: the extra columns do not exist yet, and every class reads the
+            // bike numbers — exactly today's behaviour. See MaintenanceTypeService.
+            $aware = app(MaintenanceTypeService::class)->classAware();
+            if ($aware) {
+                $cols = array_merge($cols, ['applies_to', 'basis', 'interval_km_van',
+                                            'interval_days', 'interval_days_van']);
+            }
+
+            $rows = DB::table('t_fleet_maintenance_types')
+                ->where('is_active', 1)
                 ->orderBy('sort_order')->orderBy('type_name')
-                ->get(['id', 'type_name', 'interval_km', 'bucket', 'resets_service_clock']);
+                ->get($cols);
+
+            $resolver = new ServiceIntervalResolver();
+            $rows = $rows->filter(function ($t) use ($class, $resolver, $aware) {
+                if (!$aware) return (int) $t->interval_km > 0;
+                // A job is on the panel when it applies to this class AND that class
+                // has a figure for it. "Applies but no number yet" is the van's day-one
+                // state: the job exists and can be billed, it simply has no countdown.
+                $r = $resolver->resolveFor(null, $class, $t, null);
+                return $r['has'];
+            })->values();
+
+            return self::$typesMemo[$class] = $rows;
         } catch (\Throwable $e) {
-            return self::$typesMemo = collect();
+            return self::$typesMemo[$class] = collect();
         }
+    }
+
+    /**
+     * ⭐ Is this machine on the COMPANY maintenance schedule at all?
+     *
+     * Owner ruling, 10-Sep-2026: *"own bikes maintenance is not with the company so
+     * we aren't tracking them or setting them either. this is only for company bikes
+     * and van."* A rider's personal bike is his own affair — the company neither
+     * schedules its services nor nags him about them.
+     *
+     * ⚠⚠ `is_company` is the RIGHT column here and it is being used for its actual
+     *    meaning — "do we own and pay for this machine" — not as a stand-in for
+     *    "van", which is the mistake the Sep-4 round had to unpick. Class (`vtype`)
+     *    decides WHICH schedule; `is_company` decides WHETHER there is one.
+     */
+    public function isTracked($vehicleRow): bool
+    {
+        if (!$vehicleRow) return false;
+        return (int) ($vehicleRow->is_company ?? 0) === 1;
+    }
+
+    /** The row behind a vehicle id, memoised — class and tracking are asked constantly. */
+    private function vehicleRowFor(int $vehicleId)
+    {
+        if (array_key_exists($vehicleId, self::$vehicleRowMemo)) return self::$vehicleRowMemo[$vehicleId];
+        try {
+            $r = DB::table(self::T_VEHICLE)->where('id', $vehicleId)
+                ->first(['id', 'vtype', 'is_company', 'reg_no', 'nickname']);
+        } catch (\Throwable $e) {
+            $r = null;
+        }
+        return self::$vehicleRowMemo[$vehicleId] = $r;
+    }
+
+    /** 'bike' | 'van' for a machine the registry knows; 'bike' for anything else. */
+    public function classOf(?int $vehicleId): string
+    {
+        $r = $vehicleId ? $this->vehicleRowFor($vehicleId) : null;
+        return MaintenanceTypeModel::normaliseClass($r->vtype ?? null);
+    }
+
+    /** Is this machine on the company schedule? Takes an id rather than a row. */
+    public function isTrackedId(?int $vehicleId): bool
+    {
+        return $vehicleId ? $this->isTracked($this->vehicleRowFor($vehicleId)) : false;
+    }
+
+    /**
+     * ⭐⭐ "due in 341 km" / "12 days overdue" / "never recorded" — composed ONCE, on
+     *    the server, and shipped with the row.
+     *
+     * Six screens (web list, web panel, mobile fleet, mobile vehicles, mobile profile,
+     * the alert banner) each built this sentence from raw numbers. With one unit that
+     * was six copies of a ternary; with two it would be twelve, and the day a phone
+     * printed "due in 90 km" for a 90-DAY job nobody would know which half was wrong.
+     * The numbers still ship beside it, so an older APK renders exactly as before.
+     */
+    public static function dueText(string $state, bool $isTime, ?int $dueInKm, ?int $dueInDays): string
+    {
+        if ($state === 'unknown') return 'never recorded';
+
+        if ($isTime) {
+            if ($dueInDays === null) return 'never recorded';
+            if ($dueInDays < 0) {
+                $n = abs($dueInDays);
+                return number_format($n) . ' day' . ($n === 1 ? '' : 's') . ' overdue';
+            }
+            if ($dueInDays === 0) return 'due today';
+            return 'due in ' . number_format($dueInDays) . ' day' . ($dueInDays === 1 ? '' : 's');
+        }
+
+        if ($dueInKm === null) return 'never recorded';
+        return $dueInKm < 0
+            ? number_format(abs($dueInKm)) . ' km overdue'
+            : 'due in ' . number_format($dueInKm) . ' km';
     }
 
     /**
@@ -966,7 +1150,8 @@ class VehicleService
         self::$windowMemo = [];
         self::$elsewhereMemo = [];
         self::$dayMapMemo = [];
-        self::$typesMemo = null;
+        self::$typesMemo = [];
+        self::$vehicleRowMemo = [];
         // ⚠ The machine-keyed reading spine feeds Rule P (`readingPlausibleFor`) and was
         //   missing from this list. It matters now that a reading can be SAVED and then
         //   re-read inside one request (the meter-log writer): judging a fresh reading
@@ -1066,10 +1251,21 @@ class VehicleService
      * ⚠ The covering record must be FURTHER ALONG to win, so a genuinely more recent
      *   small service still beats an older big one.
      */
-    private function coveredServiceEvidence(int $vehicleId, $types): array
+    /**
+     * ⚠⚠ THE COVERS RULE IS CLASS-AWARE AND BASIS-AWARE (Sep-2026).
+     *
+     * "A bigger job vouches for a smaller one" is a comparison of two SIZES, so with
+     * per-class standards it must compare the sizes **on the machine in front of it**
+     * — judging a van's ordering by bike numbers would let the wrong job vouch. And a
+     * kilometre job can never vouch for a time-based one (or the reverse): 10,000 km
+     * and 90 days are not comparable quantities, and pretending otherwise would mark
+     * a countdown fresh on the strength of unrelated work.
+     */
+    private function coveredServiceEvidence(int $vehicleId, $types, ?string $class = null): array
     {
         $direct = $this->serviceEvidenceByType($vehicleId);
         $out    = $direct;
+        $class  = MaintenanceTypeModel::normaliseClass($class ?? $this->classOf($vehicleId));
 
         try {
             // ⚠⚠ COVERERS ARE LOOKED UP AMONG *ALL* TYPES, not just the active ones.
@@ -1082,9 +1278,12 @@ class VehicleService
             foreach ($types as $t) $byId[(int) $t->id] = $t;
             try {
                 if (self::hasTbl('t_fleet_maintenance_types')) {
-                    foreach (DB::table('t_fleet_maintenance_types')
-                                ->where('interval_km', '>', 0)
-                                ->get(['id', 'type_name', 'interval_km', 'resets_service_clock']) as $any) {
+                    $cols = ['id', 'type_name', 'interval_km', 'resets_service_clock'];
+                    if (app(MaintenanceTypeService::class)->classAware()) {
+                        $cols = array_merge($cols, ['applies_to', 'basis', 'interval_km_van',
+                                                    'interval_days', 'interval_days_van']);
+                    }
+                    foreach (DB::table('t_fleet_maintenance_types')->get($cols) as $any) {
                         $byId[(int) $any->id] = $byId[(int) $any->id] ?? $any;
                     }
                 }
@@ -1092,16 +1291,39 @@ class VehicleService
                 // the active set alone is still a usable coverer list
             }
 
+            /**
+             * How big is this job ON THIS CLASS, and in what unit? Two jobs are only
+             * comparable when the unit matches; `null` size means "no standard here",
+             * which can neither cover nor be covered.
+             */
+            $resolver = new ServiceIntervalResolver();
+            $sizeOf = function ($row) use ($resolver, $class): ?array {
+                if (!$row) return null;
+                $r = $resolver->resolveFor(null, $class, $row, null);
+                if ($r['basis'] === MaintenanceTypeModel::BASIS_TIME) {
+                    return $r['standard_days'] !== null
+                        ? ['basis' => 'time', 'size' => (int) $r['standard_days']] : null;
+                }
+                return $r['standard_km'] !== null
+                    ? ['basis' => 'km', 'size' => (int) $r['standard_km']] : null;
+            };
+
             foreach ($types as $t) {
                 $tid = (int) $t->id;
                 if (empty($t->resets_service_clock)) continue;   // covered types only
+                $tSize = $sizeOf($t);
+                if ($tSize === null) continue;
 
                 foreach ($direct as $sid => $ev) {
                     if ($sid === $tid) continue;
                     $s = $byId[$sid] ?? null;
                     if (!$s || empty($s->resets_service_clock)) continue;   // coverers only
+                    $sSize = $sizeOf($s);
+                    if ($sSize === null) continue;
+                    // Same unit only — km never vouches for days, or the reverse.
+                    if ($sSize['basis'] !== $tSize['basis']) continue;
                     // A bigger-or-equal scheduled job contains this one.
-                    if ((int) $s->interval_km < (int) $t->interval_km) continue;
+                    if ($sSize['size'] < $tSize['size']) continue;
                     if (isset($out[$tid]) && $ev['m'] <= $out[$tid]['m']) continue;
 
                     // Keeps the covering record's own meter/date/by, and names the
@@ -1189,21 +1411,64 @@ class VehicleService
         //   cycle, but it is not what "next service due" has ever meant, and letting
         //   it drive the headline would make a 10,000 km countdown mask an overdue
         //   oil change. Same rule `resets_service_clock` exists for.
-        $worst = null;
+        /**
+         * ⭐⭐ THE MOST URGENT JOB, ACROSS TWO UNITS (Sep-2026).
+         *
+         * With km and time jobs on one machine "which is worse" cannot be a raw
+         * comparison — 40 km left and 40 days left are not the same urgency. So:
+         * the worse STATE always wins (an overdue job outranks a due-soon one), and
+         * within a state the job that is furthest through its own cycle wins. That
+         * ratio is unit-free, which is exactly why it is the right tie-break.
+         */
+        /**
+         * ⭐⭐ A PERSONAL BIKE HAS NO COMPANY SERVICE STATE (owner ruling, 10-Sep-2026).
+         *
+         * ⚠⚠ Returning the legacy `unknown` here was not an option: "unknown" means
+         *    *we track this and nobody has recorded a service*, which is a nag, and the
+         *    legacy evidence path below would happily have invented a countdown from a
+         *    seeded meter. `not_tracked` is a different answer and every screen prints
+         *    it as a sentence rather than a warning.
+         */
+        $trackRow = $vehicleRow ?: $this->vehicleRowFor($vehicleId);
+        if (!$this->isTracked($trackRow)) {
+            $out = self::untrackedServiceState();
+            try {
+                Cache::put($overKey, $out, 300);
+            } catch (\Throwable $e) {
+                // uncached is merely slower
+            }
+            return $out;
+        }
+
+        $worst = null; $worstRank = null;
+        $rank  = ['overdue' => 0, 'due_soon' => 1, 'ok' => 2];
         if ($currentMeter !== null) {
             foreach ($this->serviceScheduleFor($vehicleId, $currentMeter) as $t) {
-                if ($t['due_in_km'] === null) continue;
                 if (empty($t['resets_clock'])) continue;
-                if ($worst === null || $t['due_in_km'] < $worst['due_in_km']) $worst = $t;
+                $isTime = ($t['basis'] ?? 'km') === MaintenanceTypeModel::BASIS_TIME;
+                $left   = $isTime ? ($t['due_in_days'] ?? null) : ($t['due_in_km'] ?? null);
+                if ($left === null) continue;
+
+                $span = $isTime ? (int) ($t['interval_days'] ?? 0) : (int) ($t['interval_km'] ?? 0);
+                // Fraction of the cycle still to run; lower = more urgent. Guarded so a
+                // zero span can never divide, and so an overdue job stays negative.
+                $frac = $span > 0 ? ($left / $span) : ($left < 0 ? -1 : 0);
+                $r    = [$rank[$t['state']] ?? 3, $frac];
+
+                if ($worst === null || $r < $worstRank) { $worst = $t; $worstRank = $r; }
             }
         }
         if ($worst !== null) {
+            $wIsTime = ($worst['basis'] ?? 'km') === MaintenanceTypeModel::BASIS_TIME;
             $out = [
                 'interval_km'        => $worst['interval_km'],
                 'last_service_meter' => $worst['last_meter'],
                 'last_service_at'    => $worst['last_at'],
                 'last_service_by'    => $worst['last_by'],
-                'since_km'           => $currentMeter - $worst['last_meter'],
+                // ⚠ Only meaningful against a meter — a time job's "since" is days, and
+                //   it rides along beside rather than overwriting this.
+                'since_km'           => $worst['last_meter'] !== null
+                                          ? $currentMeter - $worst['last_meter'] : null,
                 'due_in_km'          => $worst['due_in_km'],
                 'due_at_km'          => $worst['due_at_km'],
                 'state'              => $worst['state'],
@@ -1214,6 +1479,16 @@ class VehicleService
                 'due_type_name'      => $worst['name'],
                 'covered_by'         => $worst['covered_by'],
                 'source'             => 'schedule',
+                // ── class + basis, Sep-2026 ──────────────────────────────────
+                'vehicle_class'      => $worst['vehicle_class'] ?? null,
+                'basis'              => $worst['basis'] ?? MaintenanceTypeModel::BASIS_KM,
+                'interval_days'      => $worst['interval_days'] ?? null,
+                'due_in_days'        => $worst['due_in_days'] ?? null,
+                'due_at_date'        => $worst['due_at_date'] ?? null,
+                'interval_label'     => $worst['interval_label'] ?? null,
+                'due_text'           => $worst['due_text'] ?? null,
+                'is_time_based'      => $wIsTime,
+                'tracked'            => true,
             ];
             try {
                 Cache::put($overKey, $out, 300);
@@ -1326,6 +1601,14 @@ class VehicleService
             'covered_by'         => null,
             // Which evidence won — for diagnosis, never rendered as a headline.
             'source'             => $best['source'] ?? null,
+            'vehicle_class'      => $this->classOf($vehicleId),
+            'basis'              => MaintenanceTypeModel::BASIS_KM,
+            'due_in_days'        => null,
+            'due_at_date'        => null,
+            'is_time_based'      => false,
+            'tracked'            => true,
+            'due_text'           => self::dueText(ServiceIntervalResolver::stateFor($dueIn),
+                                                  false, $dueIn, null),
         ];
         try {
             Cache::put($overKey, $out, 300);
@@ -1333,6 +1616,38 @@ class VehicleService
             // uncached is merely slower
         }
         return $out;
+    }
+
+    /**
+     * The headline for a machine the company does not maintain. Same shape as every
+     * other branch — a caller must never have to know which path produced its payload.
+     */
+    public static function untrackedServiceState(): array
+    {
+        return [
+            'interval_km'        => 0,
+            'last_service_meter' => null,
+            'last_service_at'    => null,
+            'last_service_by'    => null,
+            'since_km'           => null,
+            'due_in_km'          => null,
+            'due_at_km'          => null,
+            'state'              => 'not_tracked',
+            'due_type_id'        => null,
+            'due_type_name'      => null,
+            'covered_by'         => null,
+            'source'             => 'not_tracked',
+            'vehicle_class'      => null,
+            'basis'              => MaintenanceTypeModel::BASIS_KM,
+            'interval_days'      => null,
+            'due_in_days'        => null,
+            'due_at_date'        => null,
+            'interval_label'     => null,
+            'is_time_based'      => false,
+            'tracked'            => false,
+            // 🗣 Manager-facing furniture, so English (the Sep-3 copy rule).
+            'due_text'           => 'personal vehicle — not on the company schedule',
+        ];
     }
 
     /**
@@ -1437,11 +1752,13 @@ class VehicleService
                 $resolver = new VehicleResolver();
                 foreach (DB::table('t_fleet_service_log')
                             ->whereNotNull('maintenance_type_id')->whereNotNull('meter')
-                            ->get(['user_id', 'maintenance_type_id', 'meter', 'service_date']) as $row) {
+                            ->get(array_merge(['user_id', 'maintenance_type_id', 'meter', 'service_date'],
+                                              ServiceRecordService::logVehicleCols())) as $row) {
                     $t = $types[(int) $row->maintenance_type_id] ?? null;
                     if (!$typedCovers($t)) continue;
                     $d = substr((string) $row->service_date, 0, 10);
-                    if ($resolver->vehicleForDay((int) $row->user_id, $d) !== $vehicleId) continue;
+                    // ⭐ Stamp first — same rule as the per-type evidence above.
+                    if (ServiceRecordService::logVehicleOf($row, $resolver) !== $vehicleId) continue;
                     $consider((int) $row->meter, $d, (int) $t->interval_km ?: null);
                 }
             }
@@ -1522,6 +1839,15 @@ class VehicleService
                     'covered_by'  => $t['covered_by'],
                     'due_in_km'   => $t['due_in_km'],
                     'state'       => $t['state'],
+                    // ── class + basis, Sep-2026 (additive). This payload feeds the
+                    //   claim-form panel on three phone screens, which composed "due in
+                    //   N km" from `due_in_km` — a time-based job arrived as null and
+                    //   read "never recorded". The server's sentence rides along now.
+                    'basis'          => $t['basis'] ?? 'km',
+                    'due_in_days'    => $t['due_in_days'] ?? null,
+                    'interval_label' => $t['interval_label'] ?? null,
+                    'due_text'       => $t['due_text'] ?? null,
+                    'has_schedule'   => $t['has_schedule'] ?? ((int) $t['interval_km'] > 0),
                 ];
             }
 
@@ -2014,6 +2340,22 @@ class VehicleService
              */
             if ($vacatedVehicleId && $vacatedVehicleId !== $vehicleId) {
                 app(VehicleTicketService::class)->onHandover($vacatedVehicleId, $userId, null, $actorId);
+                /**
+                 * 🔧⚠⚠ …AND ITS WORKSHOP ERRAND (10-Sep-2026 review). `release()` learned to
+                 *    tell the workshop service; THIS path never did, because it closes the old
+                 *    assignment directly (step 3 above) rather than going through release().
+                 *
+                 *    That is the ORDINARY workshop day: the bike goes in, the manager hands the
+                 *    rider a spare, and his old machine quietly loses its keeper here. Without
+                 *    this the errand stayed pointing at him — his phone kept offering
+                 *    "Workshop jaa raha hoon" for a bike he no longer had, and once he had set
+                 *    off, the live board showed him at the workshop all evening while he was
+                 *    out delivering on the spare.
+                 *
+                 * ⚠ No new keeper, so nothing is re-pointed: the visit is marked as having
+                 *   none, exactly as a release does, and stays open for someone to answer.
+                 */
+                app(WorkshopVisitService::class)->onKeeperLost($vacatedVehicleId, $userId, $actorId);
             }
 
             // ⚠ A handover re-attributes claims and readings, so the machine's whole
@@ -2217,6 +2559,29 @@ class VehicleService
                 $vehicleId, (int) $current->user_id, null, $actorId
             );
 
+            /**
+             * 🔧⭐⭐ AN OPEN WORKSHOP ERRAND SURVIVES THE RELEASE (owner ruling, 10-Sep-2026).
+             *
+             * *"in this case Shabib will simply remove the bike from his name with the change
+             * rider option"* — that is how a bike kept overnight is handled. So the release must
+             * not take the errand down with it: the work still has to be answered for.
+             *
+             * ⚠⚠ `release()` HAS NEVER TOLD THE WORKSHOP SERVICE. Only tickets followed a
+             *    handover (the call directly above); a released machine left its visit pointing
+             *    at a rider who no longer has it, and — once the trip existed — would have left
+             *    him showing "at the workshop" on the live board all evening.
+             *
+             * ⭐ The visit is NOT closed and NOT auto-answered. It is marked as having no keeper,
+             *   which is a fact, and the managers are told so somebody records the outcome when
+             *   the bike comes back. Answering it here would erase the difference between "he
+             *   went" and "he never went" — the rule this whole feature is built around.
+             */
+            try {
+                app(WorkshopVisitService::class)->onKeeperLost($vehicleId, (int) $current->user_id, $actorId);
+            } catch (\Throwable $e) {
+                Log::warning('workshop no-keeper handoff skipped', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            }
+
             Log::info('Vehicle released', ['vehicle_id' => $vehicleId, 'from_user' => $current->user_id, 'on' => $date]);
             return ['ok' => true, 'message' => 'Released.', 'changed' => true,
                     'displaced_user_id' => (int) $current->user_id];
@@ -2355,9 +2720,11 @@ class VehicleService
                     foreach (DB::table('t_fleet_service_log')->whereNotNull('meter')
                                 ->where('meter', '>', $floor)
                                 ->orderByDesc('meter')->limit(60)
-                                ->get(['user_id', 'meter', 'service_date']) as $sl) {
+                                ->get(array_merge(['user_id', 'meter', 'service_date'],
+                                                  ServiceRecordService::logVehicleCols())) as $sl) {
                         $d = substr((string) $sl->service_date, 0, 10);
-                        if ((int) $res->vehicleForDay((int) $sl->user_id, $d) !== $vehicleId) continue;
+                        // ⭐ Stamp first — a reading belongs to the machine it was taken on.
+                        if (ServiceRecordService::logVehicleOf($sl, $res) !== $vehicleId) continue;
                         $byService = (int) $sl->meter;
                         break;   // ordered by meter desc — the first row on THIS machine is its highest
                     }
@@ -3254,8 +3621,9 @@ class VehicleService
                  *    machine check below, and the whole Past-services list rendered EMPTY.
                  *    Caught end-to-end, not by a linter.
                  */
-                $cols = ['l.id', 'l.user_id', 'l.meter', 'l.service_date', 'l.note',
-                         'l.maintenance_type_id', 't.type_name', 'u.fullname as by_name'];
+                $cols = array_merge(['l.id', 'l.user_id', 'l.meter', 'l.service_date', 'l.note',
+                                     'l.maintenance_type_id', 't.type_name', 'u.fullname as by_name'],
+                                    ServiceRecordService::logVehicleCols('l.'));
                 // The bill, when the manager filed one with the service. LEFT-joined so a
                 // bill-less record is unaffected, and schema-guarded so this is inert
                 // before the link column exists.
@@ -3268,7 +3636,8 @@ class VehicleService
                 $manual = $manualQ->get($cols);
                 foreach ($manual as $m) {
                     $d = substr((string) $m->service_date, 0, 10);
-                    if ($resolver->vehicleForDay((int) $m->user_id, $d) !== $vehicleId) continue;
+                    // ⭐ Stamp first, so Past services lists exactly what the countdown counted.
+                    if (ServiceRecordService::logVehicleOf($m, $resolver) !== $vehicleId) continue;
                     $out[] = [
                         'date'    => $d,
                         /**
@@ -3799,9 +4168,11 @@ class VehicleService
                     foreach (DB::table('t_fleet_service_log')
                                 ->whereNotNull('meter')->where('meter', '>', self::MIN_METER)
                                 ->orderByDesc('meter')->limit(120)
-                                ->get(['user_id', 'meter', 'service_date']) as $sl) {
+                                ->get(array_merge(['user_id', 'meter', 'service_date'],
+                                                  ServiceRecordService::logVehicleCols())) as $sl) {
                         $d = substr((string) $sl->service_date, 0, 10);
-                        if ((int) $resolver->vehicleForDay((int) $sl->user_id, $d) !== $vehicleId) continue;
+                        // ⭐ Stamp first — same rule as every other per-machine reader.
+                        if (ServiceRecordService::logVehicleOf($sl, $resolver) !== $vehicleId) continue;
                         if ($d < $date) { if ((int) $sl->meter > $svcBefore) $svcBefore = (int) $sl->meter; }
                         elseif ($d > $date) {
                             if ($svcAfter === null || (int) $sl->meter < $svcAfter) $svcAfter = (int) $sl->meter;
@@ -4300,6 +4671,28 @@ class VehicleService
                 && !empty($r->keeper_user_id)
                 && $r->base_latitude === null
                 && (!property_exists($r, 'keeper_home_lat') || $r->keeper_home_lat === null),
+
+            /**
+             * 🏠 THE KEEPER'S SAVED HOME, on the card itself (owner ruling 10-Sep-2026:
+             *    "should be able to view the saved"). Until now the only signal was the
+             *    absence of one — the nag above — so a manager could see that a pin was
+             *    MISSING but never that the one on file was WRONG. A stale pin is the
+             *    more expensive failure of the two: the checks run and quietly measure
+             *    against the wrong house.
+             *
+             * ⚠ Read-only colour. Nothing here decides whether the home journey runs —
+             *   HomeJourneyService::riderHomePin does, per day, from the registry.
+             */
+            'keeper_home_pin' => (property_exists($r, 'keeper_home_lat') && $r->keeper_home_lat !== null
+                    && property_exists($r, 'keeper_home_lng') && $r->keeper_home_lng !== null)
+                ? [
+                    'lat' => (float) $r->keeper_home_lat,
+                    'lng' => (float) $r->keeper_home_lng,
+                    'maps_url' => 'https://www.google.com/maps/search/?api=1&query='
+                        . rawurlencode(number_format((float) $r->keeper_home_lat, 7, '.', '')
+                            . ',' . number_format((float) $r->keeper_home_lng, 7, '.', '')),
+                ]
+                : null,
         ];
     }
 

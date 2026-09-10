@@ -249,22 +249,40 @@
                         <span style="font-size: 12px; color: #9ca3af;">km/day allowed off company hours</span>
                     </div>
                     <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0 0;">Flag when the morning start meter jumps more than this over yesterday's end. Leave blank to use the global default.</p>
-
-                    <!-- U4 — HOME pin for the going-home journey (ETA + home meter). -->
-                    <div style="margin-top: 14px; padding: 10px 12px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px;">
-                        <label style="display: block; font-size: 13px; font-weight: 600; color: #065F46; margin-bottom: 4px;">🏠 Home location (going-home check)</label>
-                        <p style="font-size: 12px; color: #047857; margin: 0 0 8px 0;">Paste a Google Maps share link of the rider's home — or type coordinates. After checkout the app times his ride home and asks for the meter at home.</p>
-                        <input type="text" name="home_maps_url" id="rider_home_maps_url" placeholder="Paste Google Maps link (https://maps.app.goo.gl/…)" style="width: 100%; padding: 8px 12px; border: 1px solid #6EE7B7; border-radius: 6px; margin-bottom: 8px;">
-                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-                            <input type="number" step="any" name="home_latitude" id="rider_home_lat" placeholder="Latitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
-                            <input type="number" step="any" name="home_longitude" id="rider_home_lng" placeholder="Longitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
-                            <input type="number" name="home_radius_m" id="rider_home_radius" min="30" step="10" placeholder="radius 150 m" style="width: 110px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
-                        </div>
-                        <p id="rider_home_status" style="font-size: 12px; color: #047857; margin: 6px 0 0 0;"></p>
-                        <p style="font-size: 11px; color: #6b7280; margin: 4px 0 0 0;">A pasted link overrides the typed coordinates. Clear all fields to remove the home pin. A Plus Code (like <code>P35Q+5FF</code>) works too — paste it in the link box.</p>
-                        <p style="font-size: 11px; color: #92400e; margin: 4px 0 0 0;">If the link can't be read, the pin is left unchanged and the rest of the profile still saves — you'll see an amber note at the top of the page.</p>
-                    </div>
                 </div>
+            </div>
+
+            {{-- 🏠 HOME LOCATION — U4 going-home journey (ETA + home meter) and the U5 morning
+                 start meter.
+
+                 ⭐⭐ MOVED OUT of the company-bike block on 10-Sep-2026, at the owner's
+                 instruction. It used to live inside #rider_grace_row, which is display:none
+                 unless "Company bike" is ticked — so the box was INVISIBLE for anyone not on a
+                 company machine, and the server mirrored that by NULLING the pin when the tick
+                 came off. Riders swap between a company bike and their own constantly, so a pin
+                 painstakingly set in July silently vanished the first time someone unticked the
+                 box, and nobody could see it had gone.
+
+                 Storage and use are now separate: the pin is always kept here; whether the
+                 going-home checks RUN is decided per day by the vehicle registry
+                 (HomeJourneyService::riderHomePin), which is where that decision belongs. --}}
+            <div style="margin-bottom: 16px; padding: 12px 14px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 8px;">
+                <label style="display: block; font-size: 13px; font-weight: 600; color: #065F46; margin-bottom: 4px;">🏠 Home location</label>
+                <p style="font-size: 12px; color: #047857; margin: 0 0 8px 0;">Where he takes the company vehicle at night. Paste a Google Maps share link — or type coordinates. After checkout the app times his ride home and asks for the meter there; in the morning it proves the start meter at this pin.</p>
+                <input type="text" name="home_maps_url" id="rider_home_maps_url" placeholder="Paste Google Maps link, a Plus Code, or 33.6402495, 73.1109461" style="width: 100%; padding: 8px 12px; border: 1px solid #6EE7B7; border-radius: 6px; margin-bottom: 8px;">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                    <input type="number" step="any" name="home_latitude" id="rider_home_lat" placeholder="Latitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <input type="number" step="any" name="home_longitude" id="rider_home_lng" placeholder="Longitude" style="width: 130px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <input type="number" name="home_radius_m" id="rider_home_radius" min="30" step="10" placeholder="radius 300 m" style="width: 110px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;">
+                </div>
+                <p id="rider_home_status" style="font-size: 12px; color: #047857; margin: 6px 0 0 0;"></p>
+                <div id="rider_home_remove_wrap" style="display: none; margin-top: 8px;">
+                    <button type="button" onclick="removeRiderHomePin()" style="padding: 6px 12px; background: #fff; color: #b91c1c; border: 1px solid #fecaca; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;">
+                        🗑 Remove home location
+                    </button>
+                </div>
+                <p style="font-size: 11px; color: #6b7280; margin: 6px 0 0 0;">A pasted link wins over the typed coordinates. A Plus Code (like <code>P35Q+5FF</code>) works too — paste it in the same box. <b>Leaving the boxes empty changes nothing</b> — use Remove to delete a pin.</p>
+                <p style="font-size: 11px; color: #92400e; margin: 4px 0 0 0;">If the link can't be read, the pin is left unchanged and the rest of the profile still saves — you'll see an amber note at the top of the page.</p>
             </div>
 
             <div style="margin-bottom: 16px;">
@@ -296,6 +314,14 @@
     </div>
 </div>
 
+{{-- 🗑 Removing a home location posts on its OWN form, deliberately OUTSIDE the profile form —
+     HTML forbids nesting one form in another, and more to the point deletion must be its own
+     action rather than a silent consequence of an empty box. The action is filled in by
+     removeRiderHomePin() for whichever rider the modal has open. --}}
+<form id="riderHomeClearForm" method="POST" style="display:none;">
+    @csrf
+</form>
+
 <!-- Legacy bulk shift modal removed - use /shifts page for shift management -->
 
 <script>
@@ -308,10 +334,35 @@ function toggleGraceRow() {
     document.getElementById('rider_grace_row').style.display = on ? 'block' : 'none';
 }
 
+/** HTML-escape anything server-supplied before it goes through innerHTML. A rider's name and
+ *  the map link both land inside markup below; a stray & or < must not become structure. */
+function riderEsc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/** 🗑 Delete this rider's home location. Confirmed, and posted on its own form — see the
+ *  comment on #riderHomeClearForm. Refused server-side without `assign_vehicles`. */
+function removeRiderHomePin() {
+    var id = document.getElementById('rider_user_id').value;
+    if (!id) { return; }
+    if (!confirm('Remove this rider’s home location?\n\nThe going-home and morning meter checks will have nowhere to measure from until a new one is set.')) {
+        return;
+    }
+    var f = document.getElementById('riderHomeClearForm');
+    f.action = '/riders/' + encodeURIComponent(id) + '/home-pin/clear';
+    f.submit();
+}
+
 function openAddRiderModal() {
     document.getElementById('riderModalTitle').textContent = 'Add Rider Profile';
     document.getElementById('riderProfileForm').reset();
     document.getElementById('rider_user_id').value = '';
+    // A brand-new profile has no pin yet: clear the carried-over status line and hide Remove,
+    // which would otherwise still be showing the last rider the manager looked at.
+    document.getElementById('rider_home_status').textContent = '';
+    document.getElementById('rider_home_remove_wrap').style.display = 'none';
     toggleGraceRow();
     document.getElementById('riderProfileModal').style.display = 'block';
 }
@@ -336,26 +387,34 @@ async function editRiderProfile(userId) {
             document.getElementById('rider_hire_date').value = p.hire_date || '';
             document.getElementById('rider_company_bike').checked = (Number(p.company_bike) === 1);
             document.getElementById('rider_overnight_grace').value = (p.overnight_grace_km != null ? p.overnight_grace_km : '');
-            // Home pin (U4) — prefill saved coords; the link box stays empty (paste replaces).
+            // 🏠 Home location — prefill saved coords; the link box stays empty (paste replaces).
+            //    Server-resolved payload (data.home_pin), so this page, the Bikes tab and the
+            //    phone all print the same coordinates, the same setter and the same map link.
+            var hp = data.home_pin || {};
             document.getElementById('rider_home_maps_url').value = '';
-            document.getElementById('rider_home_lat').value = (p.home_latitude != null ? p.home_latitude : '');
-            document.getElementById('rider_home_lng').value = (p.home_longitude != null ? p.home_longitude : '');
-            document.getElementById('rider_home_radius').value = (p.home_radius_m != null ? p.home_radius_m : '');
+            document.getElementById('rider_home_lat').value = (hp.lat != null ? hp.lat : '');
+            document.getElementById('rider_home_lng').value = (hp.lng != null ? hp.lng : '');
+            document.getElementById('rider_home_radius').value = (hp.radius_m != null ? hp.radius_m : '');
             // Status line: the date is the date the pin last MOVED (the server only stamps
-            // home_set_at on a real change), and the map link lets the manager confirm WHERE
-            // it is before he changes it — the check that was missing on 31 Aug.
+            // home_set_at on a real change), the NAME is who moved it — the accountability the
+            // owner asked for — and the map link lets the manager confirm WHERE it is before he
+            // changes it. That last check was the one missing on 31 Aug.
             var homeStatus = document.getElementById('rider_home_status');
-            if (p.home_latitude != null && p.home_longitude != null) {
-                var q = encodeURIComponent(p.home_latitude + ',' + p.home_longitude);
+            var removeWrap = document.getElementById('rider_home_remove_wrap');
+            if (hp.has_pin) {
                 homeStatus.innerHTML =
-                    '✓ Home pin set' + (p.home_set_at ? ' ' + String(p.home_set_at).slice(0, 10) : '') +
-                    ' · <a href="https://www.google.com/maps/search/?api=1&query=' + q + '"' +
+                    '✓ Home location set' +
+                    (hp.set_by_name ? ' by ' + riderEsc(hp.set_by_name) : '') +
+                    (hp.set_at ? ' on ' + String(hp.set_at).slice(0, 10) : '') +
+                    ' · <a href="' + riderEsc(hp.maps_url) + '"' +
                     ' target="_blank" rel="noopener" style="color:#047857;font-weight:700;text-decoration:underline;">' +
-                    'view on map ↗</a>';
+                    'view on map ↗</a>' +
+                    '<br><span style="color:#6b7280;">Geofence radius ' + (hp.effective_radius_m || 300) + ' m' +
+                    (hp.radius_m == null ? ' (global default)' : ' (set for this rider)') + '</span>';
+                removeWrap.style.display = 'block';
             } else {
-                homeStatus.textContent = (Number(p.company_bike) === 1)
-                    ? '⚠ No home pin yet — the going-home check stays off for this rider.'
-                    : '';
+                homeStatus.textContent = '⚠ No home location yet — the going-home and morning meter checks have nowhere to measure from.';
+                removeWrap.style.display = 'none';
             }
             document.getElementById('rider_any_office').checked = (Number(p.checkin_any_office) === 1);
             // Meter compulsory — default ON when the profile predates the column (null).

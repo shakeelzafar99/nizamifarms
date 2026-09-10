@@ -118,9 +118,29 @@ class AttendanceController extends Controller
         return response()->json(['success' => true, 'message' => 'Rider list updated']);
     }
 
-    // Update user visibility in attendance
+    /**
+     * Update user visibility in attendance — i.e. add/remove a person from the USERS LIST.
+     *
+     * 🔒 9-Sep-2026 owner ruling: *"this list is only for shabib abd taimur to modify"*.
+     * ⚠⚠ This is now the ONE door onto that list. Since Sep-9 the Shift Planner draws the
+     *    same roster (`User::shiftPlannerRoster()`), so a visibility toggle moves someone
+     *    on or off BOTH screens — which is why it is gated here, at the write, rather than
+     *    on each page. Three surfaces call it: the planner (web + mobile "Users list") and
+     *    the People & Rider List section of the attendance page.
+     * ⚠ The neighbouring toggles are NOT gated by this: "Show in Salary"
+     *   (updateSalaryVisibility) and "Delivery Rider" (updateDeliveryRider) are separate
+     *   lists with their own meaning — see [[delivery-rider-tick-and-rider-page]].
+     */
     public function updateUserVisibility(Request $request)
     {
+        if (!app(\App\Services\Ops\ShiftAuthorityService::class)
+                ->canManageRoster($request->user() ?: auth()->user())) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only Shabib and Taimur can change who is on the users list.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'user_id' => 'required|integer|exists:t_sys_user,id',
             'is_visible' => 'required|boolean',
@@ -131,34 +151,17 @@ class AttendanceController extends Controller
         $isVisible = $validated['is_visible'];
         $notes = $validated['notes'] ?? null;
 
-        // Check if record exists
-        $existing = DB::table('t_ops_attendance_visibility')->where('user_id', $userId)->first();
+        // ⭐ ONE writer for the list — shared with the mobile "Users list" (UserRosterService).
+        $roster = app(\App\Services\Ops\UserRosterService::class);
+        $warning = $isVisible ? null : $roster->removalWarning($userId);
+        $roster->set($userId, (bool) $isVisible, auth()->id(), $notes);
 
-        if ($existing) {
-            // Update existing record
-            DB::table('t_ops_attendance_visibility')
-                ->where('user_id', $userId)
-                ->update([
-                    'is_visible' => $isVisible,
-                    'notes' => $notes,
-                    'hidden_by' => $isVisible ? null : auth()->id(),
-                    'hidden_at' => $isVisible ? null : now(),
-                    'updated_at' => now()
-                ]);
-        } else {
-            // Insert new record
-            DB::table('t_ops_attendance_visibility')->insert([
-                'user_id' => $userId,
-                'is_visible' => $isVisible,
-                'notes' => $notes,
-                'hidden_by' => $isVisible ? null : auth()->id(),
-                'hidden_at' => $isVisible ? null : now(),
-                'created_at' => now(),
-                'updated_at' => now()
-            ]);
-        }
-
-        return response()->json(['success' => true, 'message' => 'Visibility updated successfully']);
+        return response()->json([
+            'success' => true,
+            'message' => $isVisible ? 'Added to the users list' : 'Removed from the users list',
+            // Non-fatal note when someone is taken off while a shift change is still open.
+            'warning' => $warning,
+        ]);
     }
 
     public function data(Request $request)
@@ -852,6 +855,75 @@ class AttendanceController extends Controller
             // Blocked-checkout context for the bypass modal — same shared formatter the mobile
             // sheet uses, so the two never disagree. null when no attempt was recorded.
             $row->checkout_attempt = \App\Services\Riders\DayChecksService::checkoutAttempt($row, $stuckMins);
+        }
+
+        /**
+         * ⭐⭐ WHICH MACHINE EACH READING IS OF (owner ask, 10-Sep-2026).
+         *
+         * ⚠⚠ THE GAP THIS CLOSES. `t_ops_attendance` holds ONE meter pair per rider-day, and
+         *    this row printed it as one machine's day. On a TWO-MACHINE day it is not: the
+         *    rider arrives on his own bike (start stamped to the bike) and takes the van out
+         *    (close stamped to the van). The row then showed a start of 27,751 beside a close
+         *    of 17,259 — a real 29-Aug row on this system — with nothing saying they are
+         *    different odometers, and the "distance" between them is meaningless.
+         *
+         *    The phone has said this since Aug-27 (`meter_warning`, and a leg per machine).
+         *    The manager's own screen did not, so the two surfaces described the same day
+         *    differently.
+         *
+         * ⭐ The STAMPS are the answer and they are already on the row — this only stops
+         *   throwing them away. Deliberately NOT `RiderDayLegs`: that is the right engine for
+         *   "what may he claim", and it costs a reconstruction per rider; this row only needs
+         *   to name two machines, which the stamps do for one label query for the whole page.
+         *
+         * ⚠ Schema-guarded, and silent when there is nothing to say: a single-machine day and
+         *   every unstamped (pre-Aug-22) row carry `meter_machines = null`, so the row renders
+         *   exactly as it does today.
+         */
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id')) {
+                $stampRows = DB::table('t_ops_attendance')
+                    ->whereIn('user_id', $rows->pluck('user_id')->filter()->unique()->all() ?: [0])
+                    ->whereDate('attendance_date', $selectedDate)
+                    ->get(['user_id', 'meter_start_vehicle_id', 'meter_end_vehicle_id'])
+                    ->keyBy('user_id');
+
+                $vids = [];
+                foreach ($stampRows as $s) {
+                    foreach ([$s->meter_start_vehicle_id, $s->meter_end_vehicle_id] as $v) {
+                        if ($v) $vids[(int) $v] = true;
+                    }
+                }
+                $vLabels = [];
+                if ($vids) {
+                    foreach (DB::table('t_ops_vehicle')->whereIn('id', array_keys($vids))
+                                ->get(['id', 'reg_no', 'nickname']) as $v) {
+                        $vLabels[(int) $v->id] = trim((string) ($v->reg_no ?: $v->nickname))
+                            ?: ('Vehicle #' . $v->id);
+                    }
+                }
+
+                foreach ($rows as $row) {
+                    $row->meter_machines = null;
+                    $s = $stampRows[$row->user_id] ?? null;
+                    if (!$s) continue;
+                    $sv = $s->meter_start_vehicle_id ? (int) $s->meter_start_vehicle_id : null;
+                    $ev = $s->meter_end_vehicle_id   ? (int) $s->meter_end_vehicle_id   : null;
+                    if (!$sv && !$ev) continue;      // nothing recorded ⇒ nothing to say
+                    $row->meter_machines = [
+                        'start_id'    => $sv,
+                        'start_label' => $sv ? ($vLabels[$sv] ?? null) : null,
+                        'end_id'      => $ev,
+                        'end_label'   => $ev ? ($vLabels[$ev] ?? null) : null,
+                        // ⚠ TRUE only when BOTH are stamped and they differ. One stamped and
+                        //   one absent is "we do not know about the other", not "two machines".
+                        'split'       => ($sv && $ev && $sv !== $ev),
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            // A label is a courtesy on a row — never a reason the attendance page fails.
+            Log::warning('meter machine labels skipped', ['error' => $e->getMessage()]);
         }
 
         $config = [
