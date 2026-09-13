@@ -2781,7 +2781,19 @@ class EmployeeCashController extends Controller
 
             $base = request()->getSchemeAndHttpHost();
 
-            $byRider = $petrolRequests->groupBy('requester_user_id')->map(function ($requests) use ($base) {
+            // ⭐ WHICH MACHINE THIS MONEY IS FOR — personal bike / company bike / van, and its
+            //   plate. The approver was being asked to release fuel money without being told
+            //   what it was burned in, which is the one fact that decides whether a per-km
+            //   claim is even legitimate (company machines are fuelled by the firm).
+            // ⚠ ONLY the claim's OWN stamp, never the day's machine — the day has TWO
+            //   precisely when this matters, so inferring would print a confident wrong
+            //   answer. Unstamped stays null and the card says "machine not recorded".
+            // ⚠ SCHEMA-GUARDED exactly like FleetFuelService: `vehicle_id` was hand-applied
+            //   to t_req_master in a SQL batch, so a replica without it must still render.
+            $hasVehicleCol = \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id');
+            $vehResolver   = new \App\Services\Riders\VehicleResolver();
+
+            $byRider = $petrolRequests->groupBy('requester_user_id')->map(function ($requests) use ($base, $hasVehicleCol, $vehResolver) {
                 $requester = $requests->first()->requester;
                 return [
                     // Needed by the "month view" popup — the group key is lost by ->values()
@@ -2789,12 +2801,15 @@ class EmployeeCashController extends Controller
                     'rider_name' => $requester ? $requester->fullname : 'Unknown',
                     'count' => $requests->count(),
                     'total_amount' => round($requests->sum('amount'), 2),
-                    'requests' => $requests->map(function ($req) use ($base) {
+                    'requests' => $requests->map(function ($req) use ($base, $hasVehicleCol, $vehResolver) {
                         $attachmentUrl = null;
                         if ($req->attachments && is_array($req->attachments) && count($req->attachments) > 0) {
                             $attachmentUrl = rtrim($base, '/') . '/public-storage/' . ltrim($req->attachments[0], '/');
                         }
-                        return [
+                        $machine = $vehResolver->machineChipFields(
+                            $hasVehicleCol && $req->vehicle_id !== null ? (int) $req->vehicle_id : null
+                        );
+                        return $machine + [
                             'id' => $req->id,
                             'request_number' => $req->request_number,
                             'expense_date' => $req->expense_date ? $req->expense_date->format('M d, Y') : ($req->created_at ? $req->created_at->format('M d, Y') : '-'),

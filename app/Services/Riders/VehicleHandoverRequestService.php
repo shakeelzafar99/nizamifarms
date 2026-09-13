@@ -163,9 +163,17 @@ class VehicleHandoverRequestService
             unset($o);
 
             return [
+                /**
+                 * ⚠ `vtype` + `is_company` ride along so the PHONE can apply the one naming
+                 *   rule (utils/checkoutMachine → machineWords): a van is "Van", a company bike
+                 *   is its plate, his own bike is "apni bike". Without them the sheet could only
+                 *   print the raw label and would drift from the checkout dialogs. Additive.
+                 */
                 'holding' => $holdingId ? [
-                    'id'   => (int) $holdingId,
-                    'name' => $res->labelFor((int) $holdingId),
+                    'id'         => (int) $holdingId,
+                    'name'       => $res->labelFor((int) $holdingId),
+                    'vtype'      => (string) (optional($res->vehicle((int) $holdingId))->vtype ?? 'bike'),
+                    'is_company' => (int) (optional($res->vehicle((int) $holdingId))->is_company ?? 1) === 1,
                 ] : null,
                 // What he would get back if he handed his current machine in right now.
                 'give_back' => $svc->ownVehicleFor($userId),
@@ -235,7 +243,32 @@ class VehicleHandoverRequestService
                 if ((int) $v->is_company !== 1 && !$this->isFirstKeeper($vehicleId, $userId)) {
                     return $this->fail('That is somebody\'s personal bike — only its owner can ask for it.');
                 }
-            } else {
+
+                /**
+                 * ⭐⭐ R4 — "GIVE ME MY OWN BIKE BACK" *IS* "TAKE THE VAN BACK" (owner ruling,
+                 *    13-Sep-2026). One physical event, so it must be ONE kind of request.
+                 *
+                 * ⚠⚠ THE PROD FAILURE THIS CLOSES. At 17:45 Rajab sent a TAKE of vehicle 9 (his
+                 *    own bike) while holding the van. Filed as a TAKE, it carried no meaning for
+                 *    the VAN at all: `decide()` took the TAKE branch, `assign()` closed the van
+                 *    row through step 3, and the van's day ended with no closing reading from
+                 *    anybody — Shabib typed it by hand at 17:47. Re-labelled here as a RETURN of
+                 *    the van (give-back = the bike he asked for), the meter he types is
+                 *    unambiguously the VAN's closing reading, and R3 makes it compulsory.
+                 *
+                 * ⚠ Only when the machine he HOLDS is a company one. Swapping between two of his
+                 *   own bikes is a plain TAKE and stays one.
+                 */
+                if ($holdingId && (int) $v->is_company !== 1
+                    && $svc->isCompanyMachine((int) $holdingId)) {
+                    $direction = self::DIR_RETURN;
+                    $giveBack  = $vehicleId;            // the bike he asked for
+                    $vehicleId = (int) $holdingId;      // …the request is ABOUT the company machine
+                    $v = DB::table(VehicleService::T_VEHICLE)->where('id', $vehicleId)->first();
+                }
+            }
+
+            if ($direction === self::DIR_RETURN && $giveBack === null) {
                 // A return is about the machine he actually holds.
                 if (!$holdingId) return $this->fail('You are not holding a machine to hand back.');
                 if ((int) $holdingId !== $vehicleId) {
@@ -246,6 +279,36 @@ class VehicleHandoverRequestService
                 //   proposal — `decide()` re-resolves it and the approver may change it.
                 $own = $svc->ownVehicleFor($userId);
                 $giveBack = $own['id'] ?? null;
+            }
+
+            /**
+             * ⭐⭐ R3 AT THE RIDER'S DOOR — a company machine never moves without its odometer.
+             *    Refused HERE rather than at approval so he is told while the machine is in front
+             *    of him, not hours later through a manager. (On prod both of Rajab's requests
+             *    carried `meter: null` and both were approved.)
+             */
+            if ($svc->isCompanyMachine($vehicleId) && ($meterClaimed === null || $meterClaimed <= 0)) {
+                return $this->fail(
+                    $svc->meterRequiredMessage($vehicleId,
+                        $direction === self::DIR_RETURN ? 'closing' : 'opening')
+                ) + ['meter_missing' => 'meter'];
+            }
+
+            /**
+             * ⚠ TWO COMPANY MACHINES IN ONE REQUEST — refused, deliberately. He holds a company
+             *   machine and is asking for ANOTHER one, so BOTH need a reading (one closing, one
+             *   opening) and this request carries a single meter box. Rather than guess which
+             *   number he typed, send him through the two moves that already exist, each with its
+             *   own reading. Rare: the everyday case (company machine → his own bike) is R4 above.
+             */
+            if ($direction === self::DIR_TAKE && $holdingId
+                && (int) $holdingId !== $vehicleId
+                && $svc->isCompanyMachine((int) $holdingId)) {
+                $heldName = (new VehicleResolver())->labelFor((int) $holdingId);
+                return $this->fail(
+                    'Pehle ' . $heldName . ' wapas karein (us ka meter likh kar), phir ye machine lein — '
+                    . 'dono company ki hain, dono ki reading alag chahiye.'
+                );
             }
 
             // ⚠ ONE OPEN REQUEST PER RIDER — checked INSIDE a transaction with the
@@ -563,6 +626,20 @@ class VehicleHandoverRequestService
                 }
             }
 
+            /**
+             * ⭐⭐ R3 AT THE APPROVAL DOOR TOO. `raise()` now demands the reading, but rows filed
+             *    BEFORE this shipped (and any future caller) must not slip through: on prod both
+             *    of Rajab's meter-less requests were approved without a murmur. The approver can
+             *    supply it here — the override field already exists on both banners.
+             */
+            if ($svc->isCompanyMachine((int) $r->vehicle_id) && ($meter === null || $meter <= 0)) {
+                return $this->fail(
+                    $svc->meterRequiredMessage((int) $r->vehicle_id,
+                        $direction === self::DIR_RETURN ? 'closing' : 'opening')
+                    . ' Type it in the meter box on this request before approving.'
+                ) + ['meter_missing' => 'meter'];
+            }
+
             // ⚠ CLAIM THE REQUEST FIRST. If the machine moved and only THEN we tried to
             //   mark it approved, a lost race would move a machine twice while telling
             //   the second manager it failed. Claim, then act; a failure after this
@@ -634,30 +711,36 @@ class VehicleHandoverRequestService
                     }
                 }
 
-                // ⭐ THE CLOSING ODOMETER BELONGS TO THE MACHINE HE IS HANDING BACK, not
-                //   to whatever he receives — so it is written as that machine's OWN
-                //   meter-log row (driver = him) through the shared writer, NOT as the
-                //   next assignment's handover_meter. Without this the van's chain would
-                //   have no closing point for the day and the evening's kilometres would
-                //   land nowhere.
-                if ($meter !== null) {
-                    $this->recordClosingMeter($svc, (int) $r->vehicle_id, $today, $meter,
-                                              (int) $r->user_id, $actorId, $id);
-                }
-
+                /**
+                 * ⭐⭐ THE CLOSING ODOMETER BELONGS TO THE MACHINE HE IS HANDING BACK, not to
+                 *    whatever he receives — it becomes that machine's OWN meter-log row
+                 *    (driver = him), never the next assignment's `handover_meter`.
+                 *
+                 * ⚠⚠ EXACTLY ONE WRITER PER PATH (13-Sep-2026). `VehicleService` now owns
+                 *    `recordClosingMeter()` and calls it itself from BOTH doors — from step 3 of
+                 *    `assign()` when he is moved onto another machine, and from `release()` when
+                 *    he is not. This service used to keep its own private copy and call it here;
+                 *    that would now write the row twice on the give-back path and leave the log's
+                 *    note ambiguous about who recorded it. So nothing is written here: `$meter`
+                 *    is handed to whichever engine call actually closes the row, below.
+                 */
                 if ($giveBack) {
                     // Assigning his own bike closes the van row by itself (step 3 of
                     // assign()) — one call, no separate release, no window where he
                     // holds both or neither.
+                    // ⚠ `$meter` rides along as the VACATED machine's closing reading so
+                    //   assign()'s R3 gate is satisfied by the number the rider already typed.
+                    //   The write itself happened above; this only proves the rule to the engine.
                     $result = $svc->assign($giveBack, (int) $r->user_id, $today, $actorId,
-                                           'Handed back via rider request #' . $id);
+                                           'Handed back via rider request #' . $id, null, false, $meter);
                     if (!($result['ok'] ?? false)) {
                         // Fall back to a plain release: the van MUST come back either way.
-                        $result = $svc->release((int) $r->vehicle_id, $today, $actorId);
+                        $result = $svc->release((int) $r->vehicle_id, $today, $actorId, false, $meter);
                         $extraNote .= ' He could not be put back on the other machine — do it from the fleet screen.';
                     }
                 } else {
-                    $result = $svc->release((int) $r->vehicle_id, $today, $actorId);
+                    // ⭐ No give-back: release() takes the reading and writes the close itself.
+                    $result = $svc->release((int) $r->vehicle_id, $today, $actorId, false, $meter);
                 }
 
                 // ⚠ BOTH engine calls failed (release only fails on a real fault) —
@@ -793,51 +876,4 @@ class VehicleHandoverRequestService
         }
     }
 
-    /**
-     * The handed-back machine's closing reading, into ITS OWN meter log.
-     *
-     * ⚠ Preserves an existing start on that row. `saveMeterLog` writes the row
-     *   wholesale, so passing null for a start that already exists would erase a
-     *   reading somebody recorded this morning.
-     */
-    private function recordClosingMeter(VehicleService $svc, int $vehicleId, string $date,
-                                        int $meter, int $driverId, int $actorId, int $reqId): void
-    {
-        try {
-            $existingStart = null;
-            if (Schema::hasTable(VehicleService::T_METER_LOG)) {
-                $row = DB::table(VehicleService::T_METER_LOG)
-                    ->where('vehicle_id', $vehicleId)->where('log_date', $date)
-                    ->first(['meter_start', 'driver_user_id']);
-
-                // ⚠⚠ ANOTHER MAN'S STINT IS NOT OURS TO OVERWRITE (Sep-01 review
-                //    finding). `saveMeterLog` upserts the (vehicle, date) row
-                //    WHOLESALE — driver, note and enterer included. If the morning
-                //    driver's stint is already logged (Kashif, 10,000→10,120), writing
-                //    the evening hand-back over it would re-attribute his 120 km to
-                //    the returning rider and erase the note with no audit trail. The
-                //    reading is not lost: it stays on the request row (`meter_claimed`),
-                //    the sentence tells the approver, and the 🧾 editor on the
-                //    Vehicles page — built exactly for a second stint on one day —
-                //    is the tool that can record it without destroying the first.
-                $rowDriver = $row && $row->driver_user_id !== null ? (int) $row->driver_user_id : null;
-                if ($rowDriver !== null && $rowDriver !== $driverId) {
-                    Log::info('handover closing meter left to the 🧾 editor — the day\'s log row belongs to another driver', [
-                        'vehicle' => $vehicleId, 'date' => $date, 'row_driver' => $rowDriver,
-                        'returning_rider' => $driverId, 'meter' => $meter, 'request' => $reqId,
-                    ]);
-                    return;
-                }
-                $existingStart = $row && $row->meter_start !== null ? (int) $row->meter_start : null;
-            }
-            $svc->saveMeterLog($vehicleId, $date, $existingStart, $meter, $driverId,
-                               'Handed back — rider request #' . $reqId, $actorId);
-        } catch (\Throwable $e) {
-            // The handover is the thing that must survive; a missing log row is
-            // repairable from the Vehicles screen, an unrecorded handover is not.
-            Log::warning('handover closing meter not recorded', [
-                'vehicle' => $vehicleId, 'request' => $reqId, 'error' => $e->getMessage(),
-            ]);
-        }
-    }
 }

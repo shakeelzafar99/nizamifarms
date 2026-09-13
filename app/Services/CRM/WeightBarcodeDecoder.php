@@ -32,9 +32,17 @@ class WeightBarcodeDecoder
     /**
      * Decode a raw scanned string.
      *
-     * @return array{plu:int,weight_kg:float,raw:string}|null  null when it is not a
-     *         valid in-store scale label (wrong length, wrong flag, bad check digit,
-     *         or a PLU of zero).
+     * ⭐ `units` is the SAME five digits as `weight_kg`, read as a plain integer
+     * instead of as grams. The barcode does not say which reading is meant — the
+     * scale writes grams for a weighed product and a PIECE COUNT for one printed
+     * in pieces mode, into the identical slot. Only the PRODUCT knows which it is
+     * (`t_crm_prod_product.sell_unit`), so this decoder returns both readings and
+     * lets the caller pick. Every existing caller reads `weight_kg` and is
+     * unaffected by the addition.
+     *
+     * @return array{plu:int,weight_kg:float,units:int,raw:string}|null  null when it is
+     *         not a valid in-store scale label (wrong length, wrong flag, bad check
+     *         digit, or a PLU of zero).
      */
     public function decode(?string $raw): ?array
     {
@@ -53,9 +61,12 @@ class WeightBarcodeDecoder
             return null;
         }
 
+        $field = (int) substr($code, 7, 5);
+
         return [
             'plu' => $plu,
-            'weight_kg' => ((int) substr($code, 7, 5)) / 1000,
+            'weight_kg' => $field / 1000,
+            'units' => $field,
             'raw' => $code,
         ];
     }

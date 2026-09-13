@@ -37,6 +37,66 @@ class ProductModel extends BaseModel
         });
     }
 
+    /**
+     * How ONE unit of quantity on an order line is measured.
+     *
+     * ⭐⭐ This is what tells the barcode scanner how to read a scale label. The
+     * label's five middle digits are just digits: the Czerlop scale writes GRAMS
+     * for a weighed product and a PIECE COUNT for one printed in pieces mode, and
+     * the barcode carries nothing that distinguishes the two. Without this flag a
+     * "1 pcs" frozen box (…00001…) reads as 0.001 kg, rounds to 0, and is refused
+     * — exactly what happened on 12-Sep-2026.
+     *
+     * KG  — weighed. The label's digits ARE the grams. Every meat product.
+     * PCS — counted. The label identifies the PRODUCT; its digits are ignored,
+     *       because every box of a product prints the identical code and the
+     *       count comes from the order, not the label.
+     */
+    const SELL_UNIT_KG = 'kg';
+    const SELL_UNIT_PCS = 'pcs';
+    const SELL_UNITS = [self::SELL_UNIT_KG, self::SELL_UNIT_PCS];
+
+    /**
+     * Is the `sell_unit` column on this database yet?
+     *
+     * Deploy here is manual and web files can land before the SQL does, so every
+     * read/write of sell_unit is gated on this — with the column absent the whole
+     * feature is simply invisible and every product behaves as a weighed one
+     * (today's behaviour), instead of 500ing on an unknown column. Cached per
+     * request: Schema::hasColumn hits information_schema and the product list
+     * would otherwise ask once per row.
+     */
+    public static function supportsSellUnit(): bool
+    {
+        static $supported = null;
+        if ($supported === null) {
+            try {
+                $supported = \Illuminate\Support\Facades\Schema::hasColumn('t_crm_prod_product', 'sell_unit');
+            } catch (\Throwable $e) {
+                $supported = false;
+            }
+        }
+        return $supported;
+    }
+
+    /**
+     * Normalise anything into a storable sell unit. Unknown / empty / absent all
+     * mean 'kg', so a missing column, an old mobile payload and a blank form field
+     * can never silently turn a weighed product into a counted one.
+     */
+    public static function normaliseSellUnit($value): string
+    {
+        $v = strtolower(trim((string) $value));
+        return in_array($v, self::SELL_UNITS, true) ? $v : self::SELL_UNIT_KG;
+    }
+
+    /** Is this product counted in boxes/packs rather than weighed? */
+    public function isSoldByPiece(): bool
+    {
+        return self::supportsSellUnit()
+            && self::normaliseSellUnit($this->sell_unit) === self::SELL_UNIT_PCS;
+    }
+
     protected $fillable = [
         'shopify_product_id',
         'shopify_handle',
@@ -60,6 +120,7 @@ class ProductModel extends BaseModel
         'unit_weight_kg', // ⭐ Kg per ONE qty unit (0.5 = 500g pack). Display-only, drives the
                           //    Weight column on Open Order Quantities. NOT the weighing divisor.
         'czerlop_product_id', // ⭐ Scale PLU embedded in the weight barcode (barcode-qty feature)
+        'sell_unit',          // ⭐ 'kg' (weighed) | 'pcs' (counted boxes) — see SELL_UNIT_* below
         'seo_title',
         'seo_description',
         'featured_image',
@@ -248,6 +309,7 @@ class ProductModel extends BaseModel
         'unit_weight_kg' => ['type' => ProductChangeHistory::TYPE_UNIT_WEIGHT_CHANGE, 'label' => 'Unit Weight (kg)'],
         'is_lean' => ['type' => ProductChangeHistory::TYPE_LEAN_STATUS_CHANGE, 'label' => 'Lean Product'],
         'czerlop_product_id' => ['type' => ProductChangeHistory::TYPE_CZERLOP_CHANGE, 'label' => 'Czerlop Product ID'],
+        'sell_unit' => ['type' => ProductChangeHistory::TYPE_SELL_UNIT_CHANGE, 'label' => 'Sold By'],
     ];
 
     private static $trackedVariantFields = [

@@ -838,7 +838,7 @@ class FleetFuelService
         $out = !empty($r->logout_time);
         if (!$in && !$out) return 'absent';
 
-        if ($this->isSaneDay($r->meter_start ?? null, $r->meter_end ?? null)) return 'ok';
+        if ($this->isSaneRow($r)) return 'ok';
 
         // ⭐ A reading is only "missing" once it was DUE — start once he checked
         // in, end once he checked out. A rider still on shift has no end meter
@@ -873,6 +873,38 @@ class FleetFuelService
         return (int) $start > self::MIN_METER && $km >= 0 && $km <= self::MAX_DAY_KM;
     }
 
+    /**
+     * ⭐⭐ THE SAME TEST, BUT IT CAN SEE THE MACHINE (13-Sep-2026).
+     *
+     * ⚠⚠ `isSaneDay()` only ever compared two NUMBERS, so a day that began on one bike and
+     *    ended on another was "sane" whenever the two odometers happened to be close.
+     *    `dayStatus()` has always meant to catch that — its own comment reads
+     *    *"Readings present but implausible (typo / another bike)"* — but it could only detect
+     *    it by implausibility, which is luck, not a rule. Measured on the replica before this:
+     *
+     *        start 2,300 on EDN-198  →  end 2,570 on DCR-799
+     *        work_km = 270   meter_ok = true      ← a distance belonging to NEITHER machine
+     *        machines_today: EDN-198 2300 → NULL,  DCR-799 NULL → 2570   (both correct)
+     *
+     *    Rajab's 7,610 → 75,484 was caught only because a bike and a van are 68,000 km apart.
+     *    Two company bikes 270 km apart sail straight through.
+     *
+     * ⭐ So the stamps decide, via the ONE helper every other surface now uses. A split day
+     *   becomes `status = missing` / `detail = unusable` — exactly the label `dayStatus` was
+     *   already written to give it — which in turn means it contributes no `work_km`, does not
+     *   seed `prevEnd` for the next day's gap (its end reading is on a machine the day did not
+     *   start on), and correctly dirties that gap so the km across it are reported as
+     *   UNATTRIBUTED rather than quietly credited as off-duty.
+     *
+     * ⚠ Schema-guarded by `MeterPairHelper::isSplit()`, which is false unless BOTH ends are
+     *   stamped and differ — so on a DB without the stamp columns nothing changes at all.
+     */
+    private function isSaneRow($r): bool
+    {
+        return $this->isSaneDay($r->meter_start ?? null, $r->meter_end ?? null)
+            && !MeterPairHelper::isSplit($r);
+    }
+
     private function isSaneGap(int $prevEnd, int $nextStart): bool
     {
         $gap = $nextStart - $prevEnd;
@@ -885,6 +917,9 @@ class FleetFuelService
         $rows = DB::table('t_ops_attendance')
             ->select('user_id', 'attendance_date', 'meter_start', 'meter_end',
                      'meter_home', 'login_time', 'logout_time', 'leave_type')
+            // ⭐ The machine stamps — `isSaneRow()` cannot see a two-machine day without them.
+            ->when(VehicleService::stampsAvailable(),
+                fn ($q) => $q->addSelect(['meter_start_vehicle_id', 'meter_end_vehicle_id']))
             ->whereBetween('attendance_date', [$from, $to])
             ->orderBy('user_id')->orderBy('attendance_date')
             ->get();
@@ -904,7 +939,7 @@ class FleetFuelService
                               'unattributed_km' => 0, 'open_days' => 0];
             }
 
-            if (!$this->isSaneDay($r->meter_start, $r->meter_end)) {
+            if (!$this->isSaneRow($r)) {
                 // ⚠ Only a day he ACTUALLY WORKED can be "missing a meter reading".
                 // On leave or absent there is no ride to measure, so counting those
                 // produced alerts for days the rider was never on the bike — and it
@@ -1376,6 +1411,10 @@ class FleetFuelService
         $att = DB::table('t_ops_attendance')
             ->select('attendance_date', 'meter_start', 'meter_end', 'meter_home',
                      'login_time', 'logout_time', 'leave_type')
+            // ⭐ Same reason as meterAggregates(): without the stamps a day that started on one
+            //   bike and ended on another looks like an ordinary day to `isSaneRow()`.
+            ->when(VehicleService::stampsAvailable(),
+                fn ($q) => $q->addSelect(['meter_start_vehicle_id', 'meter_end_vehicle_id']))
             ->where('user_id', $userId)
             ->whereBetween('attendance_date', [$from, $to])
             ->orderBy('attendance_date')->get();
@@ -1389,7 +1428,7 @@ class FleetFuelService
         $todayYmd = Carbon::today()->format('Y-m-d');
         foreach ($att as $a) {
             $date = $a->attendance_date;
-            $sane = $this->isSaneDay($a->meter_start, $a->meter_end);
+            $sane = $this->isSaneRow($a);
             $offduty = null;
             $offdutySince = null;
             $unattributed = null;
@@ -1465,6 +1504,22 @@ class FleetFuelService
             $v = $resolverForLabels->vehicle($vid);
             return $v ? ((int) $v->is_company === 1) : false;
         };
+        // ⭐ The machine in WORDS — "Company bike · EDN-198" / "Personal bike · no plate
+        //   on file" — composed ONCE in VehicleResolver so this popup, the Daily Closing
+        //   Requests pane and the phone all read identically. `vehicle_label` above stays
+        //   exactly as it was (older clients render from it); these keys are additive.
+        $vehChip = function (?int $vid) use ($resolverForLabels) {
+            $c = $vid !== null ? $resolverForLabels->machineChip($vid) : null;
+            return [
+                'vehicle_is_company' => $c ? $c['is_company'] : null,
+                'vehicle_class'      => $c ? $c['vtype']      : null,
+                'vehicle_icon'       => $c ? $c['icon']       : null,
+                'vehicle_kind'       => $c ? $c['kind']       : null,
+                'vehicle_plate'      => $c ? $c['plate']      : null,
+                'vehicle_text'       => $c ? $c['text']       : null,
+                'vehicle_plate_note' => $c ? $c['plate_note'] : null,
+            ];
+        };
         foreach ($byDay as $date => $list) {
             if (!isset($days[$date])) {
                 // A claim dated on a day with no attendance row at all (e.g. filed
@@ -1475,7 +1530,7 @@ class FleetFuelService
                                 'detail' => 'no_attendance', 'incl_ride_home' => false, 'claims' => []];
             }
             foreach ($list as $r) {
-                $days[$date]['claims'][] = [
+                $days[$date]['claims'][] = $vehChip($r->vehicle_id !== null ? (int) $r->vehicle_id : null) + [
                     'id'        => (int) $r->id,
                     'kind'      => $r->expense_category === self::CAT_FUEL ? 'fuel' : 'maintenance',
                     'amount'    => (float) $r->amount,

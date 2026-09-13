@@ -616,6 +616,21 @@
         </div>
       </div>
 
+      {{-- ⭐⭐ R3 — THE MACHINE THIS RIDER IS STEPPING OFF (13-Sep-2026).
+           ⚠⚠ THIS BOX DID NOT EXIST. Handing a rider a machine silently closes whatever he was
+              already holding, and nothing ever asked for THAT machine's closing reading — so on
+              13-Sep the van left Rajab's hands with no number and Shabib typed it from memory.
+           ⚠ Shown only when the server's `meters_required` says the vacated machine is a company
+             one; the label and prompt are the server's words, never composed here. --}}
+      <div id="flvVacatedWrap" style="margin-top:10px;display:none;">
+        <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+          <span id="flvVacatedLabel"></span> <span style="font-weight:500;color:#b45309;">(required)</span>
+        </label>
+        <input type="number" id="flvVacatedMeter" min="0" step="1" placeholder="Odometer now"
+               style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        <div id="flvVacatedHint" style="font-size:11.5px;color:#6b7280;margin-top:4px;"></div>
+      </div>
+
       {{-- Condition photos. Optional by design — a handover with no photo is still a
            handover, and blocking on a camera would just mean the assignment never
            gets recorded at all. --}}
@@ -7021,6 +7036,7 @@ function flvPreviewAssign() {
                   + lines + warns + '</div>'
                 : '';
             flvRenderDisplaced(res.displaced);
+            flvRenderMetersRequired(res.meters_required || []);
         })
         .catch(() => { if (seq === flvPreviewSeq) box.innerHTML = ''; });
 }
@@ -7035,6 +7051,48 @@ function flvPreviewAssign() {
    ═══════════════════════════════════════════════════════════════════════════ */
 let flvDisplaced = { user_id: null, action: null, vehicle_id: null };
 let flvDisplacedData = null;      // the server's description of who is losing it
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ⭐⭐ R3 — WHICH METER BOXES THIS MOVE REQUIRES (13-Sep-2026).
+
+   The SERVER decides (`previewAssign` / `releasePreview` → `meters_required`), so this screen,
+   the store-mode sheet and the rider's own sheet cannot disagree about whether a reading is
+   optional. Each entry is {field, vehicle_id, label, which, prompt}.
+   ⚠ `handover_meter`'s own box is always visible (it stays optional for an own bike); this only
+     re-labels it "(required)" and shows the extra `vacated_meter` box when the server asks.
+   ═══════════════════════════════════════════════════════════════════════════ */
+let flvMetersRequired = [];
+function flvNeedsMeter(field) {
+    return flvMetersRequired.find(m => m && m.field === field) || null;
+}
+function flvRenderMetersRequired(list) {
+    flvMetersRequired = Array.isArray(list) ? list : [];
+
+    // the opening reading — same box as before, just labelled honestly
+    const openReq = flvNeedsMeter('handover_meter');
+    const openLbl = document.querySelector('label[for="flvAssignMeter"]')
+                 || document.getElementById('flvAssignMeter')?.previousElementSibling;
+    if (openLbl) {
+        openLbl.innerHTML = 'Odometer at handover ' + (openReq
+            ? '<span style="font-weight:500;color:#b45309;">(required)</span>'
+            : '<span style="font-weight:400;color:#9ca3af;">(optional)</span>');
+    }
+
+    // the CLOSING reading of whatever he is stepping off
+    const vac  = flvNeedsMeter('vacated_meter');
+    const wrap = document.getElementById('flvVacatedWrap');
+    if (wrap) {
+        wrap.style.display = vac ? '' : 'none';
+        if (vac) {
+            document.getElementById('flvVacatedLabel').textContent =
+                (vac.label || 'His current machine') + ' — closing meter';
+            document.getElementById('flvVacatedHint').textContent = vac.prompt || '';
+        } else {
+            const el = document.getElementById('flvVacatedMeter');
+            if (el) el.value = '';
+        }
+    }
+}
 
 function flvClearDisplaced() {
     flvDisplaced = { user_id: null, action: null, vehicle_id: null };
@@ -7161,14 +7219,32 @@ function flvSaveAssign() {
         err.style.display = ''; return;
     }
 
+    // ⭐ R3 — refuse locally with the SERVER's own prompt before spending a round trip. The
+    //   engine refuses too (this is a courtesy, not the gate) and its 422 names the field.
+    const mEl  = document.getElementById('flvAssignMeter');
+    const vEl  = document.getElementById('flvVacatedMeter');
+    const need = flvNeedsMeter('handover_meter');
+    const needVac = flvNeedsMeter('vacated_meter');
+    if (need && (!mEl || mEl.value === '' || isNaN(parseInt(mEl.value, 10)))) {
+        err.textContent = need.prompt || 'This is a company machine — record its meter reading.';
+        err.style.display = ''; return;
+    }
+    if (needVac && (!vEl || vEl.value === '' || isNaN(parseInt(vEl.value, 10)))) {
+        err.textContent = needVac.prompt || 'Record the closing reading of the machine he is handing back.';
+        err.style.display = ''; return;
+    }
+
     const fd = new FormData();
     fd.append('user_id', uid);
     fd.append('date', document.getElementById('flvAssignDate').value || '');
     fd.append('note', document.getElementById('flvAssignNote').value || '');
-    // Optional. Sent only when typed — an empty box must not be read as "0 km".
-    const mEl = document.getElementById('flvAssignMeter');
+    // Optional for an own bike. Sent only when typed — an empty box must not be read as "0 km".
     if (mEl && mEl.value !== '' && !isNaN(parseInt(mEl.value, 10))) {
         fd.append('handover_meter', parseInt(mEl.value, 10));
+    }
+    // R3 — the closing reading of the machine this rider is stepping OFF.
+    if (vEl && vEl.value !== '' && !isNaN(parseInt(vEl.value, 10))) {
+        fd.append('vacated_meter', parseInt(vEl.value, 10));
     }
     if (flvDisplaced.action) {
         fd.append('displaced_action', flvDisplaced.action);
@@ -7210,12 +7286,32 @@ function flvRelease(vehicleId) {
 
     fetch(FLV_BASE + '/' + vehicleId + '/preview-release', { headers: { 'Accept': 'application/json' } })
         .then(r => r.json())
-        .then(res => flvDoRelease(v, res.displaced || null))
-        .catch(() => flvDoRelease(v, null));   // the prompt is a nicety, never a blocker
+        .then(res => flvDoRelease(v, res.displaced || null, res.meters_required || []))
+        .catch(() => flvDoRelease(v, null, []));   // the prompt is a nicety, never a blocker
 }
 
-function flvDoRelease(v, d) {
+function flvDoRelease(v, d, metersRequired) {
     let action = null, targetVehicle = null;
+
+    /* ⭐⭐ R3 — THE MACHINE'S OWN CLOSING READING (13-Sep-2026).
+       ⚠⚠ `VehicleService::release()` took no meter at all until today, so "Take back" has NEVER
+          recorded a closing odometer from this screen: the number had nowhere to go. On 13-Sep
+          that left the van with no reading at either end of Rajab's day.
+       ⚠ Asked FIRST, before the displaced-rider question, because it is about the machine in
+         front of the manager rather than about somebody's next bike. */
+    const needClose = (metersRequired || []).find(m => m && m.field === 'meter') || null;
+    let closeMeter = null;
+    if (needClose) {
+        const ans = prompt(needClose.prompt
+            || (v.name + ' — meter reading as it comes back:'), '');
+        if (ans === null) return;                                  // cancelled
+        const n = parseInt(String(ans).replace(/[^0-9]/g, ''), 10);
+        if (isNaN(n)) {
+            alert('A meter reading is required for a company machine — nothing changed.');
+            return;
+        }
+        closeMeter = n;
+    }
 
     if (d) {
         const first = (d.name || '').split(' ')[0];
@@ -7256,6 +7352,7 @@ function flvDoRelease(v, d) {
         fd.append('displaced_action', action);
         if (targetVehicle) fd.append('displaced_vehicle_id', targetVehicle);
     }
+    if (closeMeter !== null) fd.append('meter', closeMeter);   // R3 — its closing reading
 
     fetch(FLV_BASE + '/' + v.id + '/release', {
         method: 'POST',

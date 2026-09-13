@@ -380,6 +380,24 @@ class DayChecksService
         if (!$transferDay && $meterDistance !== null && $cmp !== null && $cmp > 0) {
             if (abs($meterDistance - $cmp) > $meterGpsWarnKm) { $meterIssues[] = 'Meter vs GPS off by ' . round(abs($meterDistance - $cmp)) . ' km'; }
         }
+
+        /**
+         * 🏍️🚚 TWO MACHINES IN ONE PAIR (Rajab, 11-Sep-2026).
+         *
+         * ⚠⚠ WITHOUT THIS THE FIX WOULD HIDE THE PROBLEM. `meter_distance` is now NULL on a
+         *    split day, which correctly silences the "Meter vs GPS off by 67,804 km" nonsense
+         *    above — but silence made the ⛽ tick go GREEN on the one day that most needs a
+         *    manager's eye. The readings are both present, so the miss-reason rule says nothing
+         *    either. So the split gets its OWN issue: the day is flagged, for the true reason.
+         *
+         * ⚠ `meter_split` absent = false = exactly the previous behaviour, so any caller that
+         *   does not pass it (or a DB without the stamp columns) is unaffected.
+         */
+        if (!empty($ctx['meter_split'])) {
+            $meterIssues[] = 'Start and close are on two different vehicles — no day distance';
+            $chips[] = ['label' => 'two machines', 'tone' => 'amber'];
+        }
+
         $meterOk = empty($meterIssues);
 
         // 📡 GPS verdict — the SHARED analyzer (identical to the modal). null = can't judge.

@@ -1079,6 +1079,8 @@ const availableColumns = {
     'weight_factor': { label: 'Weight Factor', width: 'w-[95px]', order: 13, cssClass: 'col-weight-factor' },
     'unit_weight_kg': { label: 'Unit Weight (kg)', width: 'w-[105px]', order: 13.2, cssClass: 'col-unit-weight' },
     'czerlop_id': { label: 'Czerlop ID', width: 'w-[90px]', order: 13.5, cssClass: 'col-czerlop' },
+    // 📦 kg = weighed on the scale | pcs = counted boxes (a scan confirms the product, qty stays as ordered)
+    'sold_by': { label: 'Sold By', width: 'w-[95px]', order: 13.7, cssClass: 'col-sold-by' },
     'business_unit': { label: 'Business Unit', width: 'w-[110px]', order: 14, cssClass: 'col-bu' },
     'is_lean': { label: 'Lean', width: 'w-[75px]', order: 15, cssClass: 'col-lean' },
     'last_synced_at': { label: 'Last sync', width: 'w-[95px]', order: 16, cssClass: 'col-sync' },
@@ -1094,17 +1096,17 @@ let totalMatchingProducts = {{ $products->total() }}; // Total products matching
 let quickEditPricesEnabled = false;
 
 // Default visible columns
-const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'czerlop_id', 'is_lean', 'last_synced_at', 'actions'];
+const defaultColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'price_range', 'variants_count', 'total_inventory', 'czerlop_id', 'sold_by', 'is_lean', 'last_synced_at', 'actions'];
 
 // All available columns (including attributes for column selector)
-const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'unit_weight_kg', 'czerlop_id', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
+const allColumns = ['checkbox', 'image', 'title', 'skus', 'status', 'vendor', 'product_type', 'attribute_1', 'attribute_2', 'attribute_3', 'price_range', 'variants_count', 'total_inventory', 'weight_factor', 'unit_weight_kg', 'czerlop_id', 'sold_by', 'business_unit', 'is_lean', 'last_synced_at', 'actions'];
 
 // Load column settings from localStorage with migration support for new columns
 let visibleColumns = JSON.parse(localStorage.getItem('products_visible_columns') || 'null');
 let columnOrder = JSON.parse(localStorage.getItem('products_column_order') || 'null');
 
 // Track migration version to only run migrations once for truly new columns
-const COLUMN_MIGRATION_VERSION = 5; // Increment this when adding new columns (v5 = czerlop_id column)
+const COLUMN_MIGRATION_VERSION = 6; // Increment this when adding new columns (v5 = czerlop_id, v6 = sold_by)
 const savedMigrationVersion = parseInt(localStorage.getItem('products_column_migration_version') || '0');
 
 // If no saved preferences exist, use defaults
@@ -1882,6 +1884,15 @@ function getCellContent(columnKey, product) {
                 return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium" style="background:#ECFDF5; color:#047857;">#${product.czerlop_product_id}</span>`;
             }
             return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium" style="background:#FFFBEB; color:#B45309;">Not set</span>`;
+
+        // 📦 How a scanned label is read for this product. 'pcs' is the exception and is
+        // the one that must be visible at a glance: a counted product's box scan confirms
+        // the product and leaves the quantity as ordered. Everything else is weighed.
+        case 'sold_by':
+            if (String(product.sell_unit || 'kg').toLowerCase() === 'pcs') {
+                return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-semibold" style="background:#E0F2FE; color:#0369A1; border:1px solid #BAE6FD;" title="Counted in boxes/packs — a box scan confirms the product, quantity stays as ordered">📦 Pieces</span>`;
+            }
+            return `<span class="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium bg-gray-50 text-gray-600 border border-gray-200" title="Weighed on the scale — the label's grams set the quantity">⚖️ Weight</span>`;
 
         case 'business_unit':
             if (product.business_unit) {
@@ -3573,6 +3584,7 @@ function getChangeIcon(changeType) {
         'inventory_change': '📦',
         'weight_factor_change': '⚖️',
         'unit_weight_change': '📦',
+        'sell_unit_change': '⚖️',
         'lean_status_change': '🥗',
         'product_created': '🆕',
         'variant_created': '➕',
@@ -3756,6 +3768,12 @@ function renderProductDetails(product) {
                             ${product.czerlop_product_id ?
                                 `<span style="color: #15803d; font-size: 14px; font-weight: 600;">#${product.czerlop_product_id}</span>` :
                                 `<span style="color: #b45309; font-size: 13px; font-weight: 600;">Not set — won't scan</span>`}
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #6b7280; font-size: 14px;">Sold By:</span>
+                            ${String(product.sell_unit || 'kg').toLowerCase() === 'pcs' ?
+                                `<span style="color: #0369a1; font-size: 14px; font-weight: 600;">📦 Pieces (boxes) — scan confirms product, qty as ordered</span>` :
+                                `<span style="color: #111827; font-size: 14px; font-weight: 500;">⚖️ Weight (kg)</span>`}
                         </div>
                         <div style="display: flex; justify-content: space-between;">
                             <span style="color: #6b7280; font-size: 14px;">Last Sync:</span>

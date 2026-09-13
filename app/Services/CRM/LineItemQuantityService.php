@@ -36,6 +36,20 @@ class LineItemQuantityService
     public const CLOSED_STATUSES = ['delivered', 'completed', 'cancelled', 'refunded'];
 
     /**
+     * `quantity_source` values this service writes.
+     *
+     * 'manual'   — somebody typed the quantity.
+     * 'barcode'  — the quantity was READ OFF a scale label (weighed products).
+     * 'box_scan' — a counted product's box was scanned to confirm the PRODUCT; the
+     *              quantity is the ordered one and no label supplied it. Kept
+     *              distinct from 'barcode' precisely so no screen claims a number
+     *              came from a label that never carried one.
+     */
+    public const SOURCE_MANUAL = 'manual';
+    public const SOURCE_BARCODE = 'barcode';
+    public const SOURCE_BOX_SCAN = 'box_scan';
+
+    /**
      * @return array{success:bool, code?:string, message:string}
      */
     public function setQuantity(
@@ -278,6 +292,84 @@ class LineItemQuantityService
             'line_item_id' => (int) $lineItem->id,
             'is_free' => $isFree,
             'previous_is_free' => $wasFree,
+            'line_total' => (float) $lineItem->line_total,
+            'order_subtotal' => (float) $order->subtotal_price,
+            'order_total' => (float) $order->total_price,
+        ];
+    }
+
+    /**
+     * 📦 Confirm a COUNTED product (a frozen box / pack) by its scale label,
+     * WITHOUT touching the quantity.
+     *
+     * ⭐⭐ Why this is not just setQuantity with the same number. A boxed product's
+     * label carries no usable amount: the scale prints the piece count into the
+     * slot a weighed label uses for grams, and — more importantly — EVERY box of a
+     * product prints the IDENTICAL code, so no number of scans can tell you how
+     * many boxes are in the bag. The count therefore stays as ORDERED (owner
+     * ruling, 13-Sep-2026) and the scan answers the only question the label can
+     * answer: "is this the right product, and is it on this order?".
+     *
+     * So this writes the audit stamp and NOTHING else — no quantity, no line
+     * total, no order total, no inventory. It cannot move money, which is why it
+     * does not need (and deliberately does not open) a transaction.
+     *
+     * The stamp is `quantity_source = 'box_scan'`, NOT 'barcode': 'barcode' means
+     * "this quantity was read off a label", which here would be a lie. Every
+     * surface that renders the badge knows the third value.
+     *
+     * Idempotent: scanning box 2 and box 3 of the same line re-confirms the same
+     * row and reports `unchanged`, because there is no per-box state to add to.
+     *
+     * @return array{success:bool, code?:string, message:string}
+     */
+    public function markBoxScanned(
+        OrderModel $order,
+        OrderLineItemModel $lineItem,
+        string $scannedBarcode,
+        ?int $userId
+    ): array {
+        if ((int) $lineItem->order_id !== (int) $order->id) {
+            return ['success' => false, 'code' => 'mismatch', 'message' => 'Line item does not belong to this order.'];
+        }
+        if (in_array($order->order_status, self::CLOSED_STATUSES, true)) {
+            return ['success' => false, 'code' => 'not_open', 'message' => 'This order is already ' . $order->order_status . ' — nothing to confirm.'];
+        }
+        if (!empty($order->ledger_transaction_id)) {
+            return ['success' => false, 'code' => 'invoiced', 'message' => 'This order is already invoiced — nothing to confirm.'];
+        }
+
+        $previousSource = $lineItem->quantity_source;
+        $alreadyConfirmed = $previousSource === self::SOURCE_BOX_SCAN;
+
+        try {
+            $lineItem->quantity_source = self::SOURCE_BOX_SCAN;
+            $lineItem->quantity_scanned_barcode = substr($scannedBarcode, 0, 20);
+            $lineItem->quantity_updated_by = $userId;
+            $lineItem->quantity_updated_at = now();
+            if ($userId) {
+                $lineItem->updated_by = $userId;
+            }
+            $lineItem->save();
+        } catch (\Throwable $e) {
+            Log::error('LineItemQuantityService::markBoxScanned failed', [
+                'order_id' => $order->id,
+                'line_item_id' => $lineItem->id,
+                'error' => $e->getMessage(),
+            ]);
+            return ['success' => false, 'code' => 'error', 'message' => 'Could not confirm that box. Please try again.'];
+        }
+
+        return [
+            'success' => true,
+            'unchanged' => $alreadyConfirmed,
+            'message' => $alreadyConfirmed ? 'Already confirmed.' : 'Box confirmed.',
+            'line_item_id' => (int) $lineItem->id,
+            'previous_source' => $previousSource,
+            // The quantity is deliberately untouched — echoed back so the phone can
+            // show "stays N" from the server's own reading rather than its cache.
+            'new_quantity' => (float) $lineItem->quantity,
+            'quantity_source' => self::SOURCE_BOX_SCAN,
             'line_total' => (float) $lineItem->line_total,
             'order_subtotal' => (float) $order->subtotal_price,
             'order_total' => (float) $order->total_price,

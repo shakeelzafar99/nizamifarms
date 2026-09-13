@@ -24,7 +24,7 @@ class OrderLineItemModel extends BaseModel
         'name',
         'vendor',
         'quantity',
-        'quantity_source',            // 'manual' | 'barcode' (barcode-qty feature)
+        'quantity_source',            // 'manual' | 'barcode' (weighed) | 'box_scan' (counted box confirmed)
         'quantity_updated_by',
         'quantity_updated_at',
         'quantity_scanned_barcode',

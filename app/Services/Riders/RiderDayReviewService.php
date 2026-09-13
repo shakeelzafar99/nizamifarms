@@ -236,16 +236,28 @@ class RiderDayReviewService
     {
         $rows = DB::table('t_ops_attendance')
             ->select('user_id', 'meter_start', 'meter_end')
+            // ⭐ The machine stamps, so a two-machine day is REFUSED rather than measured.
+            ->when(VehicleService::stampsAvailable(),
+                fn ($q) => $q->addSelect(['meter_start_vehicle_id', 'meter_end_vehicle_id']))
             ->where('attendance_date', $date)
             ->whereNotNull('meter_start')->whereNotNull('meter_end')
             ->get();
 
         $out = [];
         foreach ($rows as $r) {
-            $km = (int) $r->meter_end - (int) $r->meter_start;
+            /**
+             * ⚠⚠ THE 500 km BOUND IS NOT A SPLIT-DAY GUARD (13-Sep-2026). It happens to catch
+             *    Rajab's 7,610 → 75,484, but only because those two odometers are far apart.
+             *    Two company bikes at 18,040 and 18,310 would produce a plausible-looking
+             *    "270 km day" that belongs to neither machine, and nothing would flag it.
+             *    `MeterPairHelper::distance()` answers null whenever the two ends are stamped to
+             *    different machines — the same ONE rule the attendance page, the ⛽ tick, the
+             *    phone and the month total now use.
+             */
+            $km = MeterPairHelper::distance($r);
             // reject impossible readings (dropped digits / test rows) rather than
             // showing a nonsense number — see the Jun/Jul meter typos.
-            if ($km >= 0 && $km <= 500 && (int) $r->meter_start > 1000) {
+            if ($km !== null && $km <= 500 && (int) $r->meter_start > 1000) {
                 $out[(int) $r->user_id] = $km;
             }
         }

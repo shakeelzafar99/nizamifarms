@@ -499,8 +499,14 @@ class OrderReturnService
             return ['lines' => [], 'frozen_count' => 0, 'fresh_count' => 0, 'has_meat' => false];
         }
 
+        // 📦 sell_unit is selected only when the column exists, so this screen keeps
+        //    working on a database that has not had the 13-Sep SQL run yet.
+        $productCols = ['id', 'title', 'czerlop_product_id', 'business_unit_id', 'weight_factor'];
+        if (ProductModel::supportsSellUnit()) {
+            $productCols[] = 'sell_unit';
+        }
         $products = ProductModel::whereIn('id', $lines->pluck('product_id')->filter()->unique()->values())
-            ->get(['id', 'title', 'czerlop_product_id', 'business_unit_id', 'weight_factor'])
+            ->get($productCols)
             ->keyBy('id');
 
         $out = [];
@@ -516,6 +522,12 @@ class OrderReturnService
             $product  = $line->product_id ? $products->get($line->product_id) : null;
             $isFrozen = $product && (int) $product->business_unit_id === self::FROZEN_BUSINESS_UNIT_ID;
             $plu      = $product && $product->czerlop_product_id ? (int) $product->czerlop_product_id : null;
+            // 📦 A COUNTED product (a frozen box) cannot be scanned back in: every box
+            //    of it prints the IDENTICAL label, so three boxes and one box read the
+            //    same and the barcode can neither say how many came back nor be
+            //    de-duplicated. Those lines go back through the manual "put back"
+            //    button, the same route the 95 PLU-less products already use.
+            $isPiece  = $product && $product->isSoldByPiece();
 
             $out[] = [
                 'line_item_id'     => (int) $line->id,
@@ -525,7 +537,8 @@ class OrderReturnService
                 'business_unit_id' => $product ? (int) $product->business_unit_id : null,
                 'is_frozen'        => $isFrozen,
                 'plu'              => $plu,
-                'scannable'        => $plu !== null,
+                'sell_unit'        => $isPiece ? ProductModel::SELL_UNIT_PCS : ProductModel::SELL_UNIT_KG,
+                'scannable'        => $plu !== null && !$isPiece,
                 'weight_factor'    => $product ? (float) ($product->weight_factor ?: 1.0) : 1.0,
                 'destination'      => $isFrozen
                     ? OrderReturnItemModel::DEST_STORE_STOCK
@@ -1152,6 +1165,25 @@ class OrderReturnService
 
             if (!$candidates) {
                 throw new OrderReturnException('Not in this order (PLU ' . $decoded['plu'] . ', ' . number_format($decoded['weight_kg'], 3) . ' kg).');
+            }
+
+            // 📦 Counted products are refused here, not silently mis-booked. Reading
+            //    this label as a weight would put 0.001 kg back into stock, which is
+            //    how a "1 pcs" box decodes. goodsBreakdown already marks these lines
+            //    unscannable, so the app offers the manual button instead — this is
+            //    the rail that makes it true even from a stale APK or a direct call.
+            $piece = null;
+            foreach ($candidates as $c) {
+                if (($c['sell_unit'] ?? ProductModel::SELL_UNIT_KG) === ProductModel::SELL_UNIT_PCS) {
+                    $piece = $c;
+                    break;
+                }
+            }
+            if ($piece) {
+                throw new OrderReturnException(
+                    $piece['name'] . ' is sold by the box, so its label carries no weight — '
+                    . 'use the "Put back" button on that line instead of scanning.'
+                );
             }
 
             // The same physical label twice is the easiest way to inflate kg stock.

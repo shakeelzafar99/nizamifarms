@@ -784,6 +784,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/orders/{orderId}/line-items/{lineItemId}/instructions', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemInstructions']);
     // Barcode-qty: set an open order's line-item quantity from a scanned weight barcode.
     Route::put('/orders/{orderId}/line-items/{lineItemId}/quantity', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantity']);
+    // 📦 Box scan: confirm a COUNTED product (frozen box) by its label. Changes no
+    // quantity — see RiderController::confirmLineItemBoxScan.
+    Route::post('/orders/{orderId}/line-items/{lineItemId}/box-scan', [\App\Http\Controllers\API\RiderController::class, 'confirmLineItemBoxScan']);
     // Barcode-qty: set MANY line-item quantities in one atomic request (manual "Save all").
     Route::put('/orders/{orderId}/line-items/quantities', [\App\Http\Controllers\API\RiderController::class, 'updateLineItemQuantitiesBatch']);
     // Aug-2026: mark an open order's line item free / charged from the app

@@ -1090,6 +1090,13 @@ class VehicleController extends Controller
             //   questionable digit would leave the register wrong about who has the
             //   bike. The preview warns; the engine ignores an out-of-range value.
             'handover_meter'       => 'nullable|integer|min:0|max:9999999',
+            /**
+             * ⭐⭐ R3 (13-Sep-2026) — the CLOSING reading of whatever THIS rider is stepping OFF.
+             *    A different number from `handover_meter` (which opens the machine he steps ON
+             *    to) and from `displaced_meter` (which opens the machine the OTHER man lands on).
+             *    Compulsory when the machine he vacates is a company one; the engine decides.
+             */
+            'vacated_meter'        => 'nullable|integer|min:0|max:9999999',
         ]);
 
         // ⚠ `$displacedSettleFollows = true`: we settle the displaced rider right
@@ -1098,9 +1105,17 @@ class VehicleController extends Controller
         $res = $svc->assign((int) $id, (int) $data['user_id'], $data['date'] ?? null,
                             (int) auth()->id(), $data['note'] ?? null,
                             isset($data['handover_meter']) ? (int) $data['handover_meter'] : null,
-                            true);
+                            true,
+                            isset($data['vacated_meter']) ? (int) $data['vacated_meter'] : null);
         if (!$res['ok']) {
-            return response()->json(['success' => false, 'message' => $res['message']], 422);
+            // ⚠ `meter_missing` names the box the modal must highlight, so one server answer
+            //   drives web, store mode and the rider sheet identically.
+            return response()->json(array_filter([
+                'success' => false,
+                'message' => $res['message'],
+                'meter_missing'    => $res['meter_missing'] ?? null,
+                'meter_vehicle_id' => $res['meter_vehicle_id'] ?? null,
+            ], fn ($v) => $v !== null), 422);
         }
 
         $photoNote = $this->storePhotos($request, $svc, (int) $id, 'handover_in',
@@ -1233,6 +1248,13 @@ class VehicleController extends Controller
             'displaced_action'     => 'nullable|in:none,own,vehicle',
             'displaced_vehicle_id' => 'nullable|integer',
             'displaced_meter'      => 'nullable|integer|min:0|max:9999999',
+            /**
+             * ⭐⭐ R3 (13-Sep-2026) — THE MACHINE'S OWN CLOSING READING. Until now `release()`
+             *    took no meter at all, so a "Take back" from the web or the store-mode fleet
+             *    screen has NEVER recorded a machine's closing odometer: the number had nowhere
+             *    to go. Compulsory for a company machine; written to its own meter log.
+             */
+            'meter'                => 'nullable|integer|min:0|max:9999999',
         ]);
 
         // The photos are of the state it came BACK in, so they belong to the
@@ -1240,9 +1262,15 @@ class VehicleController extends Controller
         $closing = $svc->keeperOf((int) $id);
 
         // Same settle-follows contract as assign() above.
-        $res = $svc->release((int) $id, $request->input('date'), (int) auth()->id(), true);
+        $res = $svc->release((int) $id, $request->input('date'), (int) auth()->id(), true,
+                             isset($data['meter']) ? (int) $data['meter'] : null);
         if (!$res['ok']) {
-            return response()->json(['success' => false, 'message' => $res['message']], 422);
+            return response()->json(array_filter([
+                'success' => false,
+                'message' => $res['message'],
+                'meter_missing'    => $res['meter_missing'] ?? null,
+                'meter_vehicle_id' => $res['meter_vehicle_id'] ?? null,
+            ], fn ($v) => $v !== null), 422);
         }
 
         $photoNote = $this->storePhotos($request, $svc, (int) $id, 'handover_out',
@@ -1275,11 +1303,23 @@ class VehicleController extends Controller
         }
         $current = $svc->keeperOf((int) $id);
         if (!$current) {
-            return response()->json(['success' => true, 'displaced' => null]);
+            // Nobody holds it — releasing is a no-op, so no reading is owed either.
+            return response()->json(['success' => true, 'displaced' => null, 'meters_required' => []]);
         }
         $uid = (int) $current->user_id;
+        /**
+         * ⭐ R3 — the machine's own CLOSING reading, declared by the server exactly as
+         *   `previewAssign` declares its boxes, so the take-back modal and the store-mode sheet
+         *   mark the same field compulsory without deciding anything themselves.
+         */
+        $meters = $svc->needsClosingMeter((int) $id)
+            ? [['field' => 'meter', 'vehicle_id' => (int) $id,
+                'label' => $svc->find((int) $id)['name'] ?? 'this machine', 'which' => 'closing',
+                'prompt' => ($svc->find((int) $id)['name'] ?? 'This machine') . ' — meter reading as it comes back']]
+            : [];
         return response()->json([
             'success'   => true,
+            'meters_required' => $meters,
             'displaced' => [
                 'user_id'    => $uid,
                 'name'       => DB::table('t_sys_user')->where('id', $uid)->value('fullname') ?: 'the current rider',

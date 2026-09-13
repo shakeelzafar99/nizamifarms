@@ -39,6 +39,14 @@ class VehicleService
     public const T_PHOTO   = 't_ops_vehicle_photo';
     public const T_METER_LOG = 't_ops_vehicle_meter_log';
 
+    /**
+     * ⚠ Marker for the R3 closing-meter refusal raised INSIDE assign()'s transaction. A thrown
+     *   exception is the only way to roll the handover back from in there; this prefix lets the
+     *   catch turn it into the same actionable answer the pre-flight gate returns, instead of a
+     *   generic "Could not assign that vehicle."
+     */
+    private const ERR_CLOSING_METER = '__R3_CLOSING_METER__:';
+
     /** Readings below this are dropped-digit typos — the bikes here are 5-figure. */
     public const MIN_METER = 1000;
 
@@ -2075,6 +2083,28 @@ class VehicleService
                 }
             }
 
+            /**
+             * ⭐⭐ R3 — WHICH METERS THIS MOVE REQUIRES, decided by the SERVER (13-Sep-2026).
+             *
+             * Every surface (web fleet modal, store-mode sheet, the rider's Bike badlein) reads
+             * THIS rather than working it out from `is_company` in its own JavaScript. One
+             * answer, so a field can never be optional on one screen and compulsory on another —
+             * which is precisely how the van left Rajab's hands twice with no reading.
+             */
+            $meters = [];
+            if ($this->needsOpeningMeter($vehicleId)) {
+                $meters[] = ['field' => 'handover_meter', 'vehicle_id' => $vehicleId,
+                             'label' => $name, 'which' => 'opening',
+                             'prompt' => $name . ' — meter reading as it is handed over'];
+            }
+            if ($his && (int) $his->vehicle_id !== $vehicleId
+                && $this->needsClosingMeter((int) $his->vehicle_id)) {
+                $vName = $this->displayName(DB::table(self::T_VEHICLE)->where('id', $his->vehicle_id)->first());
+                $meters[] = ['field' => 'vacated_meter', 'vehicle_id' => (int) $his->vehicle_id,
+                             'label' => $vName, 'which' => 'closing',
+                             'prompt' => $vName . ' — meter reading as ' . $rider . ' hands it back'];
+            }
+
             // Transfer-day allowance — only says anything when there is a previous
             // holder, because that is the only case with a handover ride.
             if ($current) {
@@ -2137,7 +2167,9 @@ class VehicleService
             }
 
             return ['ok' => true, 'lines' => $lines, 'warnings' => $warn, 'no_change' => false,
-                    'displaced' => $displaced];
+                    'displaced' => $displaced,
+                    // R3 — the boxes this move REQUIRES. Empty on an own-bike move.
+                    'meters_required' => $meters];
         } catch (\Throwable $e) {
             Log::warning('VehicleService::previewAssign failed', ['error' => $e->getMessage()]);
             return ['ok' => false, 'lines' => [], 'warnings' => ['Could not work out the consequences.']];
@@ -2180,10 +2212,210 @@ class VehicleService
      *    previewAssign() says plainly that fuel treatment changes only once vehicle
      *    rules are switched on.
      */
+    /**
+     * ⭐⭐ R3 — A COMPANY MACHINE NEVER CHANGES HANDS WITHOUT ITS ODOMETER.
+     *
+     * ⚠⚠ THE DAY THIS EXISTS FOR (Rajab, 13-Sep-2026, PRODUCTION). He took the van at 14:10 on a
+     *    request carrying `meter: null`, and handed it back at 17:46 on another request carrying
+     *    `meter: null`. Both were approved. The van therefore had NO rider-recorded reading at
+     *    either end of its day, and Shabib hand-typed both into the Vehicles page at 17:47/17:48.
+     *    Worse: because the app gave him no door for the van's opening reading, Rajab used the
+     *    only meter box he could see — the attendance START tile — which overwrote his own bike's
+     *    morning reading with the van's 75,484. One missing gate, three separate symptoms.
+     *
+     * ⭐ ONE DEFINITION, asked by every door (web fleet, store-mode fleet, the rider's Bike
+     *   badlein, the handover approval, and the checkout prompt). A door may present the refusal
+     *   however it likes; none of them can decide the RULE.
+     *
+     * ⚠ Own (non-company) machines are unaffected — a man's own odometer is his business and the
+     *   firm buys no fuel for it.
+     * ⚠ Only demanded when we can actually STORE it: the opening needs the `handover_meter`
+     *   column, the closing needs the meter-log table. Demanding a number we would then drop is
+     *   a block with no remedy.
+     */
+    public function isCompanyMachine(?int $vehicleId): bool
+    {
+        if (!$vehicleId) return false;
+        try {
+            $v = DB::table(self::T_VEHICLE)->where('id', $vehicleId)->first(['is_company']);
+            return $v ? ((int) $v->is_company === 1) : false;
+        } catch (\Throwable $e) {
+            return false;      // cannot tell ⇒ never block a handover
+        }
+    }
+
+    /** R3 for the machine being HANDED TO someone: is its opening reading compulsory? */
+    public function needsOpeningMeter(?int $vehicleId): bool
+    {
+        return $this->isCompanyMachine($vehicleId) && $this->hasHandoverMeter();
+    }
+
+    /** R3 for the machine LEAVING someone's hands: is its closing reading compulsory? */
+    public function needsClosingMeter(?int $vehicleId): bool
+    {
+        return $this->isCompanyMachine($vehicleId) && self::hasTbl(self::T_METER_LOG);
+    }
+
+    /** The one refusal sentence, so every surface says the same thing. */
+    public function meterRequiredMessage(int $vehicleId, string $which): string
+    {
+        $name = $this->displayName(DB::table(self::T_VEHICLE)->where('id', $vehicleId)->first());
+        return $which === 'closing'
+            ? $name . ' is a company machine — record its meter reading as it is handed back.'
+            : $name . ' is a company machine — record its meter reading as it is handed over.';
+    }
+
+    /**
+     * ⭐⭐ THE OPENING READING OF A MACHINE ENTERING A RIDER'S HANDS, into ITS OWN meter log.
+     *
+     * ⚠⚠ THE GAP THIS CLOSES (owner ruling, 13-Sep-2026). The two ends of a machine's day were
+     *    written into two different drawers: the OPENING reading onto the assignment row
+     *    (`handover_meter`) and the CLOSING reading into this log. Nothing joined them, so a van
+     *    picked up mid-day read `meter_start: NULL, meter_end: 75,484` — an end with no start,
+     *    and its kilometres counted nowhere. Measured on the replica before this existed:
+     *
+     *        vehicle 4 (the van)   start=NULL   end=75484   km=NULL
+     *
+     *    `handover_meter` still carries the per-rider split (that is what makes each man's own
+     *    lens exact, and `MachineAttribution` merges it); this makes the MACHINE's own day whole.
+     *
+     * ⚠ NEVER overwrites a start that is already there. The first reading of the day is the day's
+     *   start — a second rider picking the van up at lunchtime is not the morning. He adds
+     *   nothing here (his number already equals the first man's close); his stint is the
+     *   assignment row, and the close is what widens this row. Same `uq_vehicle_day` row, same
+     *   "this is the machine's day" reading as `recordClosingMeter` — see its block.
+     *
+     * ⚠ Non-fatal by construction, exactly like the closing write: a handover that physically
+     *   happened must never fail because a log row would not save.
+     */
+    public function recordOpeningMeter(int $vehicleId, string $date, int $meter,
+                                       int $driverId, ?int $actorId, ?string $note = null): array
+    {
+        try {
+            if (!self::hasTbl(self::T_METER_LOG)) {
+                return ['ok' => false, 'message' => 'Meter logging is not set up on this server yet.'];
+            }
+            $date = substr($date, 0, 10);
+
+            $row = DB::table(self::T_METER_LOG)
+                ->where('vehicle_id', $vehicleId)->where('log_date', $date)
+                ->first(['meter_start', 'meter_end', 'driver_user_id', 'note']);
+
+            // The day already has its first reading — this is a later stint, which the close
+            // will record. Nothing to add, and nothing may be overwritten.
+            if ($row && $row->meter_start !== null) {
+                return ['ok' => true, 'message' => null, 'skipped' => 'start already recorded'];
+            }
+
+            $rowDriver = $row && $row->driver_user_id !== null ? (int) $row->driver_user_id : null;
+            $shared    = $rowDriver !== null && $rowDriver !== $driverId;
+            $end       = $row && $row->meter_end !== null ? (int) $row->meter_end : null;
+
+            $saved = $this->saveMeterLog(
+                $vehicleId, $date, $meter, $end,
+                $shared ? null : $driverId,
+                $shared ? 'Two or more riders on this machine today'
+                        : ($row && $row->note ? $row->note : ($note ?: 'Handed over')),
+                $actorId ?: $driverId
+            );
+            return ['ok' => (bool) ($saved['ok'] ?? false), 'message' => $saved['message'] ?? null];
+        } catch (\Throwable $e) {
+            Log::warning('opening meter not recorded', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return ['ok' => false, 'message' => 'Could not record the opening reading.'];
+        }
+    }
+
+    /**
+     * ⭐⭐ THE CLOSING READING OF A MACHINE LEAVING A RIDER'S HANDS, into ITS OWN meter log.
+     *
+     * ⚠ MOVED HERE from VehicleHandoverRequestService (13-Sep-2026) because it is needed by FOUR
+     *   doors, not one: the rider's hand-back request, the web fleet "Take back", the store-mode
+     *   release, and `assign()`'s step 3 (a rider stepping off machine A onto machine B — which
+     *   is how Rajab gave the van back at 17:46, and the path that recorded nothing).
+     *
+     * ⚠ Preserves an existing start on that row: `saveMeterLog` writes the row wholesale, so
+     *   passing null for a start somebody recorded this morning would erase it.
+     *
+     * ⭐⭐ TWO RIDERS, ONE VAN, ONE DAY (owner ruling, 13-Sep-2026).
+     *    *"if two different riders rode the van, then it should be handled… it should be shown
+     *    in the van logs as well that how much did it travel?"*
+     *
+     *    The row is ONE PER MACHINE PER DAY (`uq_vehicle_day`), so it is read as **the machine's
+     *    day**, not one man's stint: `meter_start` is the first reading anybody gave it, and
+     *    `meter_end` the last. Rajab 75,403 → hands back 75,484 → Farooq takes it → hands back
+     *    75,600, and the van's day reads 75,403 → 75,600 = 197 km.
+     *
+     * ⚠⚠ THIS USED TO REFUSE OUTRIGHT when the row belonged to another driver, to avoid
+     *    overwriting his stint. That protected his attribution but threw the second rider's
+     *    reading on the floor — the van's day then ended on the FIRST man's number and the rest
+     *    of its kilometres existed nowhere. Refusing to record a handover that physically
+     *    happened is the failure mode this whole round exists to remove.
+     *
+     * ⭐ So the row WIDENS instead, and the moment a second driver's kilometres join it the row
+     *   stops belonging to any one man: `driver_user_id` becomes NULL, which every reader
+     *   already understands as "the machine's own record". That matters for money —
+     *   `MachineAttribution` turns a log row into a chain point owned by `driver_id`, so leaving
+     *   the first man named would hand him the second man's kilometres. NULL attributes them to
+     *   nobody, which is the honest answer; each rider's own share is still exact on his lens,
+     *   because it comes from the assignment rows' `handover_meter`, one per handover.
+     *
+     * ⚠ `max()`, not "last write wins": a day's closing odometer must never travel backwards,
+     *   whatever order two handovers are recorded in. Corrections are the ✎ editor's job.
+     */
+    public function recordClosingMeter(int $vehicleId, string $date, int $meter,
+                                       int $driverId, ?int $actorId, ?string $note = null): array
+    {
+        try {
+            if (!self::hasTbl(self::T_METER_LOG)) {
+                return ['ok' => false, 'message' => 'Meter logging is not set up on this server yet.'];
+            }
+            $date = substr($date, 0, 10);
+
+            $row = DB::table(self::T_METER_LOG)
+                ->where('vehicle_id', $vehicleId)->where('log_date', $date)
+                ->first(['meter_start', 'meter_end', 'driver_user_id', 'note']);
+
+            $rowDriver = $row && $row->driver_user_id !== null ? (int) $row->driver_user_id : null;
+            $shared    = $rowDriver !== null && $rowDriver !== $driverId;
+
+            $existingStart = $row && $row->meter_start !== null ? (int) $row->meter_start : null;
+            $existingEnd   = $row && $row->meter_end   !== null ? (int) $row->meter_end   : null;
+            $end           = $existingEnd !== null ? max($existingEnd, $meter) : $meter;
+
+            if ($shared) {
+                Log::info('meter log now covers more than one driver — the day belongs to the machine', [
+                    'vehicle' => $vehicleId, 'date' => $date, 'was_driver' => $rowDriver,
+                    'also_driver' => $driverId, 'meter' => $meter,
+                ]);
+            }
+
+            $saved = $this->saveMeterLog(
+                $vehicleId, $date, $existingStart, $end,
+                $shared ? null : $driverId,
+                $shared ? 'Two or more riders on this machine today' : ($note ?: 'Handed back'),
+                $actorId ?: $driverId
+            );
+            return ['ok' => (bool) ($saved['ok'] ?? false), 'message' => $saved['message'] ?? null,
+                    'shared' => $shared];
+        } catch (\Throwable $e) {
+            // The handover is the thing that must survive; a missing log row is repairable from
+            // the Vehicles screen, an unrecorded handover is not.
+            Log::warning('closing meter not recorded', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return ['ok' => false, 'message' => 'Could not record the closing reading.'];
+        }
+    }
+
+    /**
+     * @param ?int $vacatedMeter  R3 — the CLOSING reading of whatever this rider is stepping OFF
+     *                            (step 3 below). Compulsory when that machine is a company one.
+     *                            This is a DIFFERENT number from `$handoverMeter`, which is the
+     *                            opening reading of the machine he is stepping ON to.
+     */
     public function assign(int $vehicleId, int $userId, ?string $onDate = null,
                            ?int $actorId = null, ?string $note = null,
                            ?int $handoverMeter = null,
-                           bool $displacedSettleFollows = false): array
+                           bool $displacedSettleFollows = false,
+                           ?int $vacatedMeter = null): array
     {
         if (!$this->available()) return $this->fail('Vehicles are not set up yet (SQL batch 13).');
 
@@ -2213,6 +2445,25 @@ class VehicleService
                         'changed' => false];
             }
 
+            /**
+             * ⭐⭐ R3 GATE — BOTH ENDS (13-Sep-2026). Checked here so the caller gets a specific,
+             *    actionable message; re-checked INSIDE the transaction against the LOCKED rows,
+             *    because this read can be stale and a gate that can be raced is not a gate.
+             *
+             * `meter_missing` names the field the UI must fill, so web, store mode and the rider
+             * sheet can all highlight the right box from one server answer.
+             */
+            if ($this->needsOpeningMeter($vehicleId) && $handoverMeter === null) {
+                return $this->fail($this->meterRequiredMessage($vehicleId, 'opening'))
+                     + ['meter_missing' => 'handover_meter', 'meter_vehicle_id' => $vehicleId];
+            }
+            $hisNow = $this->openAssignmentForUser($userId);
+            if ($hisNow && (int) $hisNow->vehicle_id !== $vehicleId
+                && $this->needsClosingMeter((int) $hisNow->vehicle_id) && $vacatedMeter === null) {
+                return $this->fail($this->meterRequiredMessage((int) $hisNow->vehicle_id, 'closing'))
+                     + ['meter_missing' => 'vacated_meter', 'meter_vehicle_id' => (int) $hisNow->vehicle_id];
+            }
+
             $newId = null;
             // ⭐⭐ THE LOCKED READ INSIDE THE TRANSACTION IS THE ONLY AUTHORITY ON WHO
             //    LOST THE MACHINE (Sep-2026). `$current` above was read OUTSIDE the
@@ -2232,8 +2483,8 @@ class VehicleService
             $vacatedVehicleId = null;
             $hasHandoverCol = $this->hasHandoverMeter();
             DB::transaction(function () use ($vehicleId, $userId, $date, $actorId, $note, $v,
-                                             $handoverMeter, $hasHandoverCol, &$newId, &$displaced,
-                                             &$vacatedVehicleId) {
+                                             $handoverMeter, $hasHandoverCol, $vacatedMeter,
+                                             &$newId, &$displaced, &$vacatedVehicleId) {
                 // ⚠ RE-READ INSIDE THE TRANSACTION, and lock the rows. The check
                 //   above ran outside it, so two managers pressing Assign on the
                 //   same bike within the same second would each see "no change
@@ -2263,6 +2514,15 @@ class VehicleService
                 $his = DB::table(self::T_ASSIGN)->where('user_id', $userId)
                     ->whereNull('released_on')->orderByDesc('id')->lockForUpdate()->first();
                 if ($his && (int) $his->vehicle_id !== $vehicleId) {
+                    /**
+                     * ⚠⚠ R3, AUTHORITATIVELY. The pre-flight gate above read this row OUTSIDE the
+                     *    lock; by now it can be a different machine. Throwing here rolls the whole
+                     *    handover back rather than letting a company machine slip out of his hands
+                     *    unrecorded — which is exactly what happened on prod at 17:46.
+                     */
+                    if ($this->needsClosingMeter((int) $his->vehicle_id) && $vacatedMeter === null) {
+                        throw new \RuntimeException(self::ERR_CLOSING_METER . (int) $his->vehicle_id);
+                    }
                     $this->closeAssignment((int) $his->id, $date, $actorId);
                     $vacatedVehicleId = (int) $his->vehicle_id;   // its caches bump post-commit
                 }
@@ -2338,6 +2598,42 @@ class VehicleService
              *    not the obvious one.
              *  ⚠ No new holder, so no push — exactly like release().
              */
+            /**
+             * ⭐⭐ R3 — THE MACHINE HE STEPPED OFF GETS ITS CLOSING READING (13-Sep-2026).
+             *
+             * ⚠⚠ THIS IS THE PATH THAT RECORDED NOTHING ON PROD. Rajab's 17:46 "give me my own
+             *    bike back" was an ASSIGN of the bike, and assign's step 3 closed the VAN row
+             *    directly — never going through release(), which was the only place that wrote a
+             *    closing reading. So the van's day ended with no number from anybody and Shabib
+             *    typed it by hand a minute later. The gate above now demands it; this writes it.
+             * ⚠ Outside the transaction, like the cargo and the tickets: the assignment is the
+             *   thing that must be atomic. A log row that fails is repairable from the Vehicles
+             *   screen; a handover rolled back by a logging error would be worse.
+             */
+            if ($vacatedVehicleId && $vacatedVehicleId !== $vehicleId && $vacatedMeter !== null) {
+                $this->recordClosingMeter($vacatedVehicleId, $date, (int) $vacatedMeter,
+                                          $userId, $actorId, 'Handed back on switching machine');
+            }
+
+            /**
+             * ⭐⭐ …AND THE MACHINE HE JUST STEPPED ON TO (owner ruling, 13-Sep-2026).
+             *
+             * The opening reading has always been stored on the assignment row above
+             * (`handover_meter`, which is what splits the day between two riders). It also
+             * belongs in the MACHINE's own log, or the van's day shows a close with no open and
+             * "how far did it go today" answers blank. Both ends now go through one place.
+             *
+             * ⚠ Company machines only: R3 guarantees a reading for those, and an own bike's
+             *   day is already told by its owner's attendance row — writing a second copy here
+             *   would give `MachineAttribution` two chain points for one set of kilometres.
+             * ⚠ Outside the transaction with the rest: a log row that fails is repairable from
+             *   the Vehicles screen; a handover rolled back by a logging error is not.
+             */
+            if ($handoverMeter !== null && $this->needsClosingMeter($vehicleId)) {
+                $this->recordOpeningMeter($vehicleId, $date, (int) $handoverMeter,
+                                          $userId, $actorId, 'Handed over');
+            }
+
             if ($vacatedVehicleId && $vacatedVehicleId !== $vehicleId) {
                 app(VehicleTicketService::class)->onHandover($vacatedVehicleId, $userId, null, $actorId);
                 /**
@@ -2414,6 +2710,13 @@ class VehicleService
                     'changed' => true, 'cargo_moved' => $moved,
                     'displaced_user_id' => $displaced ? (int) $displaced->user_id : null];
         } catch (\Throwable $e) {
+            // ⚠ The R3 refusal raised inside the transaction comes back as the SAME actionable
+            //   answer the pre-flight gate gives — not a generic failure the manager cannot act on.
+            if (str_starts_with($e->getMessage(), self::ERR_CLOSING_METER)) {
+                $vacatedId = (int) substr($e->getMessage(), strlen(self::ERR_CLOSING_METER));
+                return $this->fail($this->meterRequiredMessage($vacatedId, 'closing'))
+                     + ['meter_missing' => 'vacated_meter', 'meter_vehicle_id' => $vacatedId];
+            }
             Log::error('VehicleService::assign failed', [
                 'vehicle_id' => $vehicleId, 'user_id' => $userId, 'error' => $e->getMessage(),
             ]);
@@ -2521,8 +2824,15 @@ class VehicleService
     }
 
     /** Take a vehicle back without giving it to anyone else. */
+    /**
+     * @param ?int $meter  R3 — the machine's CLOSING reading. Compulsory for a company machine.
+     *                     ⚠⚠ `release()` HAD NO METER PARAMETER AT ALL until 13-Sep-2026, so a
+     *                     web or store-mode "Take back" has never recorded a machine's closing
+     *                     odometer — the number simply had nowhere to go. Written to the
+     *                     machine's OWN meter log, never to anybody's attendance row.
+     */
     public function release(int $vehicleId, ?string $onDate = null, ?int $actorId = null,
-                            bool $displacedSettleFollows = false): array
+                            bool $displacedSettleFollows = false, ?int $meter = null): array
     {
         if (!$this->available()) return $this->fail('Vehicles are not set up yet (SQL batch 13).');
 
@@ -2531,10 +2841,24 @@ class VehicleService
             $current = $this->keeperOf($vehicleId);
             if (!$current) return ['ok' => true, 'message' => 'Nobody holds that vehicle.', 'changed' => false];
 
+            // ⭐ R3 — checked only once somebody actually holds it: releasing a machine nobody
+            //   has is a no-op above and must not demand a reading for a handover that isn't one.
+            if ($this->needsClosingMeter($vehicleId) && $meter === null) {
+                return $this->fail($this->meterRequiredMessage($vehicleId, 'closing'))
+                     + ['meter_missing' => 'meter', 'meter_vehicle_id' => $vehicleId];
+            }
+
             DB::transaction(function () use ($current, $vehicleId, $date, $actorId) {
                 $this->closeAssignment((int) $current->id, $date, $actorId);
                 $this->clearMirrorIfPointsAt((int) $current->user_id, $vehicleId);
             });
+
+            // ⭐ R3 — the closing reading, into the MACHINE's own log. Outside the transaction for
+            //   the same reason as assign()'s: the release is what must be atomic.
+            if ($meter !== null) {
+                $this->recordClosingMeter($vehicleId, $date, (int) $meter,
+                                          (int) $current->user_id, $actorId, 'Handed back');
+            }
 
             // Same reason as assign(): attribution just changed for this machine.
             self::bumpServiceEvidence($vehicleId);
@@ -4753,13 +5077,22 @@ class VehicleService
     }
 
     /** "AY-4771", or the nickname when there is no plate (the van). */
+    /**
+     * ⚠⚠ ONE LABEL RULE — see `MeterPairHelper::labelOf` (13-Sep-2026).
+     *
+     * This was plate-first unconditionally, which named Rajab's PERSONAL bike "APPLIED-FOR"
+     * (its placeholder registration). Caught on the real phone: the MY VEHICLE banner read
+     * "🏍 APPLIED-FOR · 7,620 km" while the checkout dialog two taps later said "Rajab Masood -
+     * own bike" — the same machine, two names, on one screen.
+     *
+     * ⚠ COMPANY machines are UNCHANGED (plate first), so every fleet card, assignment message
+     *   and spare-vehicle picker reads exactly as it did. Only a non-company machine now prefers
+     *   its nickname, and only when it has one.
+     * ⚠ A row without `is_company` falls back to plate-first, i.e. the old behaviour.
+     */
     private function displayName($v): string
     {
-        $reg  = trim((string) ($v->reg_no ?? ''));
-        $nick = trim((string) ($v->nickname ?? ''));
-        if ($reg !== '' && $nick !== '') return $reg;
-        if ($reg !== '') return $reg;
-        return $nick !== '' ? $nick : ('Vehicle #' . ($v->id ?? '?'));
+        return MeterPairHelper::labelOf($v) ?: ('Vehicle #' . ($v->id ?? '?'));
     }
 
     private function photoCounts(): array
@@ -4853,7 +5186,15 @@ class VehicleService
             if ($this->keeperOf((int) $vid)) return null;      // somebody has it
 
             $v = DB::table(self::T_VEHICLE)->where('id', $vid)->first();
-            return $v ? ['id' => (int) $v->id, 'name' => $this->displayName($v)] : null;
+            // ⚠ `vtype`/`is_company` are additive and exist so the phone can apply the ONE
+            //   naming rule (machineWords) to this machine too — see the twin note on
+            //   VehicleHandoverRequestService::options().
+            return $v ? [
+                'id'         => (int) $v->id,
+                'name'       => $this->displayName($v),
+                'vtype'      => (string) ($v->vtype ?? 'bike'),
+                'is_company' => (int) ($v->is_company ?? 0) === 1,
+            ] : null;
         } catch (\Throwable $e) {
             Log::warning('ownVehicleFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
             return null;

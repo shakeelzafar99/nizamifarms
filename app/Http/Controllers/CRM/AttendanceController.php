@@ -285,6 +285,21 @@ class AttendanceController extends Controller
             ]);
         }
 
+        /**
+         * ⭐⭐ WHICH MACHINE EACH READING IS OF (Rajab, 11-Sep-2026).
+         *
+         * ⚠⚠ Needed ON THE ROW, not just in the labelling pass further down: without it
+         *    `meter_distance` below subtracts two unrelated odometers (own bike 7,610 →
+         *    van 75,484 = "67,874 km") and that number reaches the row, the Meter modal,
+         *    the monthly report and the manager's phone. `MeterPairHelper` refuses it —
+         *    but only if it can see the stamps.
+         * ⚠ Schema-guarded (memoised) exactly like the block above, so the files are safe
+         *   to upload before any SQL: no columns ⇒ no split detection ⇒ today's behaviour.
+         */
+        if (\App\Services\Riders\VehicleService::stampsAvailable()) {
+            $query->addSelect(['a.meter_start_vehicle_id', 'a.meter_end_vehicle_id']);
+        }
+
         // Filter by active/all users (default to active only)
         $activeFilter = $request->input('active_filter', 'active');
         if ($activeFilter === 'active') {
@@ -376,12 +391,11 @@ class AttendanceController extends Controller
                 $row->overtime_minutes = ($o !== null && $o > $e) ? (int) (($o - $e) / 60) : 0;
             }
 
-            // ⭐ Calculate meter distance
-            $row->meter_distance = null;
-            if ($row->meter_start && $row->meter_end) {
-                $row->meter_distance = abs((int) $row->meter_end - (int) $row->meter_start);
-            }
-            
+            // ⭐ The day's meter distance — NULL when the pair spans TWO machines, because
+            //   there is no honest single number then (MeterPairHelper). Unchanged for every
+            //   ordinary day, and for every row whose stamps are absent.
+            $row->meter_distance = \App\Services\Riders\MeterPairHelper::distance($row);
+
             // ⭐ Initialize GPS distance fields
             $row->gps_distance = null;
             $row->gps_readings_count = 0;
@@ -842,6 +856,14 @@ class AttendanceController extends Controller
                 'role_name' => $row->role_name ?? null, 'company_bike' => ((int) $row->company_bike === 1),
                 'meter_required' => $row->meter_required,
                 'meter_start' => $row->meter_start, 'meter_end' => $row->meter_end, 'meter_distance' => $row->meter_distance,
+                // ⚠ The pair spans two odometers — see the twin note in DayChecksService. Without
+                //   it a split day would tick GREEN, because nulling the distance also removed the
+                //   only check that used to fire on it.
+                // ⚠⚠ ASKED FROM THE ROW'S OWN STAMPS, not from `$row->meter_machines` — that
+                //    property is filled ~50 lines BELOW this call, so reading it here silently
+                //    yielded false for every rider and the flag never fired. (Caught by the
+                //    proof run: the ⛽ tick stayed green on Rajab's 11-Sep.)
+                'meter_split' => \App\Services\Riders\MeterPairHelper::isSplit($row),
                 'road_distance_km' => $row->road_distance_km, 'gps_distance' => $row->gps_distance,
                 'checkout_info' => $row->checkout_info, 'home_journey' => $row->home_journey,
                 'work_journey' => $row->work_journey, 'checkout_unlock' => $row->checkout_unlock,
@@ -881,44 +903,28 @@ class AttendanceController extends Controller
          *   exactly as it does today.
          */
         try {
-            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_attendance', 'meter_start_vehicle_id')) {
-                $stampRows = DB::table('t_ops_attendance')
-                    ->whereIn('user_id', $rows->pluck('user_id')->filter()->unique()->all() ?: [0])
-                    ->whereDate('attendance_date', $selectedDate)
-                    ->get(['user_id', 'meter_start_vehicle_id', 'meter_end_vehicle_id'])
-                    ->keyBy('user_id');
-
+            if (\App\Services\Riders\VehicleService::stampsAvailable()) {
+                /**
+                 * ⚠ THE STAMPS NOW COME OFF THE ROW ITSELF (Sep-13 2026) — they are selected
+                 *   with it above, because `meter_distance` needs them too. The separate
+                 *   per-page lookup this replaced re-read the same rows keyed by user_id, so
+                 *   it could only ever agree with the row by luck; one source removes both the
+                 *   query and the chance of drift.
+                 * ⚠ Labels via `MeterPairHelper::labelOf`, which shows a PERSONAL machine by
+                 *   its nickname ("Rajab Masood - own bike") rather than its plate — Rajab's is
+                 *   registered "APPLIED-FOR", and a manager reading that in a meter sentence
+                 *   sees a data error instead of "his own bike".
+                 */
                 $vids = [];
-                foreach ($stampRows as $s) {
-                    foreach ([$s->meter_start_vehicle_id, $s->meter_end_vehicle_id] as $v) {
+                foreach ($rows as $row) {
+                    foreach ([$row->meter_start_vehicle_id ?? null, $row->meter_end_vehicle_id ?? null] as $v) {
                         if ($v) $vids[(int) $v] = true;
                     }
                 }
-                $vLabels = [];
-                if ($vids) {
-                    foreach (DB::table('t_ops_vehicle')->whereIn('id', array_keys($vids))
-                                ->get(['id', 'reg_no', 'nickname']) as $v) {
-                        $vLabels[(int) $v->id] = trim((string) ($v->reg_no ?: $v->nickname))
-                            ?: ('Vehicle #' . $v->id);
-                    }
-                }
+                $vLabels = \App\Services\Riders\MeterPairHelper::labels(array_keys($vids));
 
                 foreach ($rows as $row) {
-                    $row->meter_machines = null;
-                    $s = $stampRows[$row->user_id] ?? null;
-                    if (!$s) continue;
-                    $sv = $s->meter_start_vehicle_id ? (int) $s->meter_start_vehicle_id : null;
-                    $ev = $s->meter_end_vehicle_id   ? (int) $s->meter_end_vehicle_id   : null;
-                    if (!$sv && !$ev) continue;      // nothing recorded ⇒ nothing to say
-                    $row->meter_machines = [
-                        'start_id'    => $sv,
-                        'start_label' => $sv ? ($vLabels[$sv] ?? null) : null,
-                        'end_id'      => $ev,
-                        'end_label'   => $ev ? ($vLabels[$ev] ?? null) : null,
-                        // ⚠ TRUE only when BOTH are stamped and they differ. One stamped and
-                        //   one absent is "we do not know about the other", not "two machines".
-                        'split'       => ($sv && $ev && $sv !== $ev),
-                    ];
+                    $row->meter_machines = \App\Services\Riders\MeterPairHelper::machines($row, $vLabels);
                 }
             }
         } catch (\Throwable $e) {
@@ -3467,7 +3473,13 @@ class AttendanceController extends Controller
             if ($otSvc->hasUnlockColumn()) {
                 $query->addSelect('a.checkout_unlock_until');
             }
-            
+
+            // ⭐ The reading stamps — so a two-machine day in this report shows the marker
+            //   instead of an odometer difference (see MeterPairHelper). Schema-guarded.
+            if (\App\Services\Riders\VehicleService::stampsAvailable()) {
+                $query->addSelect(['a.meter_start_vehicle_id', 'a.meter_end_vehicle_id']);
+            }
+
             // Log the SQL query for debugging
             $sql = $query->toSql();
             $bindings = $query->getBindings();
@@ -3489,7 +3501,25 @@ class AttendanceController extends Controller
             ]);
             
             $records = $query->get();
-            
+
+            /**
+             * ⭐ Machine labels for the whole month in ONE query. `MeterPairHelper::machines()`
+             *   will look them up itself when not handed a map — fine for a single row, but in
+             *   a 31-day loop that is 31 round trips, so the page batches them here.
+             */
+            $mpLabels = [];
+            try {
+                $mpVids = [];
+                foreach ($records as $r) {
+                    foreach ([$r->meter_start_vehicle_id ?? null, $r->meter_end_vehicle_id ?? null] as $v) {
+                        if ($v) { $mpVids[(int) $v] = true; }
+                    }
+                }
+                if ($mpVids) {
+                    $mpLabels = \App\Services\Riders\MeterPairHelper::labels(array_keys($mpVids));
+                }
+            } catch (\Throwable $e) { $mpLabels = []; }
+
             // Clean up any null values in the records immediately after fetch
             foreach ($records as $record) {
                 if ($record->first_delivery_time === null) {
@@ -3582,11 +3612,9 @@ class AttendanceController extends Controller
                     $record->late_minutes = 0;
                     $record->overtime_minutes = 0;
                     $totalOrdersDelivered += $record->total_orders_delivered;
-                    if ($record->meter_start && $record->meter_end) {
-                        $record->meter_distance = abs(intval($record->meter_end) - intval($record->meter_start));
-                    } else {
-                        $record->meter_distance = null;
-                    }
+                    // NULL on a two-machine day — see MeterPairHelper.
+                    $record->meter_distance = \App\Services\Riders\MeterPairHelper::distance($record);
+                    $record->meter_machines = \App\Services\Riders\MeterPairHelper::machines($record, $mpLabels);
                     $record->first_delivery_time = ($record->first_delivery_time && $record->first_delivery_time !== '-')
                         ? @date('H:i', strtotime($record->first_delivery_time)) : '-';
                     $record->last_delivery_time = ($record->last_delivery_time && $record->last_delivery_time !== '-')
@@ -3624,12 +3652,10 @@ class AttendanceController extends Controller
                 // Add order count to total
                 $totalOrdersDelivered += $record->total_orders_delivered;
                 
-                // Calculate meter distance
-                if ($record->meter_start && $record->meter_end) {
-                    $record->meter_distance = abs(intval($record->meter_end) - intval($record->meter_start));
-                } else {
-                    $record->meter_distance = null;
-                }
+                // Calculate meter distance — NULL on a two-machine day (MeterPairHelper), with
+                // the machine names alongside so the row can say WHY instead of showing a number.
+                $record->meter_distance = \App\Services\Riders\MeterPairHelper::distance($record);
+                $record->meter_machines = \App\Services\Riders\MeterPairHelper::machines($record, $mpLabels);
 
                 // Format delivery times for display (handle null values)
                 if ($record->first_delivery_time && $record->first_delivery_time !== '-') {
@@ -3980,14 +4006,43 @@ class AttendanceController extends Controller
                 $roadDistanceSource = 'skipped_stationary';
             }
             
-            // Meter distance from attendance (with raw values for transparency)
-            $meterDistance = null;
+            /**
+             * Meter distance from attendance (with raw values for transparency).
+             *
+             * ⚠⚠ NULL ON A TWO-MACHINE DAY. This modal printed "DAY RIDDEN 67874 km · Δ 67804"
+             *    for Rajab on 11-Sep: his own bike's 7,610 opened the day and the van's 75,484
+             *    closed it. Subtracting two odometers is not a distance, and the red Δ chip
+             *    beside it accused him of a 67,804 km discrepancy. `MeterPairHelper` returns
+             *    NULL there and the modal shows each machine's own kilometres instead
+             *    (`meter_legs` below) — the SAME legs the rider's phone shows him.
+             */
             $meterStart = $attendance->meter_start;
             $meterEnd = $attendance->meter_end;
-            if ($meterStart && $meterEnd) {
-                $meterDistance = abs((int) $meterEnd - (int) $meterStart);
+            $meterDistance = \App\Services\Riders\MeterPairHelper::distance($attendance);
+            $meterMachines = \App\Services\Riders\MeterPairHelper::machines($attendance);
+
+            // Per-machine kilometres for this day (attendance stamps + the vehicle meter log),
+            // so a split day still says what each machine actually did. Non-fatal: a modal
+            // must never fail over a reconstruction.
+            $meterLegs = [];
+            try {
+                foreach ((new \App\Services\Riders\RiderDayLegs())->forDay($userId, $date) as $leg) {
+                    $meterLegs[] = [
+                        'vehicle_id'  => $leg['vehicle_id'] ?? null,
+                        'label'       => $leg['label'] ?? null,
+                        'is_company'  => (bool) ($leg['is_company'] ?? false),
+                        'vtype'       => $leg['vtype'] ?? 'bike',
+                        'meter_start' => $leg['meter_start'] ?? null,
+                        'meter_end'   => $leg['meter_end'] ?? null,
+                        'km'          => $leg['km'] ?? null,
+                        'source'      => $leg['source'] ?? null,
+                    ];
+                }
+            } catch (\Throwable $e) {
+                Log::warning('meter legs skipped on the day modal', ['error' => $e->getMessage()]);
+                $meterLegs = [];
             }
-            
+
             // ⭐⭐ The baseline to measure this morning against — THE MACHINE's last reading, via
             //    the one brain the day view and the red meter-gap verdict share. This modal used
             //    to run its own rider-keyed `MAX(attendance_date)`, which on a machine-switch day
@@ -4090,6 +4145,10 @@ class AttendanceController extends Controller
                 'day_road_km'  => $roadDistance !== null ? round($roadDistance, 1) : ($gpsDistance !== null ? round($gpsDistance, 1) : null),
                 'day_road_is_gps' => $roadDistance === null && $gpsDistance !== null,
                 'is_company_bike' => $isCompanyBike,
+                // ⭐ WHICH MACHINE each end is of, and what each machine actually did. Both null /
+                //   empty on an ordinary day, so the modal renders exactly as it always has.
+                'machines'     => $meterMachines,
+                'legs'         => $meterLegs,
             ];
 
             return response()->json([

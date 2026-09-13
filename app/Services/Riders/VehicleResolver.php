@@ -509,14 +509,93 @@ class VehicleResolver
         return self::$vehicleCache[$vehicleId] = $v;
     }
 
-    /** Short label for messages and chips: the plate, else the nickname. */
+    /**
+     * ⭐⭐ THE ONE DESCRIPTION OF A MACHINE IN WORDS — "Company bike · EDN-198".
+     *
+     * Four screens now have to say which machine a claim's money is for (Daily
+     * Closing's Requests pane and its Month view, on web and on the phone). They
+     * must not each compose that sentence: the last time a UI derived the answer
+     * itself, `is_company` was used as a stand-in for "van" and a company van was
+     * drawn as a bike — see `vtype-selected-everywhere-emitted-nowhere`.
+     *
+     * ⭐ THE RULE, written once here: **whose machine it is picks person-vs-machine,
+     *   THEN `vtype` picks which machine.** `is_company` means "do we own and fuel
+     *   it", never "is it a van".
+     *
+     * ⚠ `reg_no` is genuinely EMPTY on every own bike in the registry today (the
+     *   company never registered them), so `plate` is null far more often than not
+     *   and `text` says so out loud rather than looking like it forgot. The
+     *   nickname is deliberately NOT used as a stand-in for the plate — it reads
+     *   "Asim - own bike", which next to the rider's own name says nothing.
+     *
+     * Returns null for an unknown/unstamped machine; every caller renders that as
+     * "machine not recorded" rather than guessing. Cheap — `vehicle()` is memoised.
+     */
+    public function machineChip(?int $vehicleId): ?array
+    {
+        $v = $this->vehicle($vehicleId);
+        if (!$v) return null;
+
+        $isCompany = (int) ($v->is_company ?? 0) === 1;
+        $isVan     = \App\Models\Riders\MaintenanceTypeModel::normaliseClass($v->vtype ?? null) === 'van';
+        $plate     = trim((string) ($v->reg_no ?? ''));
+        $plate     = $plate !== '' ? $plate : null;
+
+        $kind = $isCompany
+            ? ($isVan ? 'Van' : 'Company bike')
+            : ($isVan ? 'Personal van' : 'Personal bike');
+
+        return [
+            'id'         => (int) $v->id,
+            'is_company' => $isCompany,
+            'vtype'      => $isVan ? 'van' : 'bike',
+            'icon'       => $isCompany ? ($isVan ? '🚚' : '🏍') : '👤',
+            'kind'       => $kind,
+            'plate'      => $plate,
+            'label'      => $this->labelFor($vehicleId),
+            // ⭐ The composed sentence, so all four surfaces read identically.
+            // ⚠ The plate is appended ONLY when there is one. Spelling out "no plate on
+            //   file" instead was tried and reverted: every own bike lacks a plate, so it
+            //   appeared on the majority of rows, and at 31 characters it pushed the Daily
+            //   Closing card's header onto a second line. The class alone is the answer
+            //   there; `plate_note` carries the explanation into the chip's tooltip.
+            'text'       => $plate !== null ? ($kind . ' · ' . $plate) : $kind,
+            'plate_note' => $plate !== null ? null : 'No registration number is on file for this machine',
+        ];
+    }
+
+    /**
+     * The `machineChip` keys flattened onto a payload row, with every key present
+     * and null when the claim names no machine — a client can then test one key
+     * (`vehicle_kind`) instead of reasoning about missing ones.
+     */
+    public function machineChipFields(?int $vehicleId): array
+    {
+        $c = $this->machineChip($vehicleId);
+        return [
+            'vehicle_id'         => $c ? $c['id'] : null,
+            'vehicle_label'      => $c ? $c['label'] : null,
+            'vehicle_is_company' => $c ? $c['is_company'] : null,
+            'vehicle_class'      => $c ? $c['vtype'] : null,
+            'vehicle_icon'       => $c ? $c['icon'] : null,
+            'vehicle_kind'       => $c ? $c['kind'] : null,
+            'vehicle_plate'      => $c ? $c['plate'] : null,
+            'vehicle_text'       => $c ? $c['text'] : null,
+            'vehicle_plate_note' => $c ? $c['plate_note'] : null,
+        ];
+    }
+
+    /**
+     * Short label for messages and chips.
+     * ⚠ ONE RULE — `MeterPairHelper::labelOf` (13-Sep-2026): a COMPANY machine reads by its
+     *   plate (unchanged), a PERSONAL one by its nickname. The handover card used to offer
+     *   Rajab "APPLIED-FOR" as the bike to take back.
+     */
     public function labelFor(?int $vehicleId): ?string
     {
         $v = $this->vehicle($vehicleId);
         if (!$v) return null;
-        $reg  = trim((string) ($v->reg_no ?? ''));
-        $nick = trim((string) ($v->nickname ?? ''));
-        return $reg !== '' ? $reg : ($nick !== '' ? $nick : ('Vehicle #' . $v->id));
+        return MeterPairHelper::labelOf($v) ?: ('Vehicle #' . $v->id);
     }
 
     /**

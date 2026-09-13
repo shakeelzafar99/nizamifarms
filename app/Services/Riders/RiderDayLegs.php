@@ -546,11 +546,17 @@ class RiderDayLegs
     }
 
     /** Same shape as VehicleResolver::labelFor — plate, else nickname, else an id. */
+    /**
+     * ⚠ ONE LABEL RULE, shared with every meter sentence — see `MeterPairHelper::labelOf`.
+     *   This used to be plate-first unconditionally, which named Rajab's personal bike
+     *   "APPLIED-FOR" (its placeholder registration) in his own petrol modal and in the
+     *   manager's two-machines tooltip. A personal machine now reads by its nickname
+     *   ("Rajab Masood - own bike"); a company machine still reads by its plate.
+     *   `vehicleMap()` selects `is_company`, so the rule always has what it needs.
+     */
     private function labelOf(object $v): string
     {
-        $reg  = trim((string) ($v->reg_no ?? ''));
-        $nick = trim((string) ($v->nickname ?? ''));
-        return $reg !== '' ? $reg : ($nick !== '' ? $nick : ('Vehicle #' . $v->id));
+        return MeterPairHelper::labelOf($v) ?: ('Vehicle #' . ($v->id ?? '?'));
     }
 
     // ── helpers every consumer shares, so nobody re-derives the same test ─────────

@@ -3599,7 +3599,10 @@ function viewOrderDetails(orderId) {
                     var lineTotalDisplay = isFreeItem ? '<span style="color: #16a34a; font-weight: 700;">FREE</span>' : formatCurrency(lineTotal, order.currency);
                     var scannedKgView = it.quantity_source === 'barcode' ? decodeScannedWeightKg(it.quantity_scanned_barcode) : null;
                     var scanTitleView = scannedKgView !== null ? ('Set by barcode scan — scanned ' + scannedKgView.toFixed(3) + ' kg') : 'Set by barcode scan';
-                    var qtySrcBadge = it.quantity_source === 'barcode' ? ' <span title="' + scanTitleView + '" style="display:inline-block; padding:1px 5px; background:#dcfce7; color:#15803d; border-radius:3px; font-size:9px; font-weight:700;">🔖</span>' : it.quantity_source === 'manual' ? ' <span title="Set manually" style="display:inline-block; padding:1px 5px; background:#f1f5f9; color:#64748b; border-radius:3px; font-size:9px; font-weight:700;">✏️</span>' : '';
+                    // 📦 'box_scan' is a COUNTED product whose box was scanned to confirm the
+                    // product — the quantity is the ordered one and NO weight was read, so this
+                    // badge must never show a kg figure (the label's digits are a piece count).
+                    var qtySrcBadge = it.quantity_source === 'barcode' ? ' <span title="' + scanTitleView + '" style="display:inline-block; padding:1px 5px; background:#dcfce7; color:#15803d; border-radius:3px; font-size:9px; font-weight:700;">🔖</span>' : it.quantity_source === 'box_scan' ? ' <span title="Box scanned — quantity is as ordered" style="display:inline-block; padding:1px 5px; background:#e0f2fe; color:#0369a1; border-radius:3px; font-size:9px; font-weight:700;">📦</span>' : it.quantity_source === 'manual' ? ' <span title="Set manually" style="display:inline-block; padding:1px 5px; background:#f1f5f9; color:#64748b; border-radius:3px; font-size:9px; font-weight:700;">✏️</span>' : '';
                     html += '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + qty + qtySrcBadge + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right;">' + (isFreeItem ? '<s style="color:#9ca3af;">' + formatCurrency(unit, order.currency) + '</s>' : formatCurrency(unit, order.currency)) + '</td>' +
                         '<td style="padding: 8px; border-bottom: 1px solid #f3f4f6; text-align:right; font-weight:600;">' + lineTotalDisplay + '</td>' +
@@ -5912,7 +5915,7 @@ function loadEditForm(order) {
                                 </button>
                             </div>
                             ${item.quantity_source ? `<div style="grid-column: 2 / -1; margin-top: 2px; font-size: 11px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
-                                <span style="font-weight: 600; color: ${item.quantity_source === 'barcode' ? '#15803d' : '#64748b'};">${item.quantity_source === 'barcode' ? '🔖 Qty set by barcode scan' : '✏️ Qty set manually'}</span>
+                                <span style="font-weight: 600; color: ${item.quantity_source === 'barcode' ? '#15803d' : item.quantity_source === 'box_scan' ? '#0369a1' : '#64748b'};">${item.quantity_source === 'barcode' ? '🔖 Qty set by barcode scan' : item.quantity_source === 'box_scan' ? '📦 Box scanned — qty as ordered' : '✏️ Qty set manually'}</span>
                                 ${scannedWeightBadge(item, index)}
                                 ${item.quantity_updated_at ? `<span style="color:#9ca3af;">· ${new Date(item.quantity_updated_at).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</span>` : ''}
                                 ${(item.qty_updater && item.qty_updater.fullname) ? `<span style="color:#9ca3af;">· by ${item.qty_updater.fullname}</span>` : ''}
@@ -6406,6 +6409,10 @@ function decodeScannedWeightKg(raw) {
 // Inline badge fragment for a barcode-set line: "· scanned 2.050 kg" plus an empty
 // span that populateScanConversion() later fills with "→ applied (÷factor)". Returns
 // '' for non-barcode lines or a blank/unreadable barcode (e.g. older scans).
+//
+// ⭐ 'box_scan' lines deliberately fall into that "non-barcode" case. Their label's
+// five middle digits are a PIECE COUNT, not grams, so decoding them as a weight
+// would print a confident "· scanned 0.001 kg" that is pure fiction.
 function scannedWeightBadge(item, index) {
     if (!item || item.quantity_source !== 'barcode') return '';
     var kg = decodeScannedWeightKg(item.quantity_scanned_barcode);

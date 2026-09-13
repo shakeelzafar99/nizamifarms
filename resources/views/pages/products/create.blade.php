@@ -294,6 +294,31 @@
                         <span class="form-hint text-danger">{{ $message }}</span>
                     @enderror
                 </div>
+
+                <!-- Sold By: weighed (kg) or counted boxes (pcs) -->
+                <div class="flex flex-col gap-2 mt-5 p-4 bg-sky-50 border border-sky-200 rounded-lg">
+                    <label class="form-label text-sm font-medium flex items-center gap-2">
+                        ⚖️ Sold By
+                        <span class="text-xs text-gray-500 font-normal">(How a scanned label is read for this product)</span>
+                    </label>
+                    @php $sellUnitValue = old('sell_unit', 'kg'); @endphp
+                    <select name="sell_unit" class="form-control" style="max-width: 320px;">
+                        <option value="kg" {{ $sellUnitValue === 'pcs' ? '' : 'selected' }}>Weight (kg) — weighed on the scale</option>
+                        <option value="pcs" {{ $sellUnitValue === 'pcs' ? 'selected' : '' }}>Pieces (boxes / packs) — counted, not weighed</option>
+                    </select>
+                    <div class="text-xs text-gray-600 mt-1">
+                        <strong>Weight (kg)</strong> is right for everything weighed on the scale — the label carries the
+                        packet's grams and scanning it sets the quantity. This is the default and covers all meat.
+                    </div>
+                    <div class="text-xs text-gray-600">
+                        <strong>Pieces</strong> is for products sold as a fixed box or pack (the frozen samosas, kababs and
+                        rolls). Their labels say "1 pcs" and carry no weight, so scanning one <strong>confirms the
+                        product</strong> and leaves the quantity exactly as the customer ordered it.
+                    </div>
+                    @error('sell_unit')
+                        <span class="form-hint text-danger">{{ $message }}</span>
+                    @enderror
+                </div>
             </div>
         </div>
 

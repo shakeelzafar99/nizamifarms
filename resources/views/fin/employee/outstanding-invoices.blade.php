@@ -340,7 +340,7 @@
                         <div id="petrol-req-{{ $petrolReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #fff7ed; border: 1px solid #fed7aa;">
                             <div class="px-4 py-3">
                                 <div class="flex items-center justify-between mb-2">
-                                    <div class="flex items-center gap-3">
+                                    <div class="flex items-center flex-wrap gap-3">
                                         <span class="text-xs font-mono font-bold text-orange-800">{{ $petrolReq['request_number'] }}</span>
                                         <span class="text-xs text-gray-500">{{ $petrolReq['expense_date'] }}</span>
                                         @if(($petrolReq['source'] ?? 'meter') === 'manual')
@@ -348,6 +348,7 @@
                                         @else
                                         <span class="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-semibold">Meter</span>
                                         @endif
+                                        @include('fin.employee.partials.machine-chip', ['req' => $petrolReq, 'tone' => '#fdba74'])
                                     </div>
                                     <span class="text-sm font-bold text-orange-800">Rs. {{ number_format($petrolReq['amount'], 2) }}</span>
                                 </div>
@@ -464,10 +465,11 @@
                         <div id="petrol-req-{{ $mReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #f0fdfa; border: 1px solid #99f6e4;">
                             <div class="px-4 py-3">
                                 <div class="flex items-center justify-between mb-2">
-                                    <div class="flex items-center gap-3">
+                                    <div class="flex items-center flex-wrap gap-3">
                                         <span class="text-xs font-mono font-bold text-teal-800">{{ $mReq['request_number'] }}</span>
                                         <span class="text-xs text-gray-500">{{ $mReq['expense_date'] }}</span>
                                         <span class="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded font-semibold">🔧 Maintenance</span>
+                                        @include('fin.employee.partials.machine-chip', ['req' => $mReq, 'tone' => '#5eead4'])
                                     </div>
                                     <span class="text-sm font-bold text-teal-800">Rs. {{ number_format($mReq['amount'], 2) }}</span>
                                 </div>
@@ -2561,6 +2563,19 @@ function fmRender(r) {
                     '</span>';
             }
 
+            // ⛽🏍 WHICH MACHINE THIS MONEY IS FOR — personal bike / company bike / van,
+            // and its plate. Composed server-side (VehicleResolver::machineChip) so this
+            // popup, the Requests pane behind it and the phone read identically; a UI that
+            // derives "is it a van" itself is how a company van once got drawn as a bike.
+            // ⚠ An unstamped claim says so out loud and is NEVER filled in from the day's
+            //   machine — the day has two exactly when this matters.
+            const machine = c.vehicle_kind
+                ? ' <span title="' + esc(c.vehicle_plate_note || 'The machine this claim is filed against') + '"'
+                  + ' style="background:#fff; border:1px solid #d1d5db; color:#374151; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">'
+                  + esc(c.vehicle_icon || '') + ' ' + esc(c.vehicle_text) + '</span>'
+                : ' <span title="This claim does not name a machine — claims filed before August 2026 were not stamped"'
+                  + ' style="background:#fef3c7; color:#b45309; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:600;">❓ machine not recorded</span>';
+
             const svcLabel = {oil_change: 'regular service', general: 'general service', repair: 'repair', other: 'other'}[c.service_type] || '';
             // "▲ N km since last fill" — the number the approver needs: how far
             // the bike went on the previous tank before this request was made.
@@ -2619,7 +2634,7 @@ function fmRender(r) {
                 (c.source === 'meter' ? '<span style="color:#6b7280;">' + c.meter_distance + ' km × ' + c.petrol_rate + '</span>' : '<span style="color:#6b7280;">cash claim</span>') +
                 (c.meter_at_fill ? ' <span style="color:#6b7280;">· meter ' + num(c.meter_at_fill) + '</span>' : '') +
                 (c.litres ? ' <span style="color:#6b7280;">· ' + c.litres + ' L</span>' : '') +
-                since + svcCtx +
+                machine + since + svcCtx +
                 ' ' + status + flag + actions + trail + '</div>';
         });
 

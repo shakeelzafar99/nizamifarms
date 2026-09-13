@@ -2366,6 +2366,7 @@ class ProductController extends Controller
                 'weight_factor' => 'nullable|numeric|min:0.01',
                 'unit_weight_kg' => 'nullable|numeric|min:0.001|max:99999',
                 'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
+                'sell_unit' => 'nullable|in:kg,pcs', // 📦 kg = weighed | pcs = counted boxes
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
 
                 // Variants
@@ -2530,6 +2531,7 @@ class ProductController extends Controller
                 'weight_factor' => 'nullable|numeric|min:0.01',
                 'unit_weight_kg' => 'nullable|numeric|min:0.001|max:99999',
                 'czerlop_product_id' => 'nullable|integer|min:1|max:99999',
+                'sell_unit' => 'nullable|in:kg,pcs', // 📦 kg = weighed | pcs = counted boxes
                 'business_unit_id' => 'nullable|exists:t_fin_business_units,id',
 
                 // Variants
@@ -2579,6 +2581,13 @@ class ProductController extends Controller
             // was wiping the scale PLU (breaking barcode-qty for that product).
             if (!array_key_exists('czerlop_product_id', $validated)) {
                 $validated['czerlop_product_id'] = $product->czerlop_product_id;
+            }
+            // 📦 Same trap again: the mobile product-edit payload does not send
+            // sell_unit, and the formatter defaults an absent value to 'kg' — which
+            // would turn a frozen BOX product back into a weighed one on any mobile
+            // save, silently breaking its box scanning.
+            if (!array_key_exists('sell_unit', $validated) && ProductModel::supportsSellUnit()) {
+                $validated['sell_unit'] = $product->sell_unit;
             }
 
             // Format data to match API structure
@@ -2689,7 +2698,7 @@ class ProductController extends Controller
         }
 
         // Format data to match API structure
-        return [
+        $productData = [
             // No Shopify IDs for manual products
             'shopify_product_id' => null,
             'shopify_handle' => null,
@@ -2746,6 +2755,16 @@ class ProductController extends Controller
             // Variants
             'variants' => $variants
         ];
+
+        // 📦 Sold by weight or by the box. Added only when the column exists, so a
+        // web upload that lands before the SQL cannot break every product save with
+        // an unknown-column error. Anything unrecognised (and an absent value)
+        // normalises to 'kg' — a product can never drift into 'pcs' by accident.
+        if (ProductModel::supportsSellUnit()) {
+            $productData['sell_unit'] = ProductModel::normaliseSellUnit($validated['sell_unit'] ?? null);
+        }
+
+        return $productData;
     }
 
     /**

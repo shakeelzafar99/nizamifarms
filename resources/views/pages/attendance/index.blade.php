@@ -3920,6 +3920,20 @@ function openHomeValve(userId, name) {
   }
   if (rec.login_time && !rec.logout_time) bits.push(`Checked in <b>${String(rec.login_time).slice(0, 5)}</b> — still on duty`);
   if (rec.logout_time) bits.push(`Checked out <b>${String(rec.logout_time).slice(0, 5)}</b>`);
+  /**
+   * 🏍️🚚 WHICH MACHINE EACH READING IS OF. This modal is where a manager lands when a day
+   * looks wrong, and on Rajab's 11-Sep it could not say the one thing that explained it:
+   * the start is his own bike's and the close is the van's. The stamps are already on the
+   * row (`meter_machines`), so this only stops throwing them away. Silent on a single-machine
+   * day and on every unstamped row.
+   */
+  const mm2 = rec.meter_machines || null;
+  if (mm2 && mm2.split) {
+    const e2 = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    bits.push(`<span style="color:#B45309;font-weight:700;">🏍️🚚 Two machines</span> — started on `
+      + `<b>${e2(mm2.start_label || 'one machine')}</b>, closed on <b>${e2(mm2.end_label || 'another')}</b>.`
+      + ` The day has no single meter distance; each machine's own km are in ⛽ / the Vehicles page.`);
+  }
   if (cu && cu.used) bits.push(`<span style="color:#92400E;font-weight:700;">Checked out via bypass</span> (${cu.by_name || 'manager'}${cu.reason ? ': “' + cu.reason + '”' : ''})`);
   if (hj) {
     if (hj.expected_by) bits.push(`Due home by <b>${hj.expected_by}</b>${hj.distance_km != null ? ' · ' + hj.distance_km + ' km' : ''}`);
@@ -4820,6 +4834,10 @@ function renderEmployeeDetailRows() {
   // precompute each row's previous-day meter end BEFORE filtering.
   all.forEach((day, i) => {
     day.__prevMeterEnd = (i < all.length - 1 && all[i + 1] && all[i + 1].meter_end) ? all[i + 1].meter_end : null;
+    // …and WHICH MACHINE that previous close was of, so the overnight gap is never measured
+    // between two different odometers (the morning after a van day: bike 7,6xx vs van 75,4xx).
+    day.__prevEndVid = (i < all.length - 1 && all[i + 1] && all[i + 1].meter_machines && all[i + 1].meter_machines.end_id)
+      ? all[i + 1].meter_machines.end_id : null;
   });
   const records = all.filter(d => empDetailRowMatches(d, filter));
   if (!records.length) {
@@ -4872,12 +4890,26 @@ function renderEmployeeDetailRows() {
       // Meter values
       const meterStart = day.meter_start || null;
       const meterEnd = day.meter_end || null;
-      const meterDistance = (meterStart && meterEnd) ? Math.abs(parseInt(meterEnd) - parseInt(meterStart)) : null;
+      /**
+       * 🏍️🚚 TWO ODOMETERS, ONE ROW (Rajab 11-Sep-2026). This modal subtracted the raw readings
+       * itself and printed "67874 km" — the SIXTH place doing its own arithmetic. The server's
+       * `meter_distance` (NULL on a split day, via MeterPairHelper) and `meter_machines` are the
+       * one answer; the local subtraction survives only for an older server that sends neither.
+       */
+      const mm = day.meter_machines || null;
+      const isSplit = !!(mm && mm.split);
+      const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const meterDistance = isSplit ? null
+        : (day.meter_distance !== undefined && day.meter_distance !== null) ? Number(day.meter_distance)
+        : ((meterStart && meterEnd) ? Math.abs(parseInt(meterEnd) - parseInt(meterStart)) : null);
 
       // Previous day's meter_end (precomputed on the FULL list, filter-safe)
       let prevMeterEnd = day.__prevMeterEnd;
       let meterGap = null;
-      if (prevMeterEnd && meterStart) {
+      // ⚠ Only when both ends are known to be the SAME machine (or unstamped, as before).
+      const startVid = mm && mm.start_id ? mm.start_id : null;
+      const gapComparable = !(startVid && day.__prevEndVid && Number(startVid) !== Number(day.__prevEndVid));
+      if (prevMeterEnd && meterStart && gapComparable) {
         meterGap = parseInt(meterStart) - parseInt(prevMeterEnd);
       }
 
@@ -4885,9 +4917,13 @@ function renderEmployeeDetailRows() {
       let meterValuesHtml = '-';
       if (meterStart || meterEnd) {
         meterValuesHtml = `<div style="font-size: 11px; text-align: center;">`;
-        if (meterStart && meterEnd) {
+        if (isSplit) {
           meterValuesHtml += `<div style="color: #374151;">${meterStart} → ${meterEnd}</div>`;
-          meterValuesHtml += `<div style="color: #16a34a; font-weight: 600;">${meterDistance} km</div>`;
+          meterValuesHtml += `<div style="color:#B45309;font-weight:600;" title="Start ${meterStart} on ${esc(mm.start_label || 'one machine')} · close ${meterEnd} on ${esc(mm.end_label || 'another')} — two different odometers, so the difference is not a distance">🏍️🚚 two machines</div>`;
+          meterValuesHtml += `<div style="font-size:9px;color:#6b7280;">${esc(mm.start_label || '')} → ${esc(mm.end_label || '')}</div>`;
+        } else if (meterStart && meterEnd) {
+          meterValuesHtml += `<div style="color: #374151;">${meterStart} → ${meterEnd}</div>`;
+          meterValuesHtml += `<div style="color: #16a34a; font-weight: 600;">${meterDistance != null ? meterDistance + ' km' : '—'}</div>`;
         } else if (meterStart) {
           meterValuesHtml += `<div style="color: #374151;">${meterStart} →</div>`;
           meterValuesHtml += `<div style="color: #9ca3af;">No end</div>`;
@@ -5376,28 +5412,65 @@ async function showMeterDetail(userId, userName, date) {
       const big = Math.abs(m.gap_km) > 1;
       gapChip = `<span style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;${big ? 'color:#B91C1C;background:#FDECEC;border:1px solid #F5C6C6;' : 'color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;'}">overnight ${m.gap_km > 0 ? '+' : ''}${m.gap_km} km ${big ? '⚠' : '✓'}</span>`;
     }
+    /**
+     * 🏍️🚚 TWO MACHINES, TWO ODOMETERS (Rajab 11-Sep-2026).
+     *
+     * ⚠⚠ This modal used to print "DAY RIDDEN 67874 km · Δ 67804 ⚠" — his own bike's 7,610
+     *    opened the day and the van's 75,484 closed it, so the subtraction was meaningless
+     *    AND the red Δ accused him of a 67,804 km discrepancy. The server now sends
+     *    `day_meter_km = null` on such a day (MeterPairHelper) plus `machines` (which end is
+     *    which) and `legs` (what each machine actually did) — so the modal states the fact
+     *    instead of computing a fiction.
+     * ⚠ `machines`/`legs` are absent on an older server and on every ordinary day, so every
+     *   other row of this modal renders exactly as before.
+     */
+    const mach = m.machines || null;
+    const isSplit = !!(mach && mach.split);
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const ofMachine = (label) => label
+      ? ` <span style="color:#6B7280;font-size:12px;">— ${esc(label)}</span>` : '';
+
     // day km vs gps
     let dayChip = '';
-    if (m.day_meter_km != null && m.day_road_km != null) {
+    if (!isSplit && m.day_meter_km != null && m.day_road_km != null) {
       const diff = Math.abs(m.day_meter_km - m.day_road_km);
       const ok = diff <= Math.max(3, m.day_meter_km * 0.2);
       dayChip = `<span style="margin-left:8px;font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;${ok ? 'color:#15803D;background:#E9F7EE;border:1px solid #BFE8CC;' : 'color:#B91C1C;background:#FDECEC;border:1px solid #F5C6C6;'}">Δ ${Math.round(diff)} km ${ok ? '✓' : '⚠'}</span>`;
     }
-    const dayRow = row('Day ridden', `${m.day_meter_km != null ? `<strong>${m.day_meter_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">meter</span>` : '<span style="color:#9CA3AF;">no meter</span>'} ${m.day_road_km != null ? `· <strong>${m.day_road_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">${m.day_road_is_gps ? 'gps' : 'gps roads'}</span>` : ''} ${dayChip}`);
+
+    // What each machine actually did — the SAME legs the rider's own phone shows him.
+    const legsHtml = (m.legs || [])
+      .map(l => `<div style="font-size:12px;color:#374151;padding-top:3px;">`
+        + `${l.vtype === 'van' ? '🚚' : '🏍️'} <strong>${esc(l.label)}</strong>`
+        + (l.km != null ? ` · <strong>${Number(l.km).toLocaleString()} km</strong>` : ' · <span style="color:#9CA3AF;">no complete pair</span>')
+        + (l.meter_start != null || l.meter_end != null
+            ? ` <span style="color:#9CA3AF;">(${l.meter_start != null ? Number(l.meter_start).toLocaleString() : '—'} → ${l.meter_end != null ? Number(l.meter_end).toLocaleString() : '—'})</span>`
+            : '')
+        + `</div>`)
+      .join('');
+
+    const dayRow = isSplit
+      ? row('Day ridden',
+          `<span style="font-size:12px;font-weight:700;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:5px;padding:1px 7px;">🏍️🚚 two machines</span>`
+          + `<div style="color:#6B7280;font-size:12px;padding-top:5px;">The start and the close are of different odometers, so the difference between them is not a distance.</div>`
+          + legsHtml
+          + (m.day_road_km != null ? `<div style="font-size:12px;color:#374151;padding-top:3px;">🛰 <strong>${m.day_road_km} km</strong> <span style="color:#9CA3AF;">${m.day_road_is_gps ? 'gps' : 'gps roads'} — whole day, both machines</span></div>` : ''))
+      : row('Day ridden', `${m.day_meter_km != null ? `<strong>${m.day_meter_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">meter</span>` : '<span style="color:#9CA3AF;">no meter</span>'} ${m.day_road_km != null ? `· <strong>${m.day_road_km} km</strong> <span style="color:#9CA3AF;font-size:12px;">${m.day_road_is_gps ? 'gps' : 'gps roads'}</span>` : ''} ${dayChip}`);
 
     if (m.is_company_bike) {
       // Company bike — the full home story: last night, morning start (place/photo/overnight gap), end.
       content.innerHTML = `
         ${row('Last night', `${num(m.prev.value)} <span style="color:#6B7280;font-size:12px;">${m.prev.date ? '· ' + m.prev.date : ''}</span>`)}
-        ${row('This morning', `${num(m.start.value)} <span style="color:#6B7280;font-size:12px;">${m.start.time ? '· ' + m.start.time : ''} ${m.start.source ? `· <span style="color:${srcColor(m.start.source)};font-weight:600;">${srcLabel(m.start.source, m.start.place)}</span>` : ''}${m.start.place && m.start.place.accuracy_m != null ? ` <span style="color:#9CA3AF;font-size:11px;">±${Math.round(m.start.place.accuracy_m)}m</span>` : ''}</span> ${cam(m.start.photo)} ${gapChip}`)}
-        ${row('Day end', `${num(m.end.value)} <span style="color:#6B7280;font-size:12px;">${m.end.time ? '· ' + m.end.time : ''} ${m.end.source === 'home' ? '· <span style="color:#15803D;font-weight:600;">🏠 at home</span>' : ''}</span> ${cam(m.end.photo)}`)}
+        ${row('This morning', `${num(m.start.value)}${ofMachine(mach && mach.start_label)} <span style="color:#6B7280;font-size:12px;">${m.start.time ? '· ' + m.start.time : ''} ${m.start.source ? `· <span style="color:${srcColor(m.start.source)};font-weight:600;">${srcLabel(m.start.source, m.start.place)}</span>` : ''}${m.start.place && m.start.place.accuracy_m != null ? ` <span style="color:#9CA3AF;font-size:11px;">±${Math.round(m.start.place.accuracy_m)}m</span>` : ''}</span> ${cam(m.start.photo)} ${gapChip}`)}
+        ${row('Day end', `${num(m.end.value)}${ofMachine(mach && mach.end_label)} <span style="color:#6B7280;font-size:12px;">${m.end.time ? '· ' + m.end.time : ''} ${m.end.source === 'home' ? '· <span style="color:#15803D;font-weight:600;">🏠 at home</span>' : ''}</span> ${cam(m.end.photo)}`)}
         ${dayRow}
       `;
     } else {
       // Non-bike — just start + end (no overnight / home framing; that's a bike-only concern).
       content.innerHTML = `
-        ${row('Start', `${num(m.start.value)} ${m.start.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.start.time}</span>` : ''} ${cam(m.start.photo)}`)}
-        ${row('End', `${num(m.end.value)} ${m.end.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.end.time}</span>` : ''} ${cam(m.end.photo)}`)}
+        ${row('Start', `${num(m.start.value)}${ofMachine(mach && mach.start_label)} ${m.start.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.start.time}</span>` : ''} ${cam(m.start.photo)}`)}
+        ${row('End', `${num(m.end.value)}${ofMachine(mach && mach.end_label)} ${m.end.time ? `<span style="color:#6B7280;font-size:12px;">· ${m.end.time}</span>` : ''} ${cam(m.end.photo)}`)}
         ${dayRow}
       `;
     }

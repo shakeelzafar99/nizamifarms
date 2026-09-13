@@ -5605,6 +5605,12 @@ class RiderController extends Controller
             // null = column not deployed yet → the app keeps its legacy optional behaviour.
             $meterRequired = $this->meterRequiredForUser($user->id, $today);
 
+            // ⭐ WHICH MACHINE HE IS ABOUT TO CLOSE THE DAY ON, and — when he arrived on his own
+            //   bike and is still holding a company machine — the choice he should be offered
+            //   before he does. Both additive and null-safe; see checkoutMachineContext().
+            [$closingMachine, $checkoutChoice] =
+                $this->checkoutMachineContext((int) $user->id, $attendance, (bool) $homeFlow, $meterRequired);
+
             return response()->json([
                 'success' => true,
                 'attendance' => $attendance ? [
@@ -5664,6 +5670,12 @@ class RiderController extends Controller
                 'home_flow' => $homeFlow, // U4: this rider records his meter at HOME (skip end-meter at checkout)
                 'work_journey' => $workJourneyToday, // U5: morning start card (offer/riding/overdue), null otherwise
                 'meter_required' => $meterRequired, // 1 = compulsory, 0 = exempt, null = legacy (optional)
+                // ⭐ The machine his closing reading will be OF — so the checkout dialogs can name
+                //   it instead of asking for "the meter". Null when the registry cannot say.
+                'closing_machine' => $closingMachine,
+                // ⭐ "You came on your own bike but you are holding the van" — null on every
+                //   ordinary day. See checkoutMachineContext() for the six conditions.
+                'checkout_choice' => $checkoutChoice,
             ]);
         } catch (\Exception $e) {
             \Log::error('Failed to get today attendance', [
@@ -5678,6 +5690,202 @@ class RiderController extends Controller
      * Check in for today
      * Optionally accepts meter picture and GPS location
      */
+    /**
+     * ⭐⭐ "WHICH MACHINE AM I CHECKING OUT ON?" — and the one question worth asking first.
+     *
+     * ⚠⚠ THE DAY THIS EXISTS FOR (Rajab, 11-Sep-2026). He rode his own bike to work, took the
+     *    van at 13:32, delivered on it all afternoon, and pressed OUT at 18:54 while still
+     *    holding it. The server behaved correctly — rule 2 of the checkout meter ladder asked
+     *    for the VAN's closing reading and stamped 75,484 to the van. He handed the van back at
+     *    18:56, and at 18:59 typed his own bike's 7,610 into the still-open START tile. One
+     *    attendance row, two odometers, and a "distance" of 67,874 km.
+     *
+     *    Nothing was wrong except the ORDER. What should have happened is: hand the van back
+     *    first (recording its close), then check out on his own bike. So the app now asks.
+     *
+     * ⚠⚠ IT MUST NEVER BLOCK. A rider who takes the van HOME and leaves his bike at the office
+     *    is a perfectly normal day, and the manager who approves hand-backs may be busy. This
+     *    returns information; `checkOut()` is untouched and still lets him close on the van.
+     *
+     * Returns [closing_machine, checkout_choice]:
+     *   · closing_machine — EVERY rider, every day: the machine his closing reading is of, plus
+     *     his start reading, so the dialogs can say "🏍 your own bike · start 7,610" instead of
+     *     "the meter". Null only when the registry has no answer.
+     *   · checkout_choice — ONLY on a Rajab-shaped day. Six conditions, ALL required:
+     *       1. on duty (checked in, not checked out)          — nothing to offer otherwise
+     *       2. holds a COMPANY machine right now
+     *       3. he STARTED this day on his own bike            — stamp, or an assignment of it
+     *                                                           released today that began earlier
+     *       4. that own bike is free (nobody else holds it)   — `ownVehicleFor` enforces this
+     *       5. NOT a home-flow rider (no home pin)            — U4 collects his close at home
+     *       6. meter_required === 1                           — management riders are never asked
+     *
+     * ⚠ `currentVehicleFor` — the SAME resolver `meterStampFields()` uses to stamp the reading.
+     *   Asking a different question here would let the app name one machine while the server
+     *   recorded another, which is the exact class of bug this whole change is about.
+     *
+     * ⚠ Never throws: any failure returns [null, null] and the app behaves exactly as it did
+     *   before this existed.
+     */
+    private function checkoutMachineContext(int $userId, $attendance, bool $homeFlow, ?int $meterRequired): array
+    {
+        try {
+            // 1. on duty
+            if (!$attendance || empty($attendance->login_time) || !empty($attendance->logout_time)) {
+                return [null, null];
+            }
+
+            $res = new \App\Services\Riders\VehicleResolver();
+            $vid = $res->currentVehicleFor($userId);
+            if (!$vid) return [null, null];              // holds nothing → nothing to name
+            $v = $res->vehicle($vid);
+            if (!$v) return [null, null];
+
+            $isCompany = (int) ($v->is_company ?? 1) === 1;
+
+            // ⭐ The start reading's TIME: prefer the stamped recording moment, else check-in.
+            //   Both are wall-clock on this server (DATETIME / TIME), so neither is affected by
+            //   the TIMESTAMP timezone conversion that trips up created_at columns.
+            $startAt = !empty($attendance->meter_start_recorded_at)
+                ? substr((string) $attendance->meter_start_recorded_at, 11, 5)
+                : (!empty($attendance->login_time) ? substr((string) $attendance->login_time, 0, 5) : null);
+
+            $closing = [
+                'id'           => (int) $vid,
+                'label'        => \App\Services\Riders\MeterPairHelper::labelOf($v),
+                'vtype'        => ((string) ($v->vtype ?? '')) === 'van' ? 'van' : 'bike',
+                'is_company'   => $isCompany,
+                'start_meter'  => !empty($attendance->meter_start) ? (int) $attendance->meter_start : null,
+                'start_time'   => $startAt,
+                /**
+                 * ⭐ WHICH MACHINE THE MORNING READING IS OF — so the phone can tell whether
+                 *   `end - start` is a distance at all.
+                 *
+                 * ⚠⚠ THE APP'S TWO TYPO GUARDS BOTH SUBTRACT THESE ENDS ("end is less than
+                 *    start", "high distance"). On a two-machine day that is not a typo check,
+                 *    it is nonsense: closing the VAN at 75,500 against the bike's 7,620 warned
+                 *    "the distance for today would be 67,880 km" — caught on the real phone,
+                 *    on the very flow where closing on the van is the rider's deliberate
+                 *    choice. The mirror case (start on the van, close on his own bike) accuses
+                 *    him of an end lower than the start. The phone skips both when this differs
+                 *    from `id`.
+                 * ⚠ NULL on an unstamped row (older data, or no start reading yet), which the
+                 *   phone treats as "comparable" — exactly today's behaviour.
+                 */
+                'start_vehicle_id' => (\App\Services\Riders\VehicleService::stampsAvailable()
+                    && !empty($attendance->meter_start)
+                    && !empty($attendance->meter_start_vehicle_id))
+                        ? (int) $attendance->meter_start_vehicle_id : null,
+            ];
+
+            // 2 / 5 / 6 — cheap disqualifiers first.
+            if (!$isCompany)                 return [$closing, null];   // already on his own bike
+            if ($homeFlow)                   return [$closing, null];   // U4 owns his close
+            if ((int) $meterRequired !== 1)  return [$closing, null];   // never asked for a meter
+
+            // 4 — his own bike, and only if nobody is holding it (ownVehicleFor's own rule).
+            $svc = new \App\Services\Riders\VehicleService();
+            $own = $svc->ownVehicleFor($userId);
+            if (!$own || (int) $own['id'] === (int) $vid) return [$closing, null];
+            $ownVeh = $res->vehicle((int) $own['id']);
+            if (!$ownVeh) return [$closing, null];
+
+            // 3 — did this DAY begin on that bike?
+            $shiftDate = substr((string) $attendance->attendance_date, 0, 10);
+            $startedOnOwn = false;
+
+            if (\App\Services\Riders\VehicleService::stampsAvailable()
+                && !empty($attendance->meter_start_vehicle_id)
+                && (int) $attendance->meter_start_vehicle_id === (int) $own['id']) {
+                $startedOnOwn = true;                    // he recorded the morning on it
+            }
+
+            if (!$startedOnOwn) {
+                /**
+                 * ⚠⚠ DELIBERATELY NOT "is his own bike his default" — the assignment table is
+                 *    asked instead, for a row on that bike which was RELEASED today having
+                 *    begun BEFORE today. That is precisely "he arrived on it and gave it up
+                 *    during this shift", which is the case worth asking about. A bike released
+                 *    yesterday evening (he took the van home) does not match, and must not:
+                 *    that is the flow the owner explicitly does not want interrupted.
+                 */
+                $startedOnOwn = \DB::table(\App\Services\Riders\VehicleService::T_ASSIGN)
+                    ->where('user_id', $userId)
+                    ->where('vehicle_id', (int) $own['id'])
+                    ->whereDate('released_on', $shiftDate)
+                    ->whereDate('assigned_on', '<', $shiftDate)
+                    ->exists();
+            }
+
+            if (!$startedOnOwn) return [$closing, null];
+
+            // Since when has he held the company machine? Read from the handover request's
+            // `decided_at` (a DATETIME — exact) when a request produced this assignment; null
+            // otherwise. Never from the assignment's TIMESTAMP created_at, which renders
+            // shifted on any box whose MySQL session timezone differs from the app's.
+            $heldSince = null;
+            try {
+                $openAssign = \DB::table(\App\Services\Riders\VehicleService::T_ASSIGN)
+                    ->where('user_id', $userId)->where('vehicle_id', (int) $vid)
+                    ->whereNull('released_on')->orderByDesc('id')->first(['id']);
+                if ($openAssign) {
+                    $dec = \DB::table('t_ops_vehicle_handover_request')
+                        ->where('applied_assignment_id', (int) $openAssign->id)
+                        ->whereNotNull('decided_at')->orderByDesc('id')->value('decided_at');
+                    if ($dec && substr((string) $dec, 0, 10) === $shiftDate) {
+                        $heldSince = substr((string) $dec, 11, 5);
+                    }
+                }
+            } catch (\Throwable $e) { $heldSince = null; }
+
+            // Has he ALREADY asked for the swap? Then the app must say "waiting for approval"
+            // rather than offering to raise a second request the server would refuse
+            // (one open request per rider). Counts BOTH shapes of the same intent: a RETURN
+            // of the machine he holds, and a TAKE of his own bike back (which is what Rajab
+            // actually sent on 11-Sep).
+            $pending = null;
+            try {
+                $openReq = (new \App\Services\Riders\VehicleHandoverRequestService())->openFor($userId);
+                if ($openReq) {
+                    $isReturnOfHeld = ($openReq['direction'] ?? '') === 'return'
+                        && (int) ($openReq['vehicle_id'] ?? 0) === (int) $vid;
+                    $isTakeOfOwn    = ($openReq['direction'] ?? '') === 'take'
+                        && (int) ($openReq['vehicle_id'] ?? 0) === (int) $own['id'];
+                    if ($isReturnOfHeld || $isTakeOfOwn) {
+                        $pending = [
+                            'id'           => (int) $openReq['id'],
+                            'direction'    => (string) $openReq['direction'],
+                            'meter'        => $openReq['meter_claimed'] ?? null,
+                            'requested_at' => !empty($openReq['requested_at'])
+                                ? substr((string) $openReq['requested_at'], 11, 5) : null,
+                        ];
+                    }
+                }
+            } catch (\Throwable $e) { $pending = null; }
+
+            return [$closing, [
+                'held' => [
+                    'id'         => (int) $vid,
+                    'label'      => $closing['label'],
+                    'vtype'      => $closing['vtype'],
+                    'is_company' => true,
+                    'since'      => $heldSince,
+                ],
+                'own' => [
+                    'id'    => (int) $own['id'],
+                    'label' => \App\Services\Riders\MeterPairHelper::labelOf($ownVeh),
+                    'vtype' => ((string) ($ownVeh->vtype ?? '')) === 'van' ? 'van' : 'bike',
+                ],
+                'pending_return' => $pending,
+            ]];
+        } catch (\Throwable $e) {
+            \Log::warning('checkoutMachineContext failed (non-fatal)', [
+                'user_id' => $userId, 'error' => $e->getMessage(),
+            ]);
+            return [null, null];
+        }
+    }
+
     /**
      * ⭐⭐ PHASE D — IS THE METER COMPULSORY FOR THIS RIDER TODAY?
      *
@@ -7296,6 +7504,33 @@ class RiderController extends Controller
                 }
             }
 
+            /**
+             * ⭐⭐ THE START METER IS NOT ACCEPTED AFTER THE DAY HAS CLOSED (Rajab, 11-Sep-2026).
+             *
+             * ⚠⚠ WHAT THIS CAUGHT. At 18:54 he closed the day on the van. At 18:56 his own bike
+             *    came back to him. At 18:59 he typed 7,610 into the START tile, which the app
+             *    still offered because only the END tile is hidden after checkout — and the
+             *    stamp, correctly asking "what does he hold NOW", labelled the morning reading
+             *    with the machine he had picked up five minutes ago. The row then read
+             *    7,610 (bike) → 75,484 (van): two odometers, one pair.
+             *
+             * ⚠ A reading typed after checkout is a CORRECTION of a finished day, and corrections
+             *   already have exactly one audited door: the manager's ✎ meter
+             *   (`MeterCorrectionService`), which is also the only door that can NAME the machine.
+             *   Same one-door rule the home-stamped start and the end-meter fix already follow.
+             *
+             * ⚠ 200 + success:false, like the other denials in this method — older tile UIs only
+             *   surface `response.data.message` on a 2xx.
+             */
+            if ($type === 'start' && $existing && !empty($existing->logout_time)) {
+                return response()->json([
+                    'success' => false,
+                    'meter_after_checkout' => true,
+                    'message' => 'Aap check out kar chuke hain — ab start meter yahan se nahi likha ja sakta. '
+                        . 'Apne manager se kahein ke wo attendance page par theek kar dein.',
+                ]);
+            }
+
             // ⭐ U4 UNIFIED METER-OUT: a company-bike rider on the home flow has exactly ONE
             // day-closing meter — the going-home meter (time + location gated, manager valve).
             // This legacy door used to write meter_end directly with NO gates and NO meter_home,
@@ -7360,6 +7595,61 @@ class RiderController extends Controller
                     'updated_at' => now(),
                 ]);
                 $existing = \DB::table('t_ops_attendance')->where('id', $newId)->first();
+            }
+
+            /**
+             * ⭐⭐ R1 / R2 — A RECORDED READING IS THE RIDER'S FINAL ANSWER (owner ruling,
+             *    13-Sep-2026: *"he will enter the meter picture which sticks. He shouldn't be
+             *    able to edit it."*).
+             *
+             * ⚠⚠ THE PROD FAILURE THIS CLOSES, IN FULL. Rajab recorded his own bike's start at
+             *    10:45. At 14:10 he was handed the van; wanting to record the van's meter and
+             *    having no door for it, he used the only meter box he could see — the saved
+             *    Start tile's "Dobara lein" — at 14:17. The server accepted it: it overwrote
+             *    `meter_start` with the van's 75,484, overwrote `picture_start` with a photo of
+             *    the van's dashboard, and re-stamped the slot to the VAN, because the stamp is
+             *    always "what does he hold right now". His bike's morning reading was gone, with
+             *    no audit trail. At 18:39 he retook a third time and the van's number went too.
+             *    That is Shabib's "his meter readings disappeared" and "it showed the van's meter
+             *    picture at checkout" — one mechanism, both symptoms.
+             *
+             * ⚠ Corrections are NOT lost, they move to the one audited door: the manager's ✎
+             *   meter, which is also the only door that can NAME the machine a reading belongs
+             *   to (`MeterCorrectionService`). Same one-door rule the home-proven start has had
+             *   since U5; this simply extends it to every start and every end.
+             *
+             * ⚠ THE ONE EXCEPTION — attaching a PHOTO to a reading that has none, with the SAME
+             *   value. That is the broken-camera path (he typed the number at check-in, the
+             *   camera failed, he photographs it a minute later): no data changes, so nothing is
+             *   at risk, and refusing it would strand a genuine photo.
+             *
+             * ⚠ 200 + `success:false`, like every other denial in this method — older tile UIs
+             *   only surface `response.data.message` on a 2xx.
+             */
+            if ($existing) {
+                $already = $type === 'start'
+                    ? ($existing->meter_start !== null && $existing->meter_start !== '')
+                    : ($existing->meter_end   !== null && $existing->meter_end   !== '');
+                if ($already) {
+                    $recorded = (int) ($type === 'start' ? $existing->meter_start : $existing->meter_end);
+                    $sameValue = ($meterReading === null || $meterReading === '')
+                        || (int) $meterReading === $recorded;
+                    $photoMissing = $type === 'start'
+                        ? empty($existing->picture_start)
+                        : empty($existing->picture_end);
+                    $photoOnlyTopUp = $sameValue && $photoMissing && $request->hasFile('meter_picture');
+
+                    if (!$photoOnlyTopUp) {
+                        return response()->json([
+                            'success' => false,
+                            'meter_locked' => true,
+                            'recorded' => $recorded,
+                            'message' => ($type === 'start' ? 'Start' : 'End') . ' meter pehle hi likha ja chuka hai ('
+                                . number_format($recorded) . '). Ab ye sirf manager theek kar sakta hai — '
+                                . 'attendance page par ✎ meter se.',
+                        ]);
+                    }
+                }
             }
 
             // Store meter picture (absent on the broken-camera typed-reading path — never
@@ -13085,7 +13375,25 @@ class RiderController extends Controller
                 $query->where('status', $status);
             }
 
-            $requests = $query->limit(100)->get()->map(function($req) {
+            // ⭐ WHICH MACHINE an expense claim is for — the same pill, the same words, as
+            //   Daily Closing and the Month view (VehicleResolver::machineChip). The rider
+            //   files these; seeing the machine back on his own row is how he catches a
+            //   claim that went onto the wrong one before an approver has to.
+            // ⚠⚠ ONLY on Petrol/Maintenance. This list also carries LEAVE and SALARY
+            //   ADVANCE rows, which have no machine to speak of — emitting the keys as
+            //   nulls there would print "machine not recorded" on a leave request. Absent
+            //   keys are the client's signal to render nothing at all.
+            // ⚠ SCHEMA-GUARDED: `vehicle_id` was hand-applied to t_req_master.
+            $hasVehicleCol = \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id');
+            $vehResolver   = new \App\Services\Riders\VehicleResolver();
+
+            $requests = $query->limit(100)->get()->map(function($req) use ($hasVehicleCol, $vehResolver) {
+                $machine = in_array((string) $req->expense_category, ['Petrol', 'Maintenance'], true)
+                    ? $vehResolver->machineChipFields(
+                        $hasVehicleCol && $req->vehicle_id !== null ? (int) $req->vehicle_id : null
+                    )
+                    : [];
+
                 $approverName = null;
                 if ($req->status === 'approved' || $req->status === 'rejected') {
                     $lastApproval = $req->approvals
@@ -13098,7 +13406,7 @@ class RiderController extends Controller
                     }
                 }
 
-                return [
+                return $machine + [
                     'id' => $req->id,
                     'request_number' => $req->request_number,
                     'category' => [
@@ -14774,15 +15082,25 @@ class RiderController extends Controller
             $allSkus = $orders->pluck('lineItems')->flatten(1)->pluck('sku')->filter()->unique()->values()->all();
             $skuCzerlop = [];
             $skuWeightFactor = []; // sku -> product weight_factor (for scan/manual qty division; default 1)
+            // 📦 sku -> 'kg' | 'pcs'. Tells the scanner whether a scale label's five
+            // middle digits are GRAMS or a piece count it must ignore. Absent column
+            // (web uploaded before the SQL) => every product reads 'kg', i.e. today.
+            $skuSellUnit = [];
+            $hasSellUnit = \App\Models\CRM\ProductModel::supportsSellUnit();
             if (!empty($allSkus)) {
+                $sellCols = ['v.sku', 'p.czerlop_product_id', 'p.weight_factor'];
+                if ($hasSellUnit) { $sellCols[] = 'p.sell_unit'; }
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
                     ->whereIn('v.sku', $allSkus)
-                    ->select('v.sku', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    ->select($sellCols)->get() as $row) {
                     if ($row->czerlop_product_id !== null) {
                         $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
                     }
                     $skuWeightFactor[$row->sku] = (float) ($row->weight_factor ?? 1.0);
+                    $skuSellUnit[$row->sku] = $hasSellUnit
+                        ? \App\Models\CRM\ProductModel::normaliseSellUnit($row->sell_unit ?? null)
+                        : \App\Models\CRM\ProductModel::SELL_UNIT_KG;
                 }
             }
 
@@ -14936,7 +15254,7 @@ class RiderController extends Controller
             }
 
             // Format for mobile (lightweight)
-            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor, $pinPendingByCustomer, $defaultPmActorMap) {
+            $formattedOrders = $orders->map(function($order) use ($prepSummaries, $khaasOrderIds, $regionMap, $unreadCustomerIds, $hasWaAccess, $paymentProofMap, $dispatchActorMap, $skuCzerlop, $skuWeightFactor, $skuSellUnit, $pinPendingByCustomer, $defaultPmActorMap) {
                 // Build customer name
                 $customerName = $order->name ?? 'N/A';
                 if (!$order->name && ($order->address_first_name || $order->address_last_name)) {
@@ -15147,7 +15465,7 @@ class RiderController extends Controller
                             'discount_title' => $discount->discount_title,
                         ];
                     })->toArray() : [],
-                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $skuWeightFactor) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $skuWeightFactor, $skuSellUnit) {
                         $liSku = trim((string) ($item->sku ?? ''));
                         return [
                             'id' => $item->id,
@@ -15157,6 +15475,9 @@ class RiderController extends Controller
                             'sku' => $item->sku ?? '',
                             'czerlop_product_id' => ($liSku !== '' && isset($skuCzerlop[$liSku])) ? $skuCzerlop[$liSku] : null,
                             'weight_factor' => ($liSku !== '' && isset($skuWeightFactor[$liSku])) ? $skuWeightFactor[$liSku] : 1.0,
+                            // 📦 'kg' = weighed (label carries grams) | 'pcs' = counted boxes
+                            //    (label identifies the product; quantity stays as ordered).
+                            'sell_unit' => ($liSku !== '' && isset($skuSellUnit[$liSku])) ? $skuSellUnit[$liSku] : 'kg',
                             'quantity' => (float) $item->quantity,
                             'quantity_source' => $item->quantity_source ?? null,
                             'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
@@ -16190,26 +16511,43 @@ class RiderController extends Controller
             $variantCzerlop = [];
             $skuWeightFactor = [];     // sku -> weight_factor (default 1)
             $variantWeightFactor = []; // variant_id -> weight_factor (fallback, default 1)
+            // 📦 'kg' | 'pcs' — resolved with the SAME sku-first / variant-fallback
+            //    priority as the PLU, so a line can never be matched by one map and
+            //    read by the other. Column absent => everything is 'kg' (today).
+            $skuSellUnit = [];
+            $variantSellUnit = [];
+            $hasSellUnit = \App\Models\CRM\ProductModel::supportsSellUnit();
+            $kgUnit = \App\Models\CRM\ProductModel::SELL_UNIT_KG;
             if (!empty($liSkus)) {
+                $cols = ['v.sku', 'p.czerlop_product_id', 'p.weight_factor'];
+                if ($hasSellUnit) { $cols[] = 'p.sell_unit'; }
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
                     ->whereIn('v.sku', $liSkus)
-                    ->select('v.sku', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    ->select($cols)->get() as $row) {
                     if ($row->czerlop_product_id !== null) {
                         $skuCzerlop[$row->sku] = (int) $row->czerlop_product_id;
                     }
                     $skuWeightFactor[$row->sku] = (float) ($row->weight_factor ?? 1.0);
+                    $skuSellUnit[$row->sku] = $hasSellUnit
+                        ? \App\Models\CRM\ProductModel::normaliseSellUnit($row->sell_unit ?? null)
+                        : $kgUnit;
                 }
             }
             if (!empty($liVariantIds)) {
+                $vcols = ['v.id', 'p.czerlop_product_id', 'p.weight_factor'];
+                if ($hasSellUnit) { $vcols[] = 'p.sell_unit'; }
                 foreach (\DB::table('t_crm_prod_product_variant as v')
                     ->join('t_crm_prod_product as p', 'p.id', '=', 'v.product_id')
                     ->whereIn('v.id', $liVariantIds)
-                    ->select('v.id', 'p.czerlop_product_id', 'p.weight_factor')->get() as $row) {
+                    ->select($vcols)->get() as $row) {
                     if ($row->czerlop_product_id !== null) {
                         $variantCzerlop[(int) $row->id] = (int) $row->czerlop_product_id;
                     }
                     $variantWeightFactor[(int) $row->id] = (float) ($row->weight_factor ?? 1.0);
+                    $variantSellUnit[(int) $row->id] = $hasSellUnit
+                        ? \App\Models\CRM\ProductModel::normaliseSellUnit($row->sell_unit ?? null)
+                        : $kgUnit;
                 }
             }
 
@@ -16260,7 +16598,7 @@ class RiderController extends Controller
                     'items_summary' => $order->lineItems->map(function($item) {
                         return $item->name . ' (x' . $item->quantity . ')';
                     })->join(', '),
-                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $variantCzerlop, $skuWeightFactor, $variantWeightFactor) {
+                    'line_items' => $order->lineItems->map(function($item) use ($skuCzerlop, $variantCzerlop, $skuWeightFactor, $variantWeightFactor, $skuSellUnit, $variantSellUnit) {
                         // Resolve Czerlop id: SKU first (reliable), variant_id as fallback.
                         $czerlop = null;
                         $liSku = trim((string) ($item->sku ?? ''));
@@ -16276,6 +16614,13 @@ class RiderController extends Controller
                         } elseif ($item->variant_id && isset($variantWeightFactor[(int) $item->variant_id])) {
                             $wf = $variantWeightFactor[(int) $item->variant_id];
                         }
+                        // 📦 Sold by weight or by the box? Same priority again.
+                        $sellUnit = 'kg';
+                        if ($liSku !== '' && isset($skuSellUnit[$liSku])) {
+                            $sellUnit = $skuSellUnit[$liSku];
+                        } elseif ($item->variant_id && isset($variantSellUnit[(int) $item->variant_id])) {
+                            $sellUnit = $variantSellUnit[(int) $item->variant_id];
+                        }
                         return [
                             'id' => $item->id,
                             'product_name' => $item->name ?? 'N/A',
@@ -16283,8 +16628,9 @@ class RiderController extends Controller
                             'sku' => $item->sku ?? '',                       // explicit SKU (barcode match key)
                             'czerlop_product_id' => $czerlop,               // for matching a scanned PLU
                             'weight_factor' => $wf,                          // qty divisor for scan/manual (default 1)
+                            'sell_unit' => $sellUnit,                        // 📦 'kg' weighed | 'pcs' counted boxes
                             'quantity' => $item->quantity,
-                            'quantity_source' => $item->quantity_source ?? null, // 'barcode' | 'manual' | null
+                            'quantity_source' => $item->quantity_source ?? null, // 'barcode' | 'box_scan' | 'manual' | null
                             'quantity_updated_at' => $item->quantity_updated_at ? $item->quantity_updated_at->toIso8601String() : null,
                             'quantity_updated_by_name' => optional($item->qtyUpdater)->fullname,
                             'unit_price' => $item->unit_price,
@@ -20114,7 +20460,28 @@ class RiderController extends Controller
                     'a.checkout_attempt_accuracy_m',
                 ]);
             }
+            // ⭐ The reading stamps — so a two-machine day on the manager's PHONE reads the same
+            //   as on the web (no 67,874 km, no "meter vs GPS off by 67,804"). Schema-guarded.
+            if (\App\Services\Riders\VehicleService::stampsAvailable()) {
+                $query->addSelect(['a.meter_start_vehicle_id', 'a.meter_end_vehicle_id']);
+            }
             $query = $query->get();
+
+            // ⭐ Machine labels for every stamped row, in ONE query (the per-row helper would
+            //   otherwise look them up once per rider). Empty map = labels resolve to null and
+            //   the phone falls back to its own wording — never an error.
+            $storeMpLabels = [];
+            try {
+                $storeMpVids = [];
+                foreach ($query as $r) {
+                    foreach ([$r->meter_start_vehicle_id ?? null, $r->meter_end_vehicle_id ?? null] as $v) {
+                        if ($v) { $storeMpVids[(int) $v] = true; }
+                    }
+                }
+                if ($storeMpVids) {
+                    $storeMpLabels = \App\Services\Riders\MeterPairHelper::labels(array_keys($storeMpVids));
+                }
+            } catch (\Throwable $e) { $storeMpLabels = []; }
 
             // Resolve shifts using ShiftResolutionService
             $shiftService = new \App\Services\ShiftResolutionService();
@@ -20338,11 +20705,11 @@ class RiderController extends Controller
                     }
                 }
                 
-                // ⭐ Calculate meter distance (if both readings exist)
-                $meterDistance = null;
-                if ($row->meter_start && $row->meter_end) {
-                    $meterDistance = abs((int) $row->meter_end - (int) $row->meter_start);
-                }
+                // ⭐ Calculate meter distance — NULL when the pair spans TWO machines, because
+                //   there is no honest single number then (MeterPairHelper). `meter_machines`
+                //   names them so the phone can say so instead of printing nothing.
+                $meterDistance = \App\Services\Riders\MeterPairHelper::distance($row);
+                $meterMachines = \App\Services\Riders\MeterPairHelper::machines($row, $storeMpLabels);
 
                 // HALF-DAY (leave_type='half_day' covering this date, approved/pending): present
                 // with no lateness/overtime, shown as "½ day". The leave join is already
@@ -20387,6 +20754,10 @@ class RiderController extends Controller
                     'meter_start' => $row->meter_start,
                     'meter_end' => $row->meter_end,
                     'meter_distance' => $meterDistance, // ⭐ Pre-calculated meter distance
+                    // ⭐ Which machine each end is of; `split` = two odometers, no single distance.
+                    //   Additive — older APKs ignore it and simply show no number, as they do for
+                    //   any day without a meter.
+                    'meter_machines' => $meterMachines,
                     // Location data
                     'checkin_latitude' => $row->checkin_latitude ?? null,
                     'checkin_longitude' => $row->checkin_longitude ?? null,
@@ -20482,6 +20853,9 @@ class RiderController extends Controller
                         'role_name' => $employee['role_name'] ?? null, 'company_bike' => !empty($employee['is_company_bike']),
                         'meter_required' => isset($meterExemptSet[$employee['user_id']]) ? 0 : 1,
                         'meter_start' => $employee['meter_start'], 'meter_end' => $employee['meter_end'], 'meter_distance' => $employee['meter_distance'],
+                        // ⚠ Same split flag the web page passes, so the phone's ⛽ tick and the
+                        //   web's can never disagree about a two-machine day.
+                        'meter_split' => !empty($employee['meter_machines']['split']),
                         'road_distance_km' => $employee['road_distance_km'], 'gps_distance' => $employee['gps_distance'],
                         'checkout_info' => $employee['checkout_info'], 'home_journey' => $employee['home_journey'],
                         'work_journey' => $employee['work_journey'], 'checkout_unlock' => $employee['checkout_unlock'],
@@ -20750,9 +21124,13 @@ class RiderController extends Controller
                     DB::raw("COALESCE(d.first_delivery_time, '-') as first_delivery_time"),
                     DB::raw("COALESCE(d.last_delivery_time, '-') as last_delivery_time")
                 )
+                // ⭐ The reading stamps — the manager's phone must not compute a distance across
+                //   two odometers either (MeterPairHelper). Schema-guarded.
+                ->when(\App\Services\Riders\VehicleService::stampsAvailable(),
+                    fn ($q) => $q->addSelect(['a.meter_start_vehicle_id', 'a.meter_end_vehicle_id']))
                 ->orderByDesc('a.attendance_date')
                 ->get();
-            
+
             // Clean up null values
             foreach ($query as $record) {
                 if ($record->first_delivery_time === null) {
@@ -20771,15 +21149,27 @@ class RiderController extends Controller
             $daysWithMeterReadings = 0;
             $daysMissingMeterReadings = 0;
             
+            /**
+             * ⚠⚠ THE MONTH TOTAL MUST OBEY THE SAME RULE AS THE ROW (13-Sep-2026, found on the
+             *    real handset). This loop did its own `abs(end - start)` and knew nothing about
+             *    the machine stamps, so on Rajab's 11-Sep the card said
+             *    "🏍🚚 own bike → CAD-2958 — no day distance" while the header above it added
+             *    **67,874 km** for that very day: 68,578 for the month against a true 704. It
+             *    also poisoned "Avg Cost", which divides fuel by this number — Rs 0.2/km instead
+             *    of Rs 21/km.
+             *
+             * `MeterPairHelper::distance()` is the ONE answer to "how far on this row": null when
+             * the two ends are stamped to different machines. A split day is therefore not a day
+             * with a reading — it is a day whose distance we do not have — so it counts as
+             * missing, exactly as the ⛽ tick and every web surface already treat it.
+             */
             foreach ($query as $record) {
-                // Check if has valid meter readings
-                if ($record->meter_start !== null && $record->meter_end !== null && 
-                    $record->meter_start > 0 && $record->meter_end > 0) {
-                    $distance = abs(intval($record->meter_end) - intval($record->meter_start));
+                $distance = \App\Services\Riders\MeterPairHelper::distance($record);
+                if ($distance !== null) {
                     $totalDistance += $distance;
                     $daysWithMeterReadings++;
                 } elseif ($record->login_time) {
-                    // Has attendance but no meter readings
+                    // Has attendance but no usable pair — no readings, or two machines.
                     $daysMissingMeterReadings++;
                 }
             }
@@ -20930,11 +21320,10 @@ class RiderController extends Controller
                 $record->picture_start = $record->picture_start ? $this->getMeterPictureUrl($record->picture_start) : null;
                 $record->picture_end = $record->picture_end ? $this->getMeterPictureUrl($record->picture_end) : null;
                 
-                // ⭐ Calculate meter distance for this day
-                $record->meter_distance = null;
-                if ($record->meter_start && $record->meter_end) {
-                    $record->meter_distance = abs((int) $record->meter_end - (int) $record->meter_start);
-                }
+                // ⭐ Meter distance — NULL on a two-machine day, with the machines named so the
+                //   screen can say so instead of printing an odometer difference.
+                $record->meter_distance = \App\Services\Riders\MeterPairHelper::distance($record);
+                $record->meter_machines = \App\Services\Riders\MeterPairHelper::machines($record);
             }
             
             // ⭐ Batch calculate GPS distance for all days with attendance
@@ -22797,12 +23186,27 @@ class RiderController extends Controller
             $pendingPetrolRequests = $pendingPetrolQuery->orderBy('expense_date', 'desc')->get();
 
             $base = request()->getSchemeAndHttpHost();
-            $petrolRequestsData = $pendingPetrolRequests->map(function($req) use ($base) {
+
+            // ⭐ WHICH MACHINE THIS MONEY IS FOR — personal bike / company bike / van, plus
+            //   the plate. Same keys and the SAME composed words the web Daily Closing pane
+            //   and the Month view popup use (VehicleResolver::machineChip), so the phone
+            //   and the browser can never describe one claim two different ways.
+            // ⚠ Additive keys only — an installed APK that does not know them renders as
+            //   before. ⚠ SCHEMA-GUARDED: `vehicle_id` was hand-applied to t_req_master.
+            $hasVehicleCol = \Illuminate\Support\Facades\Schema::hasColumn('t_req_master', 'vehicle_id');
+            $vehResolver   = new \App\Services\Riders\VehicleResolver();
+            $machineFields = function ($req) use ($hasVehicleCol, $vehResolver) {
+                return $vehResolver->machineChipFields(
+                    $hasVehicleCol && $req->vehicle_id !== null ? (int) $req->vehicle_id : null
+                );
+            };
+
+            $petrolRequestsData = $pendingPetrolRequests->map(function($req) use ($base, $machineFields) {
                 $attachmentUrl = null;
                 if ($req->attachments && is_array($req->attachments) && count($req->attachments) > 0) {
                     $attachmentUrl = rtrim($base, '/') . '/public-storage/' . ltrim($req->attachments[0], '/');
                 }
-                return [
+                return $machineFields($req) + [
                     'id' => $req->id,
                     'request_number' => $req->request_number,
                     'rider_name' => $req->requester ? $req->requester->fullname : 'Unknown',
@@ -22835,12 +23239,12 @@ class RiderController extends Controller
                 ->with(['requester']);
             if ($dateFrom) { $maintQuery->where('expense_date', '>=', $dateFrom); }
             if ($dateTo)   { $maintQuery->where('expense_date', '<=', $dateTo); }
-            $maintenanceRequestsData = $maintQuery->orderBy('expense_date', 'desc')->get()->map(function ($req) use ($base) {
+            $maintenanceRequestsData = $maintQuery->orderBy('expense_date', 'desc')->get()->map(function ($req) use ($base, $machineFields) {
                 $attachmentUrl = null;
                 if ($req->attachments && is_array($req->attachments) && count($req->attachments) > 0) {
                     $attachmentUrl = rtrim($base, '/') . '/public-storage/' . ltrim($req->attachments[0], '/');
                 }
-                return [
+                return $machineFields($req) + [
                     'id' => $req->id,
                     'request_number' => $req->request_number,
                     'rider_name' => $req->requester ? $req->requester->fullname : 'Unknown',
@@ -27182,6 +27586,151 @@ class RiderController extends Controller
         }
 
         return response()->json($result, $result['success'] ? 200 : 422);
+    }
+
+    /**
+     * 📦 Confirm ONE counted product (a frozen box / pack) by scanning its label.
+     *
+     * The quantity is NOT touched — it stays as ordered (owner ruling, 13-Sep-2026).
+     * A boxed product's label carries no usable amount and every box of a product
+     * prints the IDENTICAL code, so the only thing a scan can honestly establish is
+     * "this is the right product, and it is on this order". That is what gets
+     * stamped, as quantity_source = 'box_scan'.
+     *
+     * ⭐⭐ Everything the phone claims is re-checked here against the database, so a
+     * client bug cannot silently mark the wrong line:
+     *   - the barcode is re-decoded server-side (the phone's PLU is never trusted);
+     *   - the line's product must be sell_unit = 'pcs' — a WEIGHED product sent here
+     *     is refused, so this endpoint can never become a way to skip weighing;
+     *   - the decoded PLU must equal that product's own Czerlop PLU.
+     *
+     * POST /api/rider/orders/{orderId}/line-items/{lineItemId}/box-scan
+     * Body: { scanned_barcode: string }
+     */
+    public function confirmLineItemBoxScan(Request $request, $orderId, $lineItemId)
+    {
+        $user = Auth::user();
+        if (!$user || !$user->hasMobilePermission('scan_line_item_qty')) {
+            return response()->json(['success' => false, 'message' => 'You do not have permission to scan items'], 403);
+        }
+
+        $validated = $request->validate([
+            'scanned_barcode' => 'required|string|max:20',
+        ]);
+
+        // The feature is invisible until the column exists, so an APK that lands
+        // before the SQL says something true instead of stamping a row nobody can
+        // read back as a box scan.
+        if (!\App\Models\CRM\ProductModel::supportsSellUnit()) {
+            return response()->json([
+                'success' => false,
+                'code' => 'not_supported',
+                'message' => 'Box scanning is not switched on yet — please enter this quantity by hand.',
+            ], 422);
+        }
+
+        $order = \App\Models\CRM\OrderModel::find($orderId);
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        $lineItem = \App\Models\CRM\OrderLineItemModel::where('id', $lineItemId)
+            ->where('order_id', $orderId)
+            ->first();
+        if (!$lineItem) {
+            return response()->json(['success' => false, 'message' => 'Line item not found in this order'], 404);
+        }
+
+        $decoded = app(\App\Services\CRM\WeightBarcodeDecoder::class)->decode($validated['scanned_barcode']);
+        if (!$decoded) {
+            return response()->json([
+                'success' => false,
+                'code' => 'bad_barcode',
+                'message' => 'That is not a valid scale label.',
+            ], 422);
+        }
+
+        // Resolve the product the SAME way the open-orders payload does: SKU first
+        // (the reliable key — a line item's own product_id is an EXTERNAL id),
+        // variant_id as the fallback for the rare empty-sku line.
+        $product = $this->resolveProductForLineItem($lineItem);
+        if (!$product) {
+            return response()->json([
+                'success' => false,
+                'code' => 'no_product',
+                'message' => 'This line is not linked to a product — please enter the quantity by hand.',
+            ], 422);
+        }
+
+        if (!$product->isSoldByPiece()) {
+            return response()->json([
+                'success' => false,
+                'code' => 'not_a_box',
+                'message' => $product->title . ' is sold by weight — scan it to record its weight instead.',
+            ], 422);
+        }
+
+        if ((int) $product->czerlop_product_id !== (int) $decoded['plu']) {
+            return response()->json([
+                'success' => false,
+                'code' => 'plu_mismatch',
+                'message' => 'That label is PLU ' . $decoded['plu'] . ', not ' . $product->title . '.',
+            ], 422);
+        }
+
+        $previousSource = $lineItem->quantity_source;
+        $service = new \App\Services\CRM\LineItemQuantityService();
+        $result = $service->markBoxScanned($order, $lineItem, $decoded['raw'], $user->id);
+
+        // Same forensic value as the weighed path: the raw code, the line, and who.
+        // ⭐ `scanned_units` is the label's five digits read as a count. Nothing uses
+        //    it — it is logged so that if the scale's template changes again, the
+        //    evidence is in the log instead of on a sticker.
+        if (!empty($result['success'])) {
+            \Log::info('Line item box scan confirmed', [
+                'order_id' => (int) $order->id,
+                'order_number' => $order->order_number,
+                'line_item_id' => (int) $lineItem->id,
+                'sku' => $lineItem->sku,
+                'product_id' => (int) $product->id,
+                'plu' => (int) $decoded['plu'],
+                'scanned_barcode' => $decoded['raw'],
+                'scanned_units' => $decoded['units'],
+                'quantity_unchanged' => (float) $lineItem->quantity,
+                'previous_source' => $previousSource,
+                'already_confirmed' => !empty($result['unchanged']),
+                'by_user_id' => (int) $user->id,
+                'by' => $user->fullname ?? null,
+            ]);
+        }
+
+        return response()->json($result, $result['success'] ? 200 : 422);
+    }
+
+    /**
+     * The product behind an order line: SKU -> variant -> product, with variant_id
+     * as a fallback. Mirrors the resolution used to build the open-orders payload,
+     * so the phone and this endpoint can never disagree about which product a line
+     * is. Returns null when the line matches nothing (hand-typed lines).
+     */
+    private function resolveProductForLineItem(\App\Models\CRM\OrderLineItemModel $lineItem)
+    {
+        $sku = trim((string) ($lineItem->sku ?? ''));
+        if ($sku !== '') {
+            $productId = \DB::table('t_crm_prod_product_variant')
+                ->where('sku', $sku)->value('product_id');
+            if ($productId) {
+                return \App\Models\CRM\ProductModel::find($productId);
+            }
+        }
+        if ($lineItem->variant_id) {
+            $productId = \DB::table('t_crm_prod_product_variant')
+                ->where('id', (int) $lineItem->variant_id)->value('product_id');
+            if ($productId) {
+                return \App\Models\CRM\ProductModel::find($productId);
+            }
+        }
+        return null;
     }
 
     /**
