@@ -1259,6 +1259,34 @@ class WorkshopVisitService
     {
         if (!$this->approvalEnabled() || !$this->canApprove($user, $mobile)) return [];
         $rows = $this->listVisits(['statuses' => ['proposed'], 'limit' => $limit]);
+
+        /**
+         * ⏰⭐⭐ WHAT THIS USER HAS PUT OFF FOR SIX HOURS (owner ask, 11-Sep-2026).
+         *
+         * ⚠⚠ THE AUDIENCE IS FLAT AND CANNOT BE NARROWED. Everyone holding `manage_shifts`
+         *    sees every proposal, because the deciders are not always the same people — the
+         *    owner's example is Taimur, who only needs to KNOW, except on the days Farooq is
+         *    on leave and he must actually decide. Removing him from the audience would break
+         *    exactly the case the audience exists for. So the fix is not a smaller audience,
+         *    it is letting a man say "not me, not now" without hiding it from anybody else.
+         *
+         * ⭐ Per USER and server-side, so it follows him across his phone and the web, and one
+         *   planner's snooze never hides a live request from the rest.
+         * ⚠ Decided visits need nothing here: approve/decline moves the row off `proposed`,
+         *   so it leaves EVERY list at once. That half already worked.
+         */
+        $rows = $this->minusSnoozed($rows, (int) ($user->id ?? 0));
+
+        /**
+         * ⚠⚠ A PLANNER IS NOT ASKED TO APPROVE HIS OWN WORKSHOP DAY (open ruling 4 from
+         *    6-Sep, closed 11-Sep). `manage_shifts` includes people who also ride, so a
+         *    planner booked in for his own bike was shown "⏳ needs your approval" about
+         *    himself and could wave it through. Self-approval is the one thing an approval
+         *    queue exists to prevent.
+         */
+        $uid  = (int) ($user->id ?? 0);
+        $rows = array_values(array_filter($rows, fn ($r) => (int) ($r['user_id'] ?? 0) !== $uid));
+
         foreach ($rows as &$r) {
             $r['warnings'] = $this->warningsFor((int) $r['vehicle_id'], (int) $r['user_id'], $r['visit_date']);
             // ⏰ So the card can say "decide by 08:30" instead of leaving the planner to guess.
@@ -2232,6 +2260,544 @@ class WorkshopVisitService
         return false;
     }
 
+    /**
+     * ⭐ "WHO WAS SENT TO A WORKSHOP ON THIS DAY?" — for the review layers, which look at days
+     *    that are already over.
+     *
+     * ⚠⚠ NOT `tripsFor()`. That one answers "who is on an errand RIGHT NOW": it keeps only
+     *    `LIVE_STATUSES` and only rows he has actually set off on. By the time a day is
+     *    reviewed the visit is `done`, so asking the live question about yesterday returns
+     *    nobody and every workshop day collects the flags it was supposed to be excused.
+     * ⚠ A visit that was declined, cancelled, or reported not-done excuses NOTHING — those are
+     *   days he did not go, and a man who did not go has no excuse for a late start.
+     *
+     * @return array<int, true> keyed by user id
+     */
+    public function ridersWithVisitOn(array $userIds, string $date): array
+    {
+        $userIds = array_values(array_unique(array_filter(array_map('intval', $userIds))));
+        if (!$this->available() || !$userIds) return [];
+        try {
+            return DB::table(self::T_VISIT)
+                ->whereIn('user_id', $userIds)
+                ->whereDate('visit_date', substr($date, 0, 10))
+                ->whereIn('status', array_merge(self::LIVE_STATUSES, ['done']))
+                ->pluck('user_id')
+                ->mapWithKeys(fn ($uid) => [(int) $uid => true])
+                ->all();
+        } catch (\Throwable $e) {
+            Log::warning('ridersWithVisitOn failed', ['date' => $date, 'error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * The same answer over a RANGE, keyed `"userId|Y-m-d"` — the shape the month-level
+     * reviewers already use for handover days, so the two exemptions read alike.
+     *
+     * @return array<string, true>
+     */
+    public function visitDayKeys(array $userIds, string $from, string $to): array
+    {
+        $userIds = array_values(array_unique(array_filter(array_map('intval', $userIds))));
+        if (!$this->available() || !$userIds) return [];
+        try {
+            $out = [];
+            DB::table(self::T_VISIT)
+                ->whereIn('user_id', $userIds)
+                ->whereBetween('visit_date', [substr($from, 0, 10), substr($to, 0, 10)])
+                ->whereIn('status', array_merge(self::LIVE_STATUSES, ['done']))
+                ->get(['user_id', 'visit_date'])
+                ->each(function ($r) use (&$out) {
+                    $out[(int) $r->user_id . '|' . substr((string) $r->visit_date, 0, 10)] = true;
+                });
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('visitDayKeys failed', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /** How long a "Baad mein" lasts. Owner's figure, 11-Sep-2026. */
+    public const SNOOZE_HOURS = 6;
+
+    /** The per-user key for one proposal. ⚠ Must fit `t_ops_alert_dismissal.alert_key` (64). */
+    private function snoozeKey(int $visitId): string
+    {
+        return substr('wsapproval:' . $visitId, 0, 64);
+    }
+
+    /**
+     * ⏰ Drop the proposals THIS user has put off, and only for as long as the snooze lasts.
+     *
+     * ⚠ Reuses `t_ops_alert_dismissal`, which already exists on prod and was built to be
+     *   reused — so this feature needs no table of its own. The one difference from the
+     *   service-alert use is that a row here EXPIRES: `dismissed_at` is a start time, not a
+     *   permanent tombstone, because the question is still open and must come back.
+     */
+    private function minusSnoozed(array $rows, int $userId): array
+    {
+        if (!$userId || !$rows) return $rows;
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) return $rows;
+            $keys = [];
+            foreach ($rows as $r) $keys[] = $this->snoozeKey((int) $r['id']);
+
+            $live = DB::table('t_ops_alert_dismissal')
+                ->where('user_id', $userId)
+                ->whereIn('alert_key', $keys)
+                ->where('dismissed_at', '>=', now()->subHours(self::SNOOZE_HOURS))
+                ->pluck('alert_key')
+                ->flip();
+
+            return array_values(array_filter(
+                $rows,
+                fn ($r) => !isset($live[$this->snoozeKey((int) $r['id'])])
+            ));
+        } catch (\Throwable $e) {
+            // ⚠ A snooze lookup must never empty the queue — fail towards SHOWING the work.
+            Log::warning('approval snooze filter skipped', ['error' => $e->getMessage()]);
+            return $rows;
+        }
+    }
+
+    /**
+     * ⏰ "Baad mein (6h)" — hide this proposal from THIS user for six hours.
+     *
+     * ⭐ Deliberately not a decision: the visit stays `proposed`, every other planner still
+     *   sees it, and it comes back to him if nobody has dealt with it. A snooze that silently
+     *   declined would be far worse than the nuisance it is solving.
+     */
+    public function snoozeProposal($user, int $visitId): array
+    {
+        $uid = (int) ($user->id ?? 0);
+        if (!$uid) return ['ok' => false, 'message' => 'Not authorised'];
+        if (!$this->canApprove($user, true) && !$this->canApprove($user, false)) {
+            return ['ok' => false, 'message' => 'Not authorised'];
+        }
+        try {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('t_ops_alert_dismissal')) {
+                return ['ok' => false, 'message' => 'Snooze is not set up on this install yet.'];
+            }
+            $v = $this->find($visitId);
+            if (!$v) return ['ok' => false, 'message' => 'That visit no longer exists.'];
+            // ⚠ Only an OPEN question can be put off. Snoozing a decided one would write a row
+            //   that outlives the thing it refers to.
+            if ((string) $v['status'] !== 'proposed') {
+                return ['ok' => true, 'already_decided' => true,
+                        'message' => 'That one has already been decided.'];
+            }
+
+            DB::table('t_ops_alert_dismissal')->updateOrInsert(
+                ['user_id' => $uid, 'alert_key' => $this->snoozeKey($visitId)],
+                ['dismissed_at' => now()]
+            );
+            Log::info('Workshop proposal snoozed', ['visit' => $visitId, 'by' => $uid,
+                                                    'hours' => self::SNOOZE_HOURS]);
+            return ['ok' => true, 'message' => self::SNOOZE_HOURS . ' ghante baad dobara dikhega.'];
+        } catch (\Throwable $e) {
+            Log::warning('snoozeProposal failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+            return ['ok' => false, 'message' => 'Could not snooze that one.'];
+        }
+    }
+
+    /**
+     * ⭐⭐ THE WORKSHOP PINS ITSELF — asking the rider, ONCE, when he has clearly stopped
+     *    somewhere we cannot recognise (owner ask, 11-Sep-2026).
+     *
+     * ⚠⚠ THE PROBLEM THIS SOLVES. Arrival is proved by a geofence, and a geofence needs a pin.
+     *    A visit booked through the free-text "Workshop name (not on the list)" box has none,
+     *    so `stampArrival()` skips it (`whereNotNull('location_id')`) and the man reads "going
+     *    to the workshop" all day, with no ETA and no arrival — for every screen, forever.
+     *    Banning free text was rejected: a manager genuinely may not know the place. So the
+     *    rider's OWN arrival becomes the pin, and every later visit there is automatic.
+     *
+     * ⭐ Runs inside the heartbeat the phone ALREADY sends. Nothing new runs on the device and
+     *   nothing polls; `maybeAskArrival` only ever writes the "ask him" flag.
+     *
+     * ⚠⚠ THE FOUR GATES EXIST TO STOP A PROMPT THAT WILL NOT GO AWAY — the owner's explicit
+     *    requirement. In order: he must have STOPPED (not be riding past), the fix must be
+     *    CREDIBLE, the place must be UNRECOGNISED, and he must not have been asked too often.
+     *    A prompt that fires while he is moving, or at his own home, is one nobody ever
+     *    answers honestly again.
+     *
+     * @return bool true when a prompt was just armed
+     */
+    public function maybeAskArrival(int $userId, float $lat, float $lng, $accuracy = null): bool
+    {
+        if (!$this->tripEnabled() || !$this->hasArrivalAsk()) return false;
+
+        try {
+            /**
+             * ⚠ GATE 3a — THE FIX MUST BE CREDIBLE. The same 150 m bar the dispatch origin
+             *   uses. A 2 km "fix" is how a workshop would get pinned to a petrol station two
+             *   streets away, and that pin would then be wrong for everybody, forever. NULL
+             *   accuracy is allowed through exactly as the dispatch reader allows it — many
+             *   devices simply do not report it.
+             */
+            if ($accuracy !== null && is_numeric($accuracy) && (float) $accuracy > 150.0) {
+                return false;
+            }
+
+            $today = \Carbon\Carbon::today()->format('Y-m-d');
+            $rows = DB::table(self::T_VISIT)
+                ->where('user_id', $userId)
+                ->whereDate('visit_date', $today)
+                ->whereIn('status', self::LIVE_STATUSES)
+                ->whereNotNull('departed_at')      // he has set off
+                ->whereNull('arrived_at')
+                ->whereNull('done_at')
+                ->orderBy('id')
+                ->get(['id', 'location_id', 'workshop', 'arrival_ask_at',
+                       'arrival_ask_lat', 'arrival_ask_lng', 'arrival_ask_count']);
+            if ($rows->isEmpty()) return false;
+
+            foreach ($rows as $r) {
+                // Only a visit with NO USABLE PIN. One that has coordinates is geofenced by
+                // stampArrival() and must never be answered by a question instead.
+                if ($r->location_id && $this->workshopCoords($r->location_id)) continue;
+
+                // ⚠ GATE 4 — ASKED AT MOST TWICE, EVER. Server-side, because a counter kept on
+                //   the device resets when the app does, which is precisely how a "confirm?"
+                //   box becomes one that will not go away.
+                if ((int) $r->arrival_ask_count >= 2) continue;
+
+                // ⚠ GATE 4b — THE COOLDOWN, BOTH HALVES. After "not now" he must be left alone
+                //   for 45 minutes AND have moved 300 m. Time alone would re-ask him standing
+                //   in the same spot; distance alone would re-ask the moment he crossed the
+                //   road. Both, or it is the nagging box the owner warned about.
+                if (!empty($r->arrival_ask_at)) {
+                    $askedAgo = \Carbon\Carbon::parse($r->arrival_ask_at)->diffInMinutes(now());
+                    $moved = ($r->arrival_ask_lat !== null && $r->arrival_ask_lng !== null)
+                        ? $this->haversine($lat, $lng, (float) $r->arrival_ask_lat, (float) $r->arrival_ask_lng)
+                        : 9999;
+                    if ($askedAgo < 45 || $moved < 300) continue;
+                }
+
+                // ⚠ GATE 1 — HE HAS ACTUALLY STOPPED. Asking a man riding past a row of shops
+                //   is how a workshop ends up pinned to a junction.
+                if (!$this->hasDwelled($userId, $lat, $lng)) continue;
+
+                // ⚠ GATE 2 — THE PLACE IS NOT ALREADY EXPLAINED. At the office, at his own
+                //   home, or at a workshop we already know, "are you at the workshop?" is
+                //   noise — and answering yes would pin a SECOND workshop on top of a place
+                //   that already has a name.
+                if ($this->placeIsKnown($userId, $lat, $lng)) continue;
+
+                DB::table(self::T_VISIT)->where('id', $r->id)->update([
+                    'arrival_ask_at'    => now(),
+                    'arrival_ask_lat'   => $lat,
+                    'arrival_ask_lng'   => $lng,
+                    'arrival_ask_count' => (int) $r->arrival_ask_count + 1,
+                    'updated_at'        => now(),
+                ]);
+                Log::info('Workshop arrival prompt armed (no pin on this workshop)', [
+                    'visit' => (int) $r->id, 'user' => $userId,
+                    'ask_number' => (int) $r->arrival_ask_count + 1,
+                ]);
+                return true;
+            }
+        } catch (\Throwable $e) {
+            // ⚠ NON-FATAL BY CONTRACT — this runs inside the heartbeat.
+            Log::warning('maybeAskArrival failed', ['user' => $userId, 'error' => $e->getMessage()]);
+        }
+        return false;
+    }
+
+    /**
+     * Has he been sitting still? The last fixes spanning at least 8 minutes must all be within
+     * 120 m of where he is now.
+     *
+     * ⚠ Needs at least TWO fixes: one reading cannot tell "stopped" from "passing through", and
+     *   treating a single fix as a stop is the difference between a prompt at the workshop and
+     *   a prompt at a red light.
+     */
+    private function hasDwelled(int $userId, float $lat, float $lng): bool
+    {
+        try {
+            $fixes = DB::table('t_ops_rider_location')
+                ->where('user_id', $userId)
+                ->where('captured_at', '>=', now()->subMinutes(25))
+                ->orderByDesc('captured_at')
+                ->limit(6)
+                ->get(['latitude', 'longitude', 'captured_at', 'accuracy']);
+            if ($fixes->count() < 2) return false;
+
+            $oldest = null;
+            foreach ($fixes as $f) {
+                if ($f->latitude === null || $f->longitude === null) continue;
+                // A wild fix must not break a real dwell — skip it rather than fail the gate.
+                if ($f->accuracy !== null && (float) $f->accuracy > 150.0) continue;
+                if ($this->haversine($lat, $lng, (float) $f->latitude, (float) $f->longitude) > 120) {
+                    return false;
+                }
+                $oldest = $f->captured_at;
+            }
+            if (!$oldest) return false;
+            return \Carbon\Carbon::parse($oldest)->diffInMinutes(now()) >= 8;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** Is he somewhere the system can already name — the office, his home, a known workshop? */
+    private function placeIsKnown(int $userId, float $lat, float $lng): bool
+    {
+        try {
+            $locs = DB::table('t_ops_company_locations')
+                ->where('is_active', 1)
+                ->whereNotNull('latitude')->whereNotNull('longitude')
+                ->get(['latitude', 'longitude', 'radius_meters']);
+            foreach ($locs as $l) {
+                $r = (int) ($l->radius_meters ?? 0);
+                if ($this->haversine($lat, $lng, (float) $l->latitude, (float) $l->longitude)
+                    <= ($r > 0 ? $r : self::ARRIVE_RADIUS_M)) {
+                    return true;
+                }
+            }
+            // …and his own home, which is not a company location.
+            $home = DB::table('t_ops_rider_profile')->where('user_id', $userId)
+                ->first(['home_latitude', 'home_longitude']);
+            if ($home && $home->home_latitude !== null && $home->home_longitude !== null) {
+                if ($this->haversine($lat, $lng, (float) $home->home_latitude,
+                                     (float) $home->home_longitude) <= 300) {
+                    return true;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Cannot say ⇒ do not claim it is known; the other gates still apply.
+        }
+        return false;
+    }
+
+    /** Does the visit table carry the arrival-prompt state yet? (Sep-12 SQL) */
+    private function hasArrivalAsk(): bool
+    {
+        if (self::$askMemo !== null) return self::$askMemo;
+        try {
+            self::$askMemo = \Illuminate\Support\Facades\Schema::hasColumn(self::T_VISIT, 'arrival_ask_at');
+        } catch (\Throwable $e) {
+            self::$askMemo = false;
+        }
+        return self::$askMemo;
+    }
+
+    /** @internal memo for hasArrivalAsk(); a static so a test can reset it. */
+    private static ?bool $askMemo = null;
+
+    /** Test seam — see the ALTER-inside-a-transaction trap. */
+    public static function flushArrivalMemo(): void { self::$askMemo = null; }
+
+    /**
+     * ⭐⭐ "ARE YOU AT THE WORKSHOP?" — what the phone should show him right now, or null.
+     *
+     * ⚠⚠ THE PROMPT IS A FACT ON THE SERVER, NOT A TIMER ON THE PHONE. This is the whole
+     *    anti-bug design: the sheet appears because this returns a row and disappears the
+     *    moment it stops doing so. Close the visit, check out, let a manager stamp the
+     *    arrival, or answer it on another device — and the box closes itself on the next
+     *    poll, because there is nothing here any more. A client-side countdown could not do
+     *    that, which is how these prompts get stuck.
+     */
+    public function arrivalPromptFor(int $userId): ?array
+    {
+        if (!$this->tripEnabled() || !$this->hasArrivalAsk()) return null;
+        try {
+            $r = DB::table(self::T_VISIT)
+                ->where('user_id', $userId)
+                ->whereDate('visit_date', \Carbon\Carbon::today()->format('Y-m-d'))
+                ->whereIn('status', self::LIVE_STATUSES)
+                ->whereNotNull('arrival_ask_at')
+                ->whereNull('arrived_at')
+                ->whereNull('done_at')
+                ->orderByDesc('arrival_ask_at')
+                ->first(['id', 'workshop', 'location_id', 'vehicle_id', 'arrival_ask_at']);
+            if (!$r) return null;
+
+            // ⚠ The ask goes stale on its own. A question from four hours ago is not worth
+            //   answering, and a sheet that outlives its moment is one people dismiss blindly.
+            if (\Carbon\Carbon::parse($r->arrival_ask_at)->diffInMinutes(now()) > 90) return null;
+
+            $place = $r->workshop ?: ($this->locationNameFor($r->location_id) ?: 'the workshop');
+            return [
+                'visit_id'     => (int) $r->id,
+                'workshop'     => $place,
+                'vehicle_name' => (new VehicleResolver())->labelFor((int) $r->vehicle_id) ?: null,
+                'asked_at'     => (string) $r->arrival_ask_at,
+                'title'        => 'Kya aap ' . $place . ' par pahunch gaye hain?',
+                'body'         => 'Is jagah ka pin save nahi hai. "Haan" dabayein to yeh jagah '
+                                . $place . ' ke taur par save ho jayegi aur agli baar khud pata chal jayega.',
+                'yes_label'    => 'Haan, yahi jagah hai',
+                'no_label'     => 'Nahi, abhi nahi',
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('arrivalPromptFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
+    /**
+     * ⭐⭐ "HAAN, YAHI JAGAH HAI" — the arrival AND the pin, in one answer.
+     *
+     * ⚠⚠ IDEMPOTENT BY CONSTRUCTION. The stamp is a conditional update (`whereNull('arrived_at')`)
+     *    and `createWorkshop()` already hands back an existing row for a name it has seen, so a
+     *    double-tap, a retry on a flaky connection, or two devices answering at once cannot
+     *    double-stamp the visit or create a second workshop.
+     * ⚠ The PIN is written even if the stamp loses the race — the place is just as real either
+     *   way, and losing it would mean asking somebody the same question tomorrow.
+     */
+    public function confirmArrivalHere($user, int $visitId, float $lat, float $lng): array
+    {
+        if (!$this->available())   return ['ok' => false, 'message' => 'Workshop visits are not set up yet.'];
+        if (!$this->hasArrivalAsk()) return ['ok' => false, 'message' => 'This app is newer than the server.'];
+
+        $v = $this->find($visitId);
+        if (!$v) return ['ok' => false, 'message' => 'That visit no longer exists.'];
+
+        $uid = (int) ($user->id ?? 0);
+        if ((int) $v['user_id'] !== $uid && !$this->canSchedule($user, true)) {
+            return ['ok' => false, 'message' => 'That is not your workshop visit.'];
+        }
+        if (!empty($v['arrived_at'])) {
+            return ['ok' => true, 'already' => true, 'message' => 'Pehle hi mark ho chuka hai.'];
+        }
+
+        $place = trim((string) ($v['workshop'] ?? '')) ?: 'Workshop';
+        $locationId = $v['location_id'] ?: null;
+
+        // 1) The PIN — the lasting half of the answer.
+        try {
+            if (!$locationId || !$this->workshopCoords($locationId)) {
+                $made = app(\App\Services\Location\CompanyLocationsService::class)
+                    ->createWorkshop([
+                        'location_name' => $place,
+                        'latitude'      => $lat,
+                        'longitude'     => $lng,
+                        'radius_meters' => 300,
+                    ], $uid);
+                if (!empty($made['ok']) && !empty($made['location']['id'])) {
+                    $locationId = (int) $made['location']['id'];
+                    Log::info('Workshop pinned by the rider who went there', [
+                        'visit' => $visitId, 'location' => $locationId,
+                        'name' => $place, 'by' => $uid,
+                    ]);
+                }
+            }
+        } catch (\Throwable $e) {
+            // ⚠ A pin that cannot be saved must NOT cost him the arrival — he is still there.
+            Log::warning('workshop self-pin failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+        }
+
+        // 2) The ARRIVAL — conditional, so a second tap changes nothing.
+        $upd = [
+            'arrived_at'     => now(),
+            'arrived_by'     => $uid,
+            'arrived_source' => 'rider_confirmed',
+            'updated_at'     => now(),
+        ];
+        if ($locationId && empty($v['location_id'])) $upd['location_id'] = $locationId;
+        if (empty($v['departed_at'])) {
+            $upd['departed_at'] = now();
+            $upd['departed_by'] = $uid;
+        }
+        $n = DB::table(self::T_VISIT)->where('id', $visitId)->whereNull('arrived_at')->update($upd);
+
+        if ($n) {
+            $this->checkoutMemo = [];
+            try {
+                app(\App\Services\FirebaseService::class)->notifyWorkshopVisit('arrived', $visitId, $uid);
+            } catch (\Throwable $e) {
+                Log::warning('arrived push failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return ['ok' => true, 'location_id' => $locationId, 'stamped' => (bool) $n,
+                'message' => $place . ' par pahunchne ka waqt save ho gaya'
+                    . ($locationId ? ' aur yeh jagah bhi save kar li gayi hai.' : '.')];
+    }
+
+    /**
+     * 📍 A MANAGER VOUCHING THAT HE GOT THERE — no pin, because the manager is not standing
+     *    there (owner ruling 4.12, 11-Sep-2026).
+     *
+     * ⚠⚠ THE ASYMMETRY IS THE POINT. The rider's own "Haan" pins the workshop at his GPS fix,
+     *    so the place is right for everyone afterwards. A desk answer carries no location at
+     *    all — taking the browser's would pin the workshop to the office, which is worse than
+     *    having no pin. So this stamps the arrival and leaves the workshop unpinned; the first
+     *    rider who answers on his phone still pins it properly.
+     * ⚠ Managers only, and only for a visit that has actually set off.
+     */
+    public function confirmArrivalByManager($user, int $visitId): array
+    {
+        if (!$this->available())     return ['ok' => false, 'message' => 'Workshop visits are not set up yet.'];
+        if (!$this->hasArrivalAsk()) return ['ok' => false, 'message' => 'This server has not had the Sep-12 update.'];
+        if (!$this->canSchedule($user, false) && !$this->canSchedule($user, true)) {
+            return ['ok' => false, 'message' => 'You cannot change workshop visits.'];
+        }
+
+        $v = $this->find($visitId);
+        if (!$v) return ['ok' => false, 'message' => 'That visit no longer exists.'];
+        if (!empty($v['arrived_at'])) {
+            return ['ok' => true, 'already' => true, 'message' => 'Already marked as arrived.'];
+        }
+        if (empty($v['departed_at'])) {
+            return ['ok' => false, 'message' =>
+                'He has not set off yet — use "He has gone" first, so the trip has a start time.'];
+        }
+        /**
+         * ⚠ Refused for a workshop that HAS a pin. Those arrive by geofence, and letting a
+         *   manager stamp one by hand would turn a proved arrival into an asserted one — the
+         *   whole reason the geofence exists.
+         */
+        if ($v['location_id'] && $this->workshopCoords($v['location_id'])) {
+            return ['ok' => false, 'message' =>
+                'That workshop is pinned, so his arrival is detected automatically — no need to mark it.'];
+        }
+
+        $uid = (int) ($user->id ?? 0);
+        $n = DB::table(self::T_VISIT)->where('id', $visitId)->whereNull('arrived_at')->update([
+            'arrived_at'     => now(),
+            'arrived_by'     => $uid,
+            'arrived_source' => 'manager',
+            'updated_at'     => now(),
+        ]);
+        if ($n) {
+            $this->checkoutMemo = [];
+            Log::info('Workshop arrival vouched by a manager (workshop has no pin)', [
+                'visit' => $visitId, 'by' => $uid,
+            ]);
+            try {
+                app(\App\Services\FirebaseService::class)->notifyWorkshopVisit('arrived', $visitId, $uid);
+            } catch (\Throwable $e) {
+                Log::warning('arrived push failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+            }
+        }
+        return ['ok' => true, 'location_id' => null, 'stamped' => (bool) $n,
+                'message' => 'Marked as arrived. ⚠ This workshop still has no pin — when a rider '
+                           . 'confirms it from his phone the place is saved and this becomes automatic.'];
+    }
+
+    /**
+     * "Nahi, abhi nahi." Nothing is stamped and nothing is pinned; the cooldown on the row
+     * already written by `maybeAskArrival` is what keeps him from being asked again.
+     *
+     * ⚠ Dismissing the sheet without answering takes this same path (see the client): silence
+     *   must never be read as yes, because a wrong yes pins a workshop at the wrong place for
+     *   everybody.
+     */
+    public function declineArrivalHere($user, int $visitId): array
+    {
+        if (!$this->hasArrivalAsk()) return ['ok' => true, 'message' => ''];
+        try {
+            $uid = (int) ($user->id ?? 0);
+            DB::table(self::T_VISIT)->where('id', $visitId)->where('user_id', $uid)
+                ->whereNull('arrived_at')
+                ->update(['arrival_ask_at' => now(), 'updated_at' => now()]);
+        } catch (\Throwable $e) {
+            Log::warning('declineArrivalHere failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
+        }
+        return ['ok' => true, 'message' => ''];
+    }
+
     /** Metres between two pins. Local so the heartbeat path pulls in no controller. */
     private function haversine(float $lat1, float $lon1, float $lat2, float $lon2): float
     {
@@ -2406,6 +2972,59 @@ class WorkshopVisitService
             Log::warning('tripFor failed', ['user' => $userId, 'error' => $e->getMessage()]);
         }
         return null;
+    }
+
+    /**
+     * ⭐⭐ "HE IS AT THE WORKSHOP — CARRY ON, BUT KNOW IT." The ONE warning every
+     *    order-side door hands back (11-Sep-2026).
+     *
+     * ⚠⚠ THIS REPLACES A REFUSAL THAT COST A REAL ASSIGNMENT. The assign doors used to
+     *    answer 409 `needs_confirmation` and wait for a client to re-send `confirm`. No
+     *    client ever learned to, so the store tablet read "Failed to assign rider" and the
+     *    order could not be given to him at all. The owner's rule is the opposite way round:
+     *    **out for delivery is not on the road** — nothing moves until Dispatch — so assigning
+     *    to a man at the workshop is ordinary, and only DISPATCH may stop (and even then with
+     *    an override).
+     *
+     * ⭐ Returns NULL for the overwhelmingly common case, so a caller may splice it straight
+     *   into a success payload and a client that has never heard of `warning` is unaffected.
+     * ⭐ The SENTENCE IS THE SERVER'S (`tripFor()->label`), the same words the live card, the
+     *   van board and the push use — the phone must not compose a second wording.
+     * ⚠ Fails OPEN and SILENT: a lookup wobble must never cost an assignment. That is the
+     *   whole lesson of the 11-Sep incident.
+     *
+     * @param  string $context  'assign' | 'out_for_delivery' | 'auto_assign' — logged, so the
+     *                          log finally shows these events (the 409 path logged nothing).
+     * @return array{kind:string,label:string,label_ur:string,visit_time:?string,
+     *               vehicle_name:?string,workshop:?string,state:string}|null
+     */
+    public function warningFor(int $riderId, string $context = 'assign', array $meta = []): ?array
+    {
+        if ($riderId <= 0) return null;
+        try {
+            $trip = $this->tripFor($riderId);
+            if (!$trip || empty($trip['is_active'])) return null;
+
+            Log::info('Order assigned to a rider on a workshop trip', [
+                    'rider_id' => $riderId,
+                    'context'  => $context,
+                    'state'    => $trip['state'] ?? null,
+                    'visit_id' => $trip['visit_id'] ?? null,
+                ] + $meta);
+
+            return [
+                'kind'         => 'workshop',
+                'label'        => (string) ($trip['label'] ?? 'He is at the workshop'),
+                'label_ur'     => (string) ($trip['label_ur'] ?? $trip['label'] ?? ''),
+                'visit_time'   => $trip['visit_time']   ?? null,
+                'vehicle_name' => $trip['vehicle_name'] ?? null,
+                'workshop'     => $trip['workshop']     ?? null,
+                'state'        => (string) ($trip['state'] ?? ''),
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('workshop warning skipped', ['rider' => $riderId, 'error' => $e->getMessage()]);
+            return null;
+        }
     }
 
     /**
@@ -2716,6 +3335,25 @@ class WorkshopVisitService
          */
         foreach ($rows as $r) {
             if (!empty($r['no_keeper_since'])) continue;
+            /**
+             * 🚦⭐ HIS OWN CARD LEARNS WHERE HE IS IN THE ERRAND (11-Sep-2026).
+             *
+             * ⚠⚠ Until now this row carried only the DATE, so after he pressed "Workshop jaa
+             *    raha hoon" his own vehicle page read exactly as it had before he set off —
+             *    while every manager's screen had already moved to "going to the workshop".
+             *    The man doing the errand was the last person able to see it.
+             * ⚠ The label is `tripFor()`'s, not a second wording, and it is null unless a trip
+             *   is actually running.
+             */
+            try {
+                $trip = $this->tripFor($userId, null, false);
+                $r['trip_state'] = $trip['state'] ?? null;
+                $r['trip_label'] = ($trip && !empty($trip['is_active']))
+                    ? ($trip['label_ur'] ?? $trip['label'] ?? null) : null;
+            } catch (\Throwable $e) {
+                $r['trip_state'] = null;
+                $r['trip_label'] = null;
+            }
             return $r;
         }
         return null;

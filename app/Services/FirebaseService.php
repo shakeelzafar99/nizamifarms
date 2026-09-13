@@ -850,6 +850,23 @@ class FirebaseService
                 return;
             }
 
+            /**
+             * ⏳ NOT DONE HERE ON PURPOSE — clearing the OTHER planners' cards the instant one
+             *    of them decides (11-Sep-2026).
+             *
+             * A decided proposal already leaves every list by construction (the queue filters
+             * on `proposed`); what is missing is only the speed — up to one 5-minute poll, and
+             * a second planner pressing Approve meanwhile gets "Someone has already approved
+             * that one", which is correct and harmless.
+             *
+             * ⚠⚠ The obvious fix — a silent data-only nudge to the planner group — CANNOT be
+             *    done through this class as it stands: `sendToDevice()` puts the `notification`
+             *    array straight into the FCM message, so an empty one sends `"notification":{}`
+             *    and every planner's phone shows a BLANK tray notification on every approval.
+             *    Trading a 5-minute stale card for silent junk on real staff phones is a bad
+             *    deal, so the phone refetches on resume instead (WorkshopApprovalBanner), and a
+             *    proper data-only send path is left as its own piece of work.
+             */
             if ($event === 'declined' || $event === 'auto_declined') {
                 // ⚠ Only the person who asked. The rider never knew there was a question.
                 if ($bookedBy && $bookedBy !== $actorId) {
@@ -1081,7 +1098,10 @@ class FirebaseService
                 } catch (\Throwable $e) {
                     $eta = '';
                 }
-                $body = "{$rider} → {$place} with {$bike}{$eta}. Don't assign him orders.";
+                // ⚠⚠ WAS "Don't assign him orders." — the opposite of the 11-Sep ruling. Assign
+                //    freely; it is DISPATCH that waits for him. A push is the least correctable
+                //    surface there is, so it must not carry a retired instruction.
+                $body = "{$rider} → {$place} with {$bike}{$eta}. Assign freely — dispatch when he is back.";
                 $this->sendToPermissionGroup($DISPATCH,
                     ['title' => '🔧 Going to the workshop', 'body' => $body],
                     $mgr + ['event' => 'departed'], 'shift_notifications');

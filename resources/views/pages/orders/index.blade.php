@@ -1739,7 +1739,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
          order" is the one thing the dispatcher must read off this row.
          ⚠ The sentence is the SERVER's (`workshop_trip.label`) — the same words the store
          phone, the van board and the push all use, so the ETA cannot be phrased two ways. */
-    var wsTrip = disp.workshop_trip || null;
+    /* ⚠ `disp` is UNDEFINED for every rider with nothing out for delivery — off-duty riders holding
+       orders and free on-duty riders alike (the live-status map is keyed only by dispatch rows).
+       Reading `.workshop_trip` off it threw, the whole map() aborted, and the panel went blank
+       (11-Sep-2026). Every sibling helper already guards with `(disp||{})`; so does this now. */
+    var wsTrip = (disp || {}).workshop_trip || null;
     if(status === 'workshop_en_route' || status === 'at_workshop'){
       st = (wsTrip && wsTrip.label) ? wsTrip.label
          : (status === 'at_workshop' ? '🔧 At the workshop' : '🔧 Going to the workshop');
@@ -1767,7 +1771,11 @@ button[onclick*="switchToShopifyApprovals"] { display: none !important; }
       rowTitle = (wsTrip.label || 'At the workshop')
         + (wsTrip.visit_time ? ' · appointment ' + wsTrip.visit_time : '')
         + (wsTrip.vehicle_name ? ' · ' + wsTrip.vehicle_name : '')
-        + ' — do not assign him orders.';
+        /* ⚠⚠ WAS "do not assign him orders" — wrong as of 11-Sep. Assigning and marking out
+             for delivery are desk actions and are explicitly allowed; the only thing that has
+             to wait for him is DISPATCH. This tooltip sits on the very card a dispatcher uses
+             to pick a rider, so it was telling him not to do what the release had unblocked. */
+        + ' — assign freely; dispatch when he is back.';
     }
     return '<div class="nfrc-row '+cls+offCls+selCls+'" data-rider="'+id+'" onclick="nfFilterTableByRider('+id+", '"+safe+"')\" title=\""+esc(rowTitle)+"\">"
       + '<span class="nfrc-dot" style="background:'+dot+'"></span>'
@@ -6240,10 +6248,22 @@ function loadEditForm(order) {
                         if (!result.success) {
                             throw new Error(result.message || 'Failed');
                         }
-                        
+
+                        /* 🔧⭐ HIS MACHINE IS AT THE WORKSHOP — assigned anyway, and said ONCE
+                             (owner ruling, 11-Sep-2026: out for delivery is not on the road).
+                           ⚠⚠ This replaces a REFUSAL that could not be answered. The page used
+                              to send `confirmed` while the server read `confirm`, so even the
+                              hand-written override was dead code — and the store simply could
+                              not give the order to the man. The stop now lives on Dispatch.
+                           ⚠ Shown BEFORE the reload, because the reload throws the page away. */
+                        if (result.warning && result.warning.kind === 'workshop') {
+                            alert('🔧 ' + (result.warning.label || 'He is at the workshop')
+                                + '\n\nOrder assign ho gaya hai. Dispatch tab karein jab woh wapas aa jaye.');
+                        }
+
                         // Success!
                         location.reload();
-                        
+
                     } catch(error) {
                         alert('Assign rider failed: ' + error.message);
                         rBtn.textContent = 'Assign'; 
@@ -7957,8 +7977,18 @@ function openQuickRiderAssign(orderId, currentRiderId, currentRiderName) {
                             if (aJson.ledger_updated) {
                                 successMsg += ' (Ledger updated)';
                             }
+                            /* 🔧⭐ HIS MACHINE IS AT THE WORKSHOP — the quick-assign twin of the
+                                 notice in the detail modal. Appended to the SAME toast rather
+                                 than raised as a second box: this path is the fast one, and an
+                                 alert here would make assigning a rider a two-click job.
+                               ⚠ The sentence is the SERVER's, so the phone, the desk and the
+                                 live card cannot word it three ways. */
+                            if (aJson.warning && aJson.warning.kind === 'workshop') {
+                                successMsg += ' — 🔧 ' + (aJson.warning.label || 'at the workshop')
+                                            + '. Dispatch when he is back.';
+                            }
                             showToast(successMsg, 'success');
-                            
+
                             // Close modal
                         document.getElementById('quickRiderModal').remove();
                             

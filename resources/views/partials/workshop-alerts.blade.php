@@ -23,6 +23,9 @@
      this person, not something that already happened. Empty for anyone else. --}}
 <div id="wsApprovals" style="display:flex;flex-direction:column;gap:8px;"></div>
 <div id="wsAlerts" style="display:flex;flex-direction:column;gap:8px;"></div>
+{{-- 🚦 Who is away at a workshop RIGHT NOW. Below the two above on purpose: those announce a
+     decision waiting on you, this is background state you need while you dispatch. --}}
+<div id="wsLive" style="display:flex;flex-direction:column;"></div>
 <script>(function(){var h=document.getElementById('nfCornerStack');if(!h){h=document.createElement('div');h.id='nfCornerStack';h.style.cssText='position:fixed;right:16px;bottom:16px;z-index:10990;display:flex;flex-direction:column;gap:8px;max-width:360px;';document.body.appendChild(h);}['wsApprovals','wsAlerts'].forEach(function(id){var me=document.getElementById(id);if(me&&me.parentNode!==h)h.appendChild(me);});})();</script>
 <script>
 (function(){
@@ -332,11 +335,40 @@
       .catch(function(){});
   }
 
+  /**
+   * 🚦⭐⭐ WHO IS AWAY AT A WORKSHOP RIGHT NOW (promised 10-Sep for the desk, built 11-Sep).
+   *
+   * ⚠⚠ THE PHONE HAS HAD THIS SINCE SEP-10 AND THE BROWSER NEVER DID. A manager working at
+   *    his desk could hand an order to a man halfway to Ali Motors with nothing on screen
+   *    saying so — which is precisely the situation the whole round exists to prevent.
+   *
+   * ⭐ NOT dismissible and NOT keyed to `ws_seen_visit_id`, unlike the booking notice above:
+   *   that one announces a plan once, this one describes a state that is TRUE RIGHT NOW and
+   *   must vanish only when it stops being true. A "seen" flag would hide a live fact.
+   * ⚠ The sentence is the SERVER's (`label`), the same words the live rider card, the van
+   *   board and the push use.
+   */
+  function renderLive(j){
+    var box = document.getElementById('wsLive');
+    if(!box) return;
+    var trips = (j && j.live_trips) || [];
+    if(!trips.length){ box.innerHTML=''; return; }
+    box.innerHTML = trips.map(function(t){
+      return '<div style="background:#92400E;color:#fff;border-radius:10px;padding:9px 12px;'
+           + 'box-shadow:0 3px 10px rgba(0,0,0,.25);font-size:12.5px;line-height:1.45;margin-top:6px;">'
+           + '<b>🔧 ' + esc(t.rider_name || 'A rider') + '</b><br>'
+           + '<span style="opacity:.92;">' + esc(t.label || 'at the workshop') + '</span>'
+           + (t.vehicle_name ? '<br><span style="opacity:.8;">' + esc(t.vehicle_name) + '</span>' : '')
+           + '<br><span style="opacity:.8;">Assign freely — dispatch when he is back.</span>'
+           + '</div>';
+    }).join('');
+  }
+
   function poll(){
     pollApprovals();
     fetch('/orders/riders-map/fleet/workshop/alerts',{headers:{'Accept':'application/json'}})
       .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(j){ if(j && j.success) render(j); })
+      .then(function(j){ if(j && j.success){ render(j); renderLive(j); } })
       .catch(function(){});
   }
   poll();

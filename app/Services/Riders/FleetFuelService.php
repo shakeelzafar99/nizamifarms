@@ -92,6 +92,45 @@ class FleetFuelService
         $names = DB::table('t_sys_user')->whereIn('id', $ids)->pluck('fullname', 'id')->toArray();
         $service = $this->serviceState(array_keys($profiles));
 
+        /**
+         * 🏠 HOME LOCATION for the whole roster (Sep-2026, owner ask: the pin belongs
+         * "with the riders in the fleet"). This table IS the riders list on the Bikes
+         * tab, so the pin has to arrive with the row rather than be fetched per rider.
+         *
+         * ⚠ ONE query for the month × roster — this loop already runs over every rider
+         *   and must never issue a query inside it (the N+1 that cost the payroll page
+         *   14 seconds). Two queries total: the pins, then the names of whoever set them.
+         * ⚠ Guarded: a database without the home-journey columns returns no pins and
+         *   every row simply reads as "not set", exactly as it does today.
+         */
+        $homePins = [];
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasColumn('t_ops_rider_profile', 'home_latitude')) {
+                $pinSvc = new \App\Services\Riders\RiderHomePinService();
+                $pinRows = DB::table('t_ops_rider_profile')->whereIn('user_id', $ids)
+                    ->whereNotNull('home_latitude')->whereNotNull('home_longitude')
+                    ->get(['user_id', 'home_latitude', 'home_longitude', 'home_radius_m',
+                           'home_set_by', 'home_set_at']);
+                $setterIds = $pinRows->pluck('home_set_by')->filter()->unique()->all();
+                $setters = $setterIds
+                    ? DB::table('t_sys_user')->whereIn('id', $setterIds)->pluck('fullname', 'id')->toArray()
+                    : [];
+                foreach ($pinRows as $pr) {
+                    $homePins[(int) $pr->user_id] = [
+                        'lat' => (float) $pr->home_latitude,
+                        'lng' => (float) $pr->home_longitude,
+                        'radius_m' => $pr->home_radius_m !== null ? (int) $pr->home_radius_m : null,
+                        'set_at' => $pr->home_set_at,
+                        'set_by_name' => $pr->home_set_by !== null
+                            ? ($setters[(int) $pr->home_set_by] ?? null) : null,
+                        'maps_url' => $pinSvc->mapsUrl((float) $pr->home_latitude, (float) $pr->home_longitude),
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            $homePins = [];   // never let a missing pin break the month table
+        }
+
         $riders = [];
         $offRoster = [];        // spend by people who are not delivery riders
         foreach ($ids as $uid) {
@@ -249,6 +288,15 @@ class FleetFuelService
                 'fuel_per_all_km' => ($isCompany === true && $totalKm > 0)
                     ? round($c['fuel_rs'] / $totalKm, 2) : null,
                 'no_meter_days' => $m['no_meter_days'],
+                /**
+                 * 🏠 Where he takes the company vehicle at night — null when none is set.
+                 *
+                 * ⚠ Deliberately independent of `bike` above. The pin is now kept whatever
+                 *   he is riding today (a rider on his own bike this week is back on a
+                 *   company one next week), so this must NOT be hidden for an 'own' row —
+                 *   hiding it is how the old code lost pins in the first place.
+                 */
+                'home_pin'      => $homePins[$uid] ?? null,
                 // The last odometer we have from a FILL, so the new-claim form can
                 // say "that's N km since his last fill" while the manager types —
                 // the same figure the approver later sees on the claim itself.

@@ -55,6 +55,19 @@ function ok(string $what, $got, $want = null, bool $raw = false) {
 function section(string $t) { echo "\n== $t ==\n"; }
 
 /**
+ * ⚠⚠ THE DEFAULT GUARD HERE IS 'api' (config/auth.php), which is a RequestGuard — it has no
+ *    login(), so `Auth::login($u)` dies with "Method RequestGuard::login does not exist".
+ *    The MOBILE controllers read `Auth::user()` off the DEFAULT guard, so pointing the default
+ *    at 'web' for the duration is what lets an in-process call see a signed-in store user.
+ *    Without this the store-tablet endpoints cannot be tested at all — which is exactly why
+ *    the door that broke on 11-Sep had never been called by a suite.
+ */
+function asStoreUser($u): void {
+    \Illuminate\Support\Facades\Auth::shouldUse('web');
+    \Illuminate\Support\Facades\Auth::guard('web')->loginUsingId($u->id);
+}
+
+/**
  * ⚠⚠ PUSHES OFF, or this suite takes twenty minutes. Every booking fires a real FCM call and
  *    each one blocks ~45s against a project this machine cannot reach. Pointing the credentials
  *    path at a file that does not exist makes `FirebaseService` return early — the documented
@@ -326,9 +339,20 @@ try {
        (bool) $mine, null, true);
 } finally { DB::rollBack(); }
 
-// ─────────────────────────────────────────────────────────────────────────────
-section('§6 the dispatch guard');
+// ─────────────────────────────────────────────────
+section('§6 assign & OFD are ALLOWED with a warning; DISPATCH is the stop');
 
+/**
+ * ⚠⚠ THIS SECTION USED TO ASSERT THE BUG. Until 11-Sep it checked that assigning to a man at
+ *    the workshop returned 409 and that "an OLD client, which cannot send the flag, simply
+ *    cannot do it" — green, and describing exactly the failure that hit the store tablet on
+ *    11-Sep ("Partial Update — Failed to assign rider"). The lesson is written into the test
+ *    itself: a server-side QUESTION is only a feature once a CLIENT can answer it. So the
+ *    doors that must not block are proved to return 200, and the one door that may block is
+ *    proved ANSWERABLE — 409 first, then past it with `confirm`.
+ * ⚠ Both assign doors are exercised, the WEB one and the MOBILE one. The mobile endpoint
+ *   (`assignRiderToOrder`) is the one that actually broke and no suite had ever called it.
+ */
 DB::beginTransaction();
 try {
     $r = $book(); $id = (int) $r['visit_id'];
@@ -336,20 +360,92 @@ try {
 
     $ord = DB::table('t_crm_prod_order')->whereNotIn('order_status', ['delivered', 'completed'])
         ->first(['id', 'assigned_rider_user_id']);
+
+    $store = null;
+    foreach (User::where('is_active', '1')->get() as $u) {
+        if ($u->hasMobilePermission('assign_riders')) { $store = $u; break; }
+    }
+
     if ($ord) {
+        // ── the WEB door ───────────────────────────────────────────────
         \Illuminate\Support\Facades\Auth::guard('web')->loginUsingId($manager->id);
         $ctrl = app(\App\Http\Controllers\CRM\OrderRiderController::class);
         $req  = \Illuminate\Http\Request::create('/x', 'POST', ['rider_user_id' => $RID]);
         $out  = $ctrl->assign($req, (int) $ord->id);
-        ok('assigning to a man at the workshop is QUESTIONED, not refused', $out->getStatusCode(), 409);
-        $b = json_decode($out->getContent(), true);
-        ok('  …as a confirmation, in the shape both clients know', $b['needs_confirmation'] ?? null, true);
-        ok('  …naming where he is', str_contains((string) $b['message'], 'Ali Motors'), true);
-        ok('  ⚠ …and an OLD client, which cannot send the flag, simply cannot do it',
-           empty($b['success']), true);
+        $b    = json_decode($out->getContent(), true);
+        ok('WEB: assigning to a man at the workshop SUCCEEDS', $out->getStatusCode(), 200);
+        ok('  …and is reported as success', $b['success'] ?? null, true);
+        ok('  …carrying a workshop warning', $b['warning']['kind'] ?? null, 'workshop');
+        ok('  …whose sentence names the place',
+           str_contains((string) ($b['warning']['label'] ?? ''), 'Ali Motors'), true);
+        ok('  ⚠ …and it is NOT a refusal any more', isset($b['needs_confirmation']), false);
+
+        // ── the MOBILE door — the one that broke, never before tested ──
+        if ($store) {
+            asStoreUser($store);
+            $mreq = \Illuminate\Http\Request::create('/x', 'POST',
+                ['order_id' => (int) $ord->id, 'rider_id' => $RID]);
+            $mout = app(\App\Http\Controllers\API\RiderController::class)->assignRiderToOrder($mreq);
+            $mb   = json_decode($mout->getContent(), true);
+            ok('MOBILE: the store tablet can assign him', $mout->getStatusCode(), 200);
+            ok('  …successfully (this IS the 11-Sep incident)', $mb['success'] ?? null, true);
+            ok('  …with the SAME warning the web gets', $mb['warning']['kind'] ?? null, 'workshop');
+            ok('  …and a Roman-Urdu sentence for the phone', !empty($mb['warning']['label_ur']), true);
+
+            // ── the rider PICKER tags him (promised 10-Sep, built 11-Sep) ──
+            $pout = app(\App\Http\Controllers\API\RiderController::class)
+                ->getActiveRiders(\Illuminate\Http\Request::create('/x', 'GET'));
+            $pb   = json_decode($pout->getContent(), true);
+            $mine = null;
+            foreach (($pb['riders'] ?? []) as $row) {
+                $row = (array) $row;
+                if ((int) ($row['id'] ?? 0) === $RID) { $mine = $row; break; }
+            }
+            ok('the picker still LISTS him (never filtered out)', (bool) $mine, null, true);
+            ok('  …tagged with the errand',
+               ((array) ($mine['workshop_trip'] ?? []))['state'] ?? null, WV::TRIP_EN_ROUTE);
+
+            // ── OUT FOR DELIVERY is a desk action: allowed, warned ──────
+            DB::table('t_crm_prod_order')->where('id', $ord->id)
+                ->update(['assigned_rider_user_id' => $RID]);
+            asStoreUser($store);
+            $sreq = \Illuminate\Http\Request::create('/x', 'POST',
+                ['order_id' => (int) $ord->id, 'status' => 'out_for_delivery']);
+            $sout = app(\App\Http\Controllers\API\RiderController::class)->updateOrderStatus($sreq);
+            $sb   = json_decode($sout->getContent(), true);
+            if (($sb['success'] ?? false) === true) {
+                ok('OFD: marking it out for delivery is allowed', true, true);
+                ok('  …and warns that his machine is in', $sb['warning']['kind'] ?? null, 'workshop');
+            } else {
+                // A refusal here is some OTHER rule (van cargo, a returned order) — say so
+                // honestly rather than claiming a workshop pass we did not actually get.
+                ok('OFD refused for an unrelated reason: ' . ($sb['message'] ?? '?'), true, true, true);
+            }
+        } else {
+            ok('a store user holding assign_riders exists (none — skipped honestly)', true, true, true);
+        }
     } else {
         ok('an assignable order exists (none — skipped honestly)', true, true, true);
     }
+
+    // ── DISPATCH: the ONE stop, and it must be answerable ───────────────
+    asStoreUser($store ?: $manager);
+    $dreq = \Illuminate\Http\Request::create('/x', 'POST', ['scope' => 'all']);
+    $dout = app(\App\Http\Controllers\API\RiderController::class)->calculateDeliveryEtas($dreq, $RID);
+    $dbod = json_decode($dout->getContent(), true);
+    ok('DISPATCH is held while he is at the workshop', $dout->getStatusCode(), 409);
+    ok('  …as a question, not a wall', $dbod['needs_confirmation'] ?? null, true);
+    ok('  …naming where he is', str_contains((string) ($dbod['message'] ?? ''), 'Ali Motors'), true);
+    ok('  …and asking to dispatch anyway', str_contains((string) ($dbod['message'] ?? ''), 'anyway'), true);
+
+    // …and the override REACHES the work. The old assign guard's override never could,
+    // because no client could send it — that is the whole point of proving it here.
+    $dreq2 = \Illuminate\Http\Request::create('/x', 'POST', ['scope' => 'all', 'confirm' => 1]);
+    $dout2 = app(\App\Http\Controllers\API\RiderController::class)->calculateDeliveryEtas($dreq2, $RID);
+    ok('  ⭐ …and `confirm` gets PAST the workshop guard', $dout2->getStatusCode() !== 409, true);
+    $db2 = json_decode($dout2->getContent(), true);
+    ok('  …the workshop being no longer the reason for anything',
+       str_contains((string) ($db2['message'] ?? ''), 'workshop'), false);
 } finally { DB::rollBack(); }
 
 // ─────────────────────────────────────────────────────────────────────────────

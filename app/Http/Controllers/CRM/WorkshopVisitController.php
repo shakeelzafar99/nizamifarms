@@ -374,11 +374,150 @@ class WorkshopVisitController extends Controller
         return response()->json(['success' => true, 'message' => $res['message']]);
     }
 
+    public function apiVisitTypes(Request $r, $id) { $this->mobileContext = true; return $this->visitTypes($r, $id); }
+
     /**
-     * Mark done. When a service was performed the caller records it FIRST through
-     * `markServiced` (the one door for service records) and passes the resulting
-     * `service_log_id` here — so nothing about which clock moves is decided twice.
+     * 🔧 THE JOB LIST FOR **THIS** VISIT'S MACHINE — for whoever is closing it.
+     *
+     * ⚠⚠ WHY A SECOND ENDPOINT. `/workshop-visits/outcome` is the RIDER's, scoped to his own
+     *    awaited visit; a manager closing somebody else's gets nothing from it and the web
+     *    dialog therefore had no picker at all — which is half of why Shabib saw two types.
+     *    This one is keyed by the visit, so the desk and the phone ask the same question about
+     *    the same machine.
+     * ⭐ `typesForClose`, so every active job is offered and each row says whether it counts
+     *   down. Work that happened must always be recordable.
      */
+    public function visitTypes(Request $request, $id)
+    {
+        $user = $request->user() ?: auth()->user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+
+        $v = $this->visits->find((int) $id);
+        if (!$v) return response()->json(['success' => false, 'message' => 'That visit no longer exists.'], 404);
+
+        $class = !empty($v['vehicle_id'])
+            ? (new \App\Services\Riders\VehicleService())->classOf((int) $v['vehicle_id'])
+            : null;
+
+        return response()->json([
+            'success' => true,
+            'booked_type_id' => $v['maintenance_type_id'] ? (int) $v['maintenance_type_id'] : null,
+            'vehicle_name'   => $v['vehicle_name'] ?? null,
+            'class'          => $class,
+            'types'          => app(\App\Services\Riders\ServiceRecordService::class)->typesForClose($class),
+            /**
+             * The manager may be paying on the spot, so the SAME accounts the Bikes bill form
+             * offers — business unit 1 (Bikes is Nizami Farms operations, never Khaas), stated
+             * here exactly as it is there so the two doors cannot drift apart.
+             */
+            'pay_sources'    => (function () {
+                try {
+                    return app(\App\Services\FIN\PaymentSourceService::class)->sourcesFor(
+                        auth()->user(), 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE);
+                } catch (\Throwable $e) { return []; }
+            })(),
+        ]);
+    }
+
+    public function apiArrivedHere(Request $r, $id) { $this->mobileContext = true; return $this->arrivedHere($r, $id); }
+    public function apiNotHere(Request $r, $id)     { $this->mobileContext = true; return $this->notHere($r, $id); }
+    public function apiSnooze(Request $r, $id)      { $this->mobileContext = true; return $this->snooze($r, $id); }
+
+    /**
+     * ⏰ "Baad mein (6h)" — this planner has seen it and is not the one dealing with it now.
+     *
+     * ⭐ Not a decision. The visit stays open for everyone else and returns to him in six
+     *   hours if nobody has dealt with it — which is exactly the case the owner described,
+     *   where Taimur is only informed until the day Farooq is on leave.
+     */
+    public function snooze(Request $request, $id)
+    {
+        $user = $request->user() ?: auth()->user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        $res = $this->visits->snoozeProposal($user, (int) $id);
+        return response()->json([
+            'success' => (bool) $res['ok'],
+            'message' => $res['message'] ?? '',
+        ], $res['ok'] ? 200 : 422);
+    }
+
+    /**
+     * 📍⭐⭐ "HAAN, YAHI JAGAH HAI" — he is at the workshop, and this IS where it is.
+     *
+     * ⚠ The coordinates come from the phone's CURRENT fix, not from the ask that was armed
+     *   earlier: he may have walked the last fifty metres, and the pin should be where the
+     *   workshop is rather than where he first stopped.
+     * ⚠ Accuracy is required to be sane here as well as at the ask — this writes a location
+     *   every future visit will be judged against, so a 2 km fix must not become the pin.
+     */
+    public function arrivedHere(Request $request, $id)
+    {
+        /**
+         * ⚠⚠ COORDINATES ARE OPTIONAL, AND THAT IS THE WHOLE DIFFERENCE BETWEEN THE TWO
+         *    CALLERS. The RIDER's phone sends its fix, so answering "yes" both stamps the
+         *    arrival and PINS the workshop for everyone afterwards. A MANAGER at his desk is
+         *    not standing there — he can only vouch that the man arrived, so he stamps and
+         *    pins nothing. Requiring a fix from him would have made the desk button impossible;
+         *    accepting his browser's location would have pinned the workshop to the office.
+         */
+        $data = $request->validate([
+            'latitude'  => 'nullable|numeric|between:-90,90',
+            'longitude' => 'nullable|numeric|between:-180,180',
+            'accuracy'  => 'nullable|numeric',
+        ]);
+        $user = $request->user() ?: auth()->user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+
+        $hasFix = $request->filled('latitude') && $request->filled('longitude');
+
+        if ($hasFix && $request->filled('accuracy') && (float) $data['accuracy'] > 250) {
+            return response()->json(['success' => false, 'message' =>
+                'GPS signal abhi kamzor hai — thori der baad dobara koshish karein.'], 422);
+        }
+
+        $res = $hasFix
+            ? $this->visits->confirmArrivalHere($user, (int) $id,
+                (float) $data['latitude'], (float) $data['longitude'])
+            : $this->visits->confirmArrivalByManager($user, (int) $id);
+
+        return response()->json([
+            'success'     => (bool) $res['ok'],
+            'location_id' => $res['location_id'] ?? null,
+            'message'     => $res['message'] ?? '',
+        ], $res['ok'] ? 200 : 422);
+    }
+
+    /** "Nahi, abhi nahi" — and the dismiss, which takes the same path. Never a yes. */
+    public function notHere(Request $request, $id)
+    {
+        $user = $request->user() ?: auth()->user();
+        if (!$user) return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
+        $res = $this->visits->declineArrivalHere($user, (int) $id);
+        return response()->json(['success' => (bool) $res['ok']]);
+    }
+
+    /**
+     * 📷 The visit's proof photo. Same rule and same folder as the Bikes screen's — one
+     *    storage shape, so the history list can render either without asking where it came
+     *    from. Never fatal: a picture must not cost a closed visit.
+     */
+    private function storeVisitPhoto(Request $request): ?string
+    {
+        try {
+            $file = $request->file('photo') ?: $request->file('bill_image');
+            if (!$file) return null;
+            $now  = now();
+            $name = 'svc_' . (int) (auth()->id() ?: 0) . '_' . $now->format('Ymd_His') . '_'
+                  . substr(bin2hex(random_bytes(3)), 0, 6) . '.jpg';
+            $path = 'service-logs/' . $now->format('Y') . '/' . $now->format('m') . '/' . $name;
+            \Storage::disk('public')->put($path, file_get_contents($file));
+            return $path;
+        } catch (\Throwable $e) {
+            \Log::warning('workshop visit photo not stored', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
     /**
      * 💰 File the bill the workshop handed over, against the service just recorded.
      *
@@ -484,6 +623,13 @@ class WorkshopVisitController extends Controller
             'amount'                    => 'nullable|numeric|min:1|max:9999999',
             'payment_source_account_id' => 'nullable|integer',
             'bill_image'                => 'nullable|image|max:5120',
+            /**
+             * 📷 THE PROOF PHOTO, INDEPENDENT OF ANY AMOUNT (owner ruling, 11-Sep-2026).
+             *    `bill_image` rides on the expense claim and therefore needs money; `photo`
+             *    is kept on the service record itself and needs nothing. Both accepted, so a
+             *    phone built before this change still gets its picture stored.
+             */
+            'photo'                     => 'nullable|image|max:5120',
         ]);
 
         $user  = $request->user() ?: auth()->user();
@@ -538,6 +684,17 @@ class WorkshopVisitController extends Controller
             if (!$type['ok']) {
                 return response()->json(['success' => false, 'message' => $type['message']], 422);
             }
+            /**
+             * ⭐⭐ AN UNSCHEDULED JOB IS STILL RECORDED, IT JUST RESETS NOTHING (owner ruling,
+             *    11-Sep-2026: *"if it's not a regular maintenance, if it's something else, he
+             *    should be able to add that as well. In which case, no meter will be reset."*)
+             *
+             * ⚠⚠ THIS IS THE CLOSE THAT USED TO BE IMPOSSIBLE. On prod only two of the four
+             *    types carry a kilometre figure, so `resolveType()` refused the other two and
+             *    a manager who had just paid for brake shoes could not close the visit at all
+             *    — the "only 2 categories" report. He can now, and the countdown stays honest.
+             */
+            $countsDown = (bool) ($type['counts_down'] ?? true);
             $recorded = $rec->record([
                 'rider_id'   => (int) $visit['user_id'],
                 /**
@@ -557,6 +714,16 @@ class WorkshopVisitController extends Controller
                 'date'       => substr((string) $visit['visit_date'], 0, 10),
                 'type'       => $type['type'],
                 'actor_id'   => (int) $user->id,
+                // ⭐ See the ruling above: work is logged, the clock moves only if the job
+                //   actually counts down on THIS machine.
+                'counts_down' => $countsDown,
+                /**
+                 * 📷 THE RIDER'S PROOF, kept whether or not he paid (owner ruling, 11-Sep).
+                 *    He is handed a receipt at the counter; the manager who enters the amount
+                 *    days later needs to see it. Stored on the service log, so a bill filed
+                 *    afterwards inherits it instead of the photo being lost with the moment.
+                 */
+                'photo_path' => $this->storeVisitPhoto($request),
                 'note'       => 'Workshop visit #' . (int) $id
                     . ((int) $visit['user_id'] === (int) $user->id ? ' — confirmed by the rider' : ''),
             ]);
@@ -617,14 +784,29 @@ class WorkshopVisitController extends Controller
             'success' => true,
             'visit'   => $v,
             /**
-             * What the prompt needs to ask for: the job it was booked for, and every
-             * scheduled type in case it turned out to be a different one.
-             * ⭐ Narrowed to the VISIT'S OWN MACHINE (Sep-2026) — a van driver is not
-             *   offered a bike's jobs, and the figures shown are the ones that machine
-             *   actually follows.
+             * 📍 "ARE YOU AT THE WORKSHOP?" — rides on the endpoint the phone ALREADY polls
+             *    (every 60s, plus on resume and on `workshop:changed`), so the arrival sheet
+             *    needs no timer of its own. That is deliberate: a client-side countdown is
+             *    exactly how one of these boxes gets stuck on screen.
+             * ⚠ Null whenever the question does not apply — answered, stamped by somebody
+             *   else, visit closed, or the ask gone stale — so the sheet closes itself.
+             */
+            'arrival_prompt' => $this->visits->arrivalPromptFor((int) $user->id),
+            /**
+             * What the prompt needs to ask for: the job it was booked for, and every OTHER
+             * job it might have turned out to be.
+             *
+             * ⭐ Narrowed to the VISIT'S OWN MACHINE (Sep-2026) — a van driver is not offered
+             *   a bike's jobs, and the figures shown are the ones that machine follows.
+             * ⚠⚠ `typesForClose`, NOT `scheduledTypes` (11-Sep-2026). The old list answered
+             *    "which countdowns can be reset", which on prod is two of four types — so a
+             *    manager who had just paid for brake shoes was offered Oil Change or nothing.
+             *    Work that happened must always be recordable; each row now carries
+             *    `counts_down` so the picker can say which ones reset a clock and which are
+             *    simply logged.
              */
             'types'   => $v
-                ? app(\App\Services\Riders\ServiceRecordService::class)->scheduledTypes(
+                ? app(\App\Services\Riders\ServiceRecordService::class)->typesForClose(
                     !empty($v['vehicle_id'])
                         ? (new \App\Services\Riders\VehicleService())->classOf((int) $v['vehicle_id'])
                         : null)
@@ -660,6 +842,20 @@ class WorkshopVisitController extends Controller
          */
         $out['pending_approvals'] = $this->visits->pendingApprovals($user, $this->mobileContext);
         $out['can_approve']       = $this->visits->canApprove($user, $this->mobileContext);
+
+        /**
+         * 🚦⭐ WHO IS AWAY AT A WORKSHOP RIGHT NOW — promised 10-Sep for the web corner, built
+         *    11-Sep. The phone has had this banner since the Sep-10 round; the desk never did,
+         *    so a manager on the browser could assign work to a man halfway to Ali Motors with
+         *    nothing on screen to tell him. Same `liveTrips()` the phone reads, so the two
+         *    surfaces cannot describe the same man differently.
+         * ⚠ Non-fatal: the notice must never cost the banner its approvals.
+         */
+        try {
+            $out['live_trips'] = $this->visits->liveTrips();
+        } catch (\Throwable $e) {
+            $out['live_trips'] = [];
+        }
 
         /**
          * ⏰ ONE implementation (10-Sep-2026): the day-before reminder, the 17:00 planner

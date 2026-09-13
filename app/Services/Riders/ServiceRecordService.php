@@ -57,6 +57,77 @@ class ServiceRecordService
         }
     }
 
+    /**
+     * ⭐⭐ EVERY JOB THAT CAN BE RECORDED — not only the ones with a countdown
+     *    (owner ruling, 11-Sep-2026).
+     *
+     * ⚠⚠ WHY THIS EXISTS. `scheduledTypes()` answers "which countdowns can be reset", and the
+     *    close dialogs were using it as if it answered "what can a workshop have done" — two
+     *    different questions. On prod only two of the four types carry a kilometre figure, so a
+     *    manager closing a visit saw TWO choices and no way to record the brake shoes he had
+     *    just paid for. The owner's rule: *"even though there are no intervals set, it should
+     *    still log it."* Work that happened must be recordable; whether a clock moves is a
+     *    SEPARATE fact, and it travels on the row as `counts_down`.
+     *
+     * ⭐ Scheduled jobs come FIRST so the ordinary case is still the top of the list, and every
+     *   row says which kind it is, so a picker can label the rest "no countdown" rather than
+     *   hiding them.
+     *
+     * @param ?string $class 'bike' | 'van' — null keeps the pre-class behaviour
+     * @return array<int, array> each row + counts_down:bool, applies:bool
+     */
+    public function typesForClose(?string $class = null): array
+    {
+        try {
+            $svc = app(MaintenanceTypeService::class);
+            $all = $svc->options();
+
+            /**
+             * ⚠⚠ THE UNION, NOT `optionsFor()` ALONE — and this is the whole van bug.
+             *    `optionsFor($class)` drops every type whose `applies_to` does not match, and
+             *    after the Sep-10 SQL every type defaults to **bike**. So a van's list came
+             *    back EMPTY and its visit could not be closed with a meter at all. Caught by
+             *    the proof, not by reading the code.
+             *
+             * ⭐ So: start from every active job, and let the class-resolved list supply the
+             *   per-class FIGURES for the ones that do apply. A job that does not apply to this
+             *   machine is still offered — labelled, and counting down nothing. A van job typed
+             *   as a bike job is a labelling error for a manager to fix later; it must never be
+             *   the reason the work cannot be written down.
+             */
+            $applicable = [];
+            if ($class !== null) {
+                foreach ($svc->optionsFor($class) as $t) {
+                    $applicable[(int) ($t['id'] ?? 0)] = $t;
+                }
+            }
+
+            $out = [];
+            foreach ($all as $raw) {
+                $id      = (int) ($raw['id'] ?? 0);
+                $applies = $class === null || isset($applicable[$id]);
+                // Per-class figures when they exist, the raw row otherwise.
+                $t       = $applies && isset($applicable[$id]) ? $applicable[$id] : $raw;
+
+                $counts = $applies
+                    && (!empty($t['has_schedule']) || (int) ($t['interval_km'] ?? 0) > 0);
+
+                $out[] = $t + [
+                    'counts_down' => $counts,
+                    'applies'     => $applies,
+                ];
+            }
+
+            usort($out, function ($a, $b) {
+                if ($a['counts_down'] !== $b['counts_down']) return $a['counts_down'] ? -1 : 1;
+                return strcasecmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? ''));
+            });
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
     /** The class of the machine this rider is on today — for the pickers and gates. */
     public function classForRider(?int $riderId, ?string $date = null): ?string
     {
@@ -140,8 +211,34 @@ class ServiceRecordService
         return self::$logVehMemo;
     }
 
+    /** @internal memo for logKeepsPhoto(); see logStampsVehicle() for why it is a static. */
+    private static ?bool $logPhotoMemo = null;
+
+    /**
+     * Does `t_fleet_service_log` carry the proof photo yet?
+     * (`PENDING-PROD-SEP12-2026-WORKSHOP-R2.sql`)
+     *
+     * ⚠ Before that SQL runs the photo is simply not kept — the service record itself is
+     *   written exactly as before, so this file is safe to upload first.
+     */
+    public static function logKeepsPhoto(): bool
+    {
+        if (self::$logPhotoMemo !== null) return self::$logPhotoMemo;
+        try {
+            self::$logPhotoMemo = Schema::hasTable('t_fleet_service_log')
+                && Schema::hasColumn('t_fleet_service_log', 'photo_path');
+        } catch (\Throwable $e) {
+            self::$logPhotoMemo = false;
+        }
+        return self::$logPhotoMemo;
+    }
+
     /** Test seam — see the ALTER-inside-a-transaction trap in the workshop round. */
-    public static function flushSchemaMemo(): void { self::$logVehMemo = null; }
+    public static function flushSchemaMemo(): void
+    {
+        self::$logVehMemo = null;
+        self::$logPhotoMemo = null;
+    }
 
     /**
      * ⭐⭐ WHICH MACHINE DOES THIS LOG ROW BELONG TO — the ONE rule every reader applies.
@@ -357,12 +454,46 @@ class ServiceRecordService
     {
         try {
             if (!Schema::hasColumn('t_fleet_service_log', 'request_id')) return;
-            $row = DB::table('t_fleet_service_log')->where('id', $logId)->first(['id', 'user_id', 'note']);
+            $cols = ['id', 'user_id', 'note'];
+            if (self::logKeepsPhoto()) $cols[] = 'photo_path';
+            $row = DB::table('t_fleet_service_log')->where('id', $logId)->first($cols);
             if (!$row) return;
             DB::table('t_fleet_service_log')->where('id', $logId)->update([
                 'request_id' => $requestId,
                 'note'       => mb_substr(trim(($row->note ? $row->note . ' · ' : '') . 'bill attached'), 0, 250),
             ]);
+
+            /**
+             * 📷⭐⭐ THE BILL INHERITS THE RIDER'S PHOTO (owner ruling, 11-Sep-2026).
+             *
+             * ⭐ This is the point of storing the picture on the WORK. The rider photographs
+             *   the receipt at the workshop and files nothing; days later a manager enters the
+             *   amount from the vehicle page — and the claim he creates now carries the same
+             *   photo, so whoever approves it can see what is being paid for. Before this, the
+             *   evidence and the money could never meet: a photo needed an amount, and the
+             *   amount arrived long after the photo could have been taken.
+             *
+             * ⚠ NEVER overwrites. A manager who attached his own picture to the claim has
+             *   given the better evidence; this only fills an empty hand.
+             * ⚠ Non-fatal: failing to decorate a claim must not unlink a filed bill.
+             */
+            if (!empty($row->photo_path ?? null)) {
+                try {
+                    // ⚠ `t_req_master` — the requests table (RequestModel::$table), NOT the
+                    //   't_sys_*' the naming convention would suggest. `attachments` is a JSON
+                    //   array of storage paths, the same shape RequestController::store writes.
+                    $req = DB::table('t_req_master')->where('id', $requestId)->first(['id', 'attachments']);
+                    $existing = $req && !empty($req->attachments) ? json_decode($req->attachments, true) : null;
+                    if ($req && empty($existing)) {
+                        DB::table('t_req_master')->where('id', $requestId)
+                            ->update(['attachments' => json_encode([$row->photo_path])]);
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('bill did not inherit the service photo',
+                        ['log' => $logId, 'request' => $requestId, 'error' => $e->getMessage()]);
+                }
+            }
+
             $this->bustCaches((int) $row->user_id);
         } catch (\Throwable $e) {
             Log::error('attachBillToService failed', ['log' => $logId, 'request' => $requestId, 'error' => $e->getMessage()]);
@@ -415,10 +546,18 @@ class ServiceRecordService
      */
     public function resolveType($typeId, ?string $class = null): array
     {
-        $scheduled = $this->scheduledTypes($class);
+        /**
+         * ⚠⚠ ASKED OF EVERY SELECTABLE JOB, NOT ONLY THE SCHEDULED ONES (11-Sep-2026). This
+         *    used to read `scheduledTypes()`, which on a VAN is empty — so a blank pick was
+         *    waved through as "no types exist here", and `record()` below then treated a null
+         *    type as "move the overall clock". A van service with no job named would have
+         *    reset the bike-style countdown for nothing. If the picker can offer anything at
+         *    all, a choice is required.
+         */
+        $selectable = $this->typesForClose($class);
 
         if (empty($typeId)) {
-            if ($scheduled) {
+            if ($selectable) {
                 // ⭐ REFUSED, never guessed (owner ruling 2-Sep).
                 return ['ok' => false, 'type' => null, 'message' =>
                     'Choose which service was done — the odometer alone does not say which '
@@ -426,7 +565,7 @@ class ServiceRecordService
             }
             // No type list at all (pre-batch-12): nothing to choose, behave as before
             // types existed rather than blocking the action outright.
-            return ['ok' => true, 'type' => null, 'message' => ''];
+            return ['ok' => true, 'type' => null, 'counts_down' => true, 'message' => ''];
         }
 
         $type = app(MaintenanceTypeService::class)->find($typeId);
@@ -434,38 +573,27 @@ class ServiceRecordService
             return ['ok' => false, 'type' => null, 'message' => 'That maintenance type no longer exists.'];
         }
         /**
-         * ⚠⚠ THE TEST IS "does this job count down ON THIS MACHINE", not "does it have
-         *    a kilometre figure" (Sep-2026). Two ways the old check was now wrong:
-         *    a TIME-based job has no km and would have been refused as "as conditions",
-         *    and a job with a bike figure but no VAN figure would have been accepted on
-         *    the van and then had nothing to reset.
+         * ⭐⭐ WORK THAT HAPPENED IS ALWAYS RECORDABLE (owner ruling, 11-Sep-2026).
+         *
+         * ⚠⚠ THIS USED TO REFUSE TWICE, AND BOTH REFUSALS WERE WRONG IN THE SAME WAY. A job with
+         *    no figure for this machine ("has no schedule for vans yet") and an as-conditions job
+         *    ("done as conditions require") were both turned away with "file it as a maintenance
+         *    request instead". But the bike HAD been to the workshop, the brake shoes HAD been
+         *    changed, and the man standing there with a receipt had nowhere to put it. Worse, the
+         *    two refusals were reachable only on prod, where just two of four types carry a
+         *    kilometre figure — which is why a manager saw a two-item list and assumed the app
+         *    was broken.
+         *
+         * ⭐ The question "may this be recorded?" is now always YES for an active type. The
+         *   separate question "does a countdown move?" is answered by `counts_down`, which
+         *   `record()` uses and the receipt states out loud. Nothing silently resets.
+         * ⚠ An unreadable or inactive type is still refused — that is a mis-selection, not work.
          */
-        if ($class !== null) {
-            $sched = $type->scheduleForClass($class);
-            if (!$type->appliesToClass($class)) {
-                return ['ok' => false, 'type' => null, 'message' =>
-                    '"' . $type->type_name . '" is not on the schedule for '
-                    . ($class === MaintenanceTypeModel::CLASS_VAN ? 'vans' : 'bikes') . '.'];
-            }
-            if (!$sched['has']) {
-                return ['ok' => false, 'type' => null, 'message' =>
-                    '"' . $type->type_name . '" has no schedule for '
-                    . ($class === MaintenanceTypeModel::CLASS_VAN ? 'vans' : 'bikes')
-                    . ' yet, so there is no due date to reset. Set one under ⚙️ Types, or '
-                    . 'file it as a maintenance request to keep the bill and the photo with it.'];
-            }
-            return ['ok' => true, 'type' => $type, 'message' => ''];
-        }
+        $countsDown = $class !== null
+            ? (bool) ($type->scheduleForClass($class)['has'] ?? false)
+            : ((int) $type->interval_km > 0);
 
-        if ((int) $type->interval_km <= 0) {
-            // "As conditions" work (Chain Set, Misc) has no countdown, so there is
-            // nothing here to record against.
-            return ['ok' => false, 'type' => null, 'message' =>
-                '"' . $type->type_name . '" is done as conditions require, so it has no due date '
-                . 'to reset. File it as a maintenance request instead — that keeps the bill and '
-                . 'the photo with it.'];
-        }
-        return ['ok' => true, 'type' => $type, 'message' => ''];
+        return ['ok' => true, 'type' => $type, 'counts_down' => $countsDown, 'message' => ''];
     }
 
     /**
@@ -540,10 +668,34 @@ class ServiceRecordService
              *   still happens in that case, so nothing regresses.
              */
             if ($type && Schema::hasTable('t_fleet_service_log')) {
+                /**
+                 * 📷⭐⭐ THE PROOF PHOTO BELONGS TO THE WORK, NOT TO A BILL (owner ruling,
+                 *    11-Sep-2026): *"the photo is entered because when they go for the
+                 *    service, the riders will get this as proof. And using this, my managers
+                 *    might enter the amount."*
+                 *
+                 * ⚠⚠ UNTIL NOW A PHOTO COULD ONLY RIDE ON AN EXPENSE CLAIM, so the ordinary
+                 *    workshop case — rider handed a receipt, no money moved, manager pays
+                 *    later — had nowhere to put it. The manager then typed an amount he could
+                 *    not see the evidence for. Stored here, the photo exists from the moment
+                 *    the work is recorded, and any bill filed later inherits it.
+                 * ⚠ Schema-guarded: safe to upload before the Sep-12 SQL runs; the photo is
+                 *   simply not kept until the columns exist (the record itself is unaffected).
+                 */
+                $photoCols = [];
+                if (!empty($in['photo_path']) && self::logKeepsPhoto()) {
+                    $photoCols = [
+                        'photo_path' => (string) $in['photo_path'],
+                        'photo_by'   => $actorId ?: null,
+                        'photo_at'   => now(),
+                    ];
+                }
+
                 $logId = (int) DB::table('t_fleet_service_log')->insertGetId(
                     // ⭐ The stamp, when the column exists. Schema-guarded so this file is
                     //   safe to upload before service_log_vehicle_sep2026.sql runs.
-                    (self::logStampsVehicle() && $vehicleId ? ['vehicle_id' => $vehicleId] : []) + [
+                    (self::logStampsVehicle() && $vehicleId ? ['vehicle_id' => $vehicleId] : [])
+                    + $photoCols + [
                     'user_id'             => $riderId,
                     'maintenance_type_id' => (int) $type->id,
                     'meter'               => $meter,
@@ -565,8 +717,17 @@ class ServiceRecordService
              *    Aug-27 silently rewrote a DIFFERENT job's schedule (Oil Change 1,200 → 2,500
              *    from one click) and opted the bike out of the company default forever. An
              *    override is written only when a manager explicitly asks for one.
+             *
+             * ⚠⚠ AND NOW: A JOB WITH NO COUNTDOWN ON THIS MACHINE MOVES NOTHING (11-Sep-2026).
+             *    Since `resolveType()` stopped refusing unscheduled work, a type with no figure
+             *    for this class reaches here for the first time. `resets_service_clock` alone
+             *    would have let it stamp `last_service_meter` — i.e. "Other repair" would have
+             *    silently marked the oil change done. The caller passes `counts_down`; when the
+             *    job does not count down on THIS machine, the work is logged and no clock moves.
+             *    That is exactly the owner's ruling: *"it won't reset any countdowns."*
              */
-            $movedClock = !$type || $type->resets_service_clock;
+            $countsDown = array_key_exists('counts_down', $in) ? (bool) $in['counts_down'] : true;
+            $movedClock = $countsDown && (!$type || $type->resets_service_clock);
             if ($movedClock) {
                 DB::table('t_ops_rider_profile')->where('user_id', $riderId)->update([
                     'last_service_meter' => $meter,
@@ -911,7 +1072,18 @@ class ServiceRecordService
                 ? ' — next due at ' . number_format($meter + (int) $type->interval_km) . ' km'
                 : '');
         if ($type && !$movedClock) {
-            $said[] = 'The bike\'s overall service-due clock is unchanged (only an oil service moves that)';
+            /**
+             * ⚠ TWO DIFFERENT REASONS NOTHING MOVED, and a manager must be able to tell them
+             *   apart (11-Sep-2026). Either the job HAS a countdown of its own but is not the
+             *   one that resets the overall clock (brake shoes), or it has no countdown on this
+             *   machine at all (an "other repair", or a job with no figures for a van). Saying
+             *   "only an oil service moves that" for the second case would imply a countdown
+             *   exists somewhere, and a manager would go looking for it.
+             */
+            $hasOwn = (int) ($type->interval_km ?? 0) > 0;
+            $said[] = $hasOwn
+                ? 'The bike\'s overall service-due clock is unchanged (only an oil service moves that)'
+                : 'Recorded as work done — no countdown was reset, because this job is not on a schedule';
         }
         return implode('. ', $said);
     }

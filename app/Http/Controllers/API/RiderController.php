@@ -1262,6 +1262,52 @@ class RiderController extends Controller
                 ], 404);
             }
 
+            /**
+             * 🔧⭐⭐ HE IS STILL AT THE WORKSHOP — THE ONE PLACE THE FLEET ACTUALLY STOPS
+             *    (owner ruling, 11-Sep-2026).
+             *
+             * ⭐ THE WHOLE POINT OF MOVING THE GUARD HERE. Assigning and marking an order
+             *   "out for delivery" are desk actions — nothing leaves the building. Pressing
+             *   DISPATCH is the claim that these parcels are now on the road with a time
+             *   against each customer's name, and a man standing at Ali Motors cannot make
+             *   that true. Stopping at the assign door (as this feature used to) blocked the
+             *   paperwork and let the lie through; stopping here does the reverse.
+             *
+             * ⭐ ASK, don't refuse: `confirm` overrides it, because a real emergency happens
+             *   and the dispatcher is the one who knows. Unlike the old assign guard, this
+             *   override is REACHABLE — both phone callers already surface `message`, and the
+             *   new APK sends `confirm` from the "Dispatch anyway" button.
+             * ⚠ Fails OPEN: a lookup wobble must never strand a genuine dispatch.
+             */
+            try {
+                $wsTrip = app(\App\Services\Riders\WorkshopVisitService::class)->tripFor((int) $riderId);
+                if ($wsTrip && !empty($wsTrip['is_active'])) {
+                    if (!$request->boolean('confirm')) {
+                        \Log::warning('Dispatch held: rider is on a workshop trip', [
+                            'rider_id' => $riderId,
+                            'state'    => $wsTrip['state']    ?? null,
+                            'visit_id' => $wsTrip['visit_id'] ?? null,
+                        ]);
+                        return response()->json([
+                            'success'            => false,
+                            'needs_confirmation' => true,
+                            'workshop_trip'      => $wsTrip,
+                            'message'            => ($wsTrip['label'] ?? 'He is at the workshop')
+                                . '. Dispatch anyway?',
+                        ], 409);
+                    }
+                    // Overridden deliberately — recorded, because the ETAs it writes will
+                    // look wrong to whoever reads them later and this says why.
+                    \Log::warning('Dispatch OVERRIDDEN during a workshop trip', [
+                        'rider_id'     => $riderId,
+                        'requested_by' => $user->id ?? null,
+                        'visit_id'     => $wsTrip['visit_id'] ?? null,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('workshop dispatch guard skipped', ['error' => $e->getMessage()]);
+            }
+
             // Choose the dispatch origin with a guardrail against phantom GPS
             // fixes. A stale / low-accuracy reading that lands kilometres away
             // used to be accepted blindly and blew ETAs up to an hour for a
@@ -9032,8 +9078,27 @@ class RiderController extends Controller
              *   while his own GPS says so is the contradiction this round exists to remove.
              */
             try {
-                app(\App\Services\Riders\WorkshopVisitService::class)
-                    ->stampArrival((int) $user->id, (float) $latitude, (float) $longitude);
+                $wsSvc = app(\App\Services\Riders\WorkshopVisitService::class);
+                $stamped = $wsSvc->stampArrival((int) $user->id, (float) $latitude, (float) $longitude);
+
+                /**
+                 * 🔧📍⭐⭐ …AND WHEN THERE IS NO PIN TO GEOFENCE AGAINST, ASK HIM ONCE
+                 *    (owner ask, 11-Sep-2026).
+                 *
+                 * A workshop booked by free-text name has no coordinates, so the geofence above
+                 * can never fire and the rider reads "going to the workshop" all day. This
+                 * notices that he has STOPPED somewhere we cannot name and arms a single
+                 * question; answering it stamps the arrival AND pins the workshop, so the next
+                 * visit there needs no question at all.
+                 *
+                 * ⚠ Only when the geofence did NOT already answer it — a pinned workshop is
+                 *   never resolved by asking.
+                 * ⚠ Same non-fatal contract as its neighbour.
+                 */
+                if (!$stamped) {
+                    $wsSvc->maybeAskArrival((int) $user->id, (float) $latitude,
+                                            (float) $longitude, $accuracy);
+                }
             } catch (\Throwable $e) {
                 \Log::warning('workshop arrival stamp skipped', ['error' => $e->getMessage()]);
             }
@@ -15452,6 +15517,20 @@ class RiderController extends Controller
                     try { return app(\App\Services\Riders\WorkshopVisitService::class)->tripFor($riderId); }
                     catch (\Throwable $e) { return null; }
                 })(),
+                /**
+                 * 🔧📍 "ARE YOU AT THE WORKSHOP?" — present ONLY while the server is actually
+                 *    asking (a free-text workshop with no pin, and he has stopped somewhere
+                 *    unrecognised). See `arrivalPromptFor()`.
+                 *
+                 * ⚠⚠ THE SHEET LIVES AND DIES BY THIS FIELD. It is null the instant the
+                 *    question stops applying — answered here or elsewhere, visit closed, a
+                 *    manager stamped it, or the ask went stale — so the phone has no timer of
+                 *    its own to get stuck on. That is the anti-bug design, not an accident.
+                 */
+                'arrival_prompt' => (function () use ($riderId) {
+                    try { return app(\App\Services\Riders\WorkshopVisitService::class)->arrivalPromptFor($riderId); }
+                    catch (\Throwable $e) { return null; }
+                })(),
                 // ⭐ "Left office without dispatching" flag (live; auto-clears).
                 'left_without_dispatch' => $this->detectLeftWithoutDispatch([$riderId])[$riderId] ?? null,
                 // ⭐ "Returning to office" ETA (single Google call, cached) once
@@ -16338,6 +16417,33 @@ class RiderController extends Controller
                 ]);
             }
 
+            /**
+             * 🔧⭐ THE PICKER SAYS WHOSE MACHINE IS IN (promised 10-Sep, built 11-Sep).
+             *
+             * ⭐ NOT a filter and NOT a grey-out — the owner's rule is that he stays fully
+             *   pickable. This is a TAG, so the dispatcher chooses him knowing, instead of
+             *   finding out from a warning after the fact.
+             * ⚠ ONE query for the whole list (`tripsFor`, no ETA), never per row: this list
+             *   is drawn on every open of the assign sheet.
+             */
+            try {
+                $trips = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->tripsFor($riders->pluck('id')->all(), null, false);
+                $riders = $riders->map(function ($r) use ($trips) {
+                    $t = $trips[(int) $r->id] ?? null;
+                    $r->workshop_trip = ($t && !empty($t['is_active'])) ? [
+                        'state'        => $t['state']        ?? null,
+                        'label'        => $t['label']        ?? null,
+                        'label_ur'     => $t['label_ur']     ?? null,
+                        'vehicle_name' => $t['vehicle_name'] ?? null,
+                    ] : null;
+                    return $r;
+                })->values();
+            } catch (\Throwable $e) {
+                // ⚠ A tag must never cost the picker its list.
+                \Log::warning('rider picker workshop tag skipped', ['error' => $e->getMessage()]);
+            }
+
             return response()->json([
                 'success' => true,
                 'riders' => $riders
@@ -16354,6 +16460,17 @@ class RiderController extends Controller
                 'message' => 'Failed to fetch riders: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * 🔧 One line, so every order-side door in this controller reports the workshop the
+     *    same way. The engine is `WorkshopVisitService::warningFor()` — see the ⚠⚠ there
+     *    for why this is a WARNING and not the refusal it used to be.
+     */
+    private function workshopWarningFor(int $riderId, string $context, array $meta = []): ?array
+    {
+        return app(\App\Services\Riders\WorkshopVisitService::class)
+            ->warningFor($riderId, $context, $meta);
     }
 
     /**
@@ -16403,35 +16520,27 @@ class RiderController extends Controller
             }
 
             /**
-             * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling, 10-Sep-2026 — Q3: allowed, but ask.)
+             * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling REVISED, 11-Sep-2026 — TELL, don't ask.)
              *
-             * A rider taking a bike in is not available, and an order given to him now sits
-             * still until he is back. Refusing outright would be wrong — a genuine emergency
-             * happens — so this is a QUESTION with an override, the same 409 `needs_confirmation`
-             * shape the workshop and shift engines already use for "this changes a plan somebody
-             * was told about".
+             * ⚠⚠ THIS USED TO REFUSE, AND ON 11-Sep IT COST A REAL ASSIGNMENT. It returned 409
+             *    `needs_confirmation` expecting a client to re-send `confirm` — but neither client
+             *    was ever taught to, so the store tablet showed "Partial Update — Failed to assign
+             *    rider" and the order could not be given to him at all. A server-side QUESTION is
+             *    not a feature until a client can ANSWER it; until then it is only a wall.
              *
-             * ⚠ An OLD client cannot send `confirm`, so it simply cannot assign to a man at the
-             *   workshop: it reads the sentence instead. Failing closed is right here — the whole
-             *   point is that this must not happen by accident.
+             * ⭐ The owner's rule: **out for delivery is not on the road.** Nothing leaves until
+             *   Dispatch is pressed, so assigning to a man at the workshop is a perfectly ordinary
+             *   thing to do — he takes them when he is back. The one place the fleet must actually
+             *   stop is DISPATCH (see `calculateDeliveryEtas`), and even that is overridable.
+             *
+             * So this now ASSIGNS and reports a WARNING alongside the success. A client that does
+             * not understand `warning` simply assigns, which is the correct outcome anyway.
              */
-            try {
-                $wsTrip = app(\App\Services\Riders\WorkshopVisitService::class)
-                    ->tripFor((int) $validated['rider_id']);
-                if ($wsTrip && !empty($wsTrip['is_active']) && !$request->boolean('confirm')) {
-                    return response()->json([
-                        'success' => false,
-                        'needs_confirmation' => true,
-                        'workshop_trip' => $wsTrip,
-                        'message' => ($wsTrip['label'] ?? 'He is at the workshop')
-                            . '. Assign this order to him anyway?',
-                    ], 409);
-                }
-            } catch (\Throwable $e) {
-                // ⚠ Fail OPEN: a lookup problem must never block ordinary dispatch.
-                \Log::warning('workshop assign guard skipped', ['error' => $e->getMessage()]);
-            }
-            
+            $wsWarning = $this->workshopWarningFor((int) $validated['rider_id'], 'assign', [
+                'order_id' => (int) $order->id,
+                'by'       => $user->id ?? null,
+            ]);
+
             // Get rider name for response
             $rider = DB::table('t_sys_user')->where('id', $validated['rider_id'])->first();
             
@@ -16503,8 +16612,11 @@ class RiderController extends Controller
                     'name' => $rider->fullname
                 ],
                 'van_hint' => $vanHint,
+                // 🔧 He is at the workshop — assigned anyway, and the phone says so ONCE.
+                //    Null for the ordinary case, so a client that ignores it loses nothing.
+                'warning' => $wsWarning,
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('Failed to assign rider (Store Mode)', [
                 'user_id' => Auth::id(),
@@ -16595,13 +16707,30 @@ class RiderController extends Controller
                 'new_status' => $validated['status'],
                 'updated_by' => $user->id
             ]);
-            
+
+            /**
+             * 🔧 MARKED "OUT FOR DELIVERY" WHILE HIS BIKE IS IN — allowed, and said once
+             *    (owner ruling, 11-Sep-2026: out for delivery is NOT on the road).
+             *
+             * ⚠ Asked only for the one status that implies a rider is taking it, and only
+             *   AFTER the change has succeeded — this reports, it never gates.
+             */
+            $wsWarning = null;
+            if ($validated['status'] === 'out_for_delivery' && !empty($order->assigned_rider_user_id)) {
+                $wsWarning = $this->workshopWarningFor(
+                    (int) $order->assigned_rider_user_id,
+                    'out_for_delivery',
+                    ['order_id' => (int) $order->id, 'by' => $user->id ?? null]
+                );
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Order status updated successfully',
-                'new_status' => $validated['status']
+                'new_status' => $validated['status'],
+                'warning' => $wsWarning,
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('Failed to update order status', [
                 'user_id' => Auth::id(),

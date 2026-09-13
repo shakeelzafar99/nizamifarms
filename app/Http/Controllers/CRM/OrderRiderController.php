@@ -44,33 +44,24 @@ class OrderRiderController extends Controller
         }
 
         /**
-         * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling, 10-Sep-2026 — allowed, but ask.)
+         * 🔧⭐⭐ IS HE AT THE WORKSHOP? (owner ruling REVISED, 11-Sep-2026 — TELL, don't ask.)
          *
-         * The desk twin of the guard in `RiderController::assignRiderToOrder`, reading the SAME
-         * `tripFor()` derivation, so a dispatcher on the web and one on the phone are told the
+         * The desk twin of `RiderController::assignRiderToOrder`, reading the SAME
+         * `warningFor()` engine, so a dispatcher on the web and one on the phone are told the
          * same thing about the same man at the same moment.
          *
-         * ⚠ `confirm` overrides it — a real emergency must still be dispatchable. An old page
-         *   cannot send the flag and therefore cannot assign to him by accident.
-         * ⚠ Placed BEFORE the ledger work below: refusing after money has moved would leave the
-         *   order half-assigned.
+         * ⚠⚠ THIS USED TO REFUSE (409 + `confirm`) AND NOTHING COULD ANSWER IT. Worse on this
+         *    side than on the phone: the page sent `confirmed` while the server read `confirm`,
+         *    so even the hand-written override would have failed. Assigning is allowed —
+         *    **out for delivery is not on the road** — and only Dispatch may stop.
+         * ⚠ Still placed BEFORE the ledger work below, so the warning is computed off the
+         *   rider we are about to assign rather than one the ledger has already moved.
          */
-        try {
-            $wsTrip = app(\App\Services\Riders\WorkshopVisitService::class)
-                ->tripFor((int) $data['rider_user_id']);
-            if ($wsTrip && !empty($wsTrip['is_active']) && !$request->boolean('confirm')) {
-                return response()->json([
-                    'success' => false,
-                    'needs_confirmation' => true,
-                    'workshop_trip' => $wsTrip,
-                    'message' => ($wsTrip['label'] ?? 'He is at the workshop')
-                        . '. Assign this order to him anyway?',
-                ], 409);
-            }
-        } catch (\Throwable $e) {
-            // ⚠ Fail OPEN: a lookup problem must never block ordinary dispatch.
-            \Log::warning('workshop assign guard skipped (web)', ['error' => $e->getMessage()]);
-        }
+        $wsWarning = app(\App\Services\Riders\WorkshopVisitService::class)
+            ->warningFor((int) $data['rider_user_id'], 'assign', [
+                'order_id' => (int) ($order->id ?? 0),
+                'by'       => auth()->id(),
+            ]);
 
         // ================================================================
         // LEDGER CHANGE DETECTION FOR RIDER ASSIGNMENT
@@ -171,7 +162,10 @@ class OrderRiderController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Rider assigned successfully',
-            'ledger_updated' => isset($ledger) && $ledger->mode === LedgerModel::MODE_CASH
+            'ledger_updated' => isset($ledger) && $ledger->mode === LedgerModel::MODE_CASH,
+            // 🔧 Assigned to a man at the workshop — done, and the page says so once.
+            //    NULL for the ordinary case; an old page ignoring it loses nothing.
+            'warning' => $wsWarning,
         ]);
     }
 

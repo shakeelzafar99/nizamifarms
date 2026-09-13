@@ -143,6 +143,11 @@
 .fl-strong{font-weight:700;color:#111827;}
 
 .fl-pill{display:inline-block;font-size:11px;border-radius:999px;padding:1.5px 9px;font-weight:600;}
+/* 🏠 Home location on the riders row — green when one is on file, and the amber
+   "set home" uses the shared .fl-warn colour. Both are buttons, hence the cursor. */
+.fl-home{background:#dcfce7;color:#166534;}
+.fl-pill[onclick]{cursor:pointer;}
+.fl-pill[onclick]:hover{filter:brightness(0.95);text-decoration:underline;}
 .fl-company{background:#e0e7ff;color:#3730a3;}
 .fl-own{background:#f3f4f6;color:#4b5563;}
 .fl-unknown{background:#fee2e2;color:#b91c1c;}
@@ -727,6 +732,82 @@
   </div>
 </div>
 
+{{-- 🛠📷 CLOSING A WORKSHOP VISIT — the same form the Bikes screen uses to record a service,
+     because it writes the SAME row. See flWorkshopDone() for what the old four-field version
+     could not express (no job, no money, no photo) and why each of those cost somebody. --}}
+<div id="flWsDone" onclick="if(event.target===this)flWsDoneClose()"
+     style="display:none;position:fixed;inset:0;z-index:4300;background:rgba(0,0,0,.5);
+            align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;border-radius:12px;width:100%;max-width:460px;max-height:90vh;
+              overflow-y:auto;box-shadow:0 18px 60px rgba(0,0,0,.35);">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid #e5e7eb;">
+      <b style="font-size:15px;color:#111827;">🛠 Mark the visit done</b>
+      <button type="button" onclick="flWsDoneClose()" title="Close"
+              style="margin-left:auto;border:0;background:none;font-size:20px;color:#9ca3af;cursor:pointer;">&times;</button>
+    </div>
+    <div style="padding:16px 18px;">
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin-bottom:4px;">
+        Odometer at the service (km)
+      </label>
+      <input type="number" id="flWsDoneMeter" min="0" placeholder="e.g. 28100"
+             style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+      <div style="font-size:11.5px;color:#6b7280;margin-top:4px;">
+        Leave blank if nothing was serviced (an inspection).
+      </div>
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">
+        Which job was done
+      </label>
+      <select id="flWsDoneType"
+              style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        <option value="">Loading…</option>
+      </select>
+      {{-- ⚠ "no countdown" is the honest label for work that is real but not on a schedule
+           (an overhaul, a general repair, or any job with no figures for a van). It is
+           recorded in full and resets nothing — the owner's "other repair". --}}
+      <div style="font-size:11.5px;color:#6b7280;margin-top:4px;">
+        Jobs marked <b>no countdown</b> are recorded in full but reset no service clock.
+      </div>
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">
+        Amount (Rs) <span style="font-weight:400;color:#9ca3af;">— optional, if a bill was paid</span>
+      </label>
+      <input type="number" id="flWsDoneAmount" min="1" step="1" placeholder="leave blank if not paid yet"
+             style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">Paid from</label>
+      <select id="flWsDoneSource"
+              style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;">
+        <option value="">—</option>
+      </select>
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">
+        📷 Photo <span style="font-weight:400;color:#9ca3af;">(the receipt or the work — no amount needed)</span>
+      </label>
+      {{-- ⭐ THE POINT OF THIS FIELD: the rider is handed a receipt at the counter and pays
+           nothing. The photo is kept against the service itself, and whoever enters the amount
+           days later can see what he is paying for. --}}
+      <input type="file" id="flWsDonePhoto" accept="image/*" style="width:100%;font-size:12px;">
+
+      <label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:11px 0 4px;">
+        What was the outcome? (optional)
+      </label>
+      <textarea id="flWsDoneNote" rows="3" placeholder="e.g. Chain and sprocket replaced"
+                style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;resize:vertical;"></textarea>
+
+      <div id="flWsDoneErr" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
+           border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:9px;"></div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+        <button type="button" class="fl-vbtn" onclick="flWsDoneClose()">Cancel</button>
+        <button type="button" id="flWsDoneSubmit" onclick="flWsDoneSave()" class="fl-vbtn"
+                style="background:#111827;color:#fff;border-color:#111827;">Mark done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="flvEditModal" onclick="if(event.target===this)flvCloseEdit()"
      style="display:none;position:fixed;inset:0;z-index:4200;background:rgba(0,0,0,.5);
             align-items:center;justify-content:center;padding:16px;">
@@ -1140,6 +1221,30 @@ function flRenderTable(res) {
         // day with deliveries and no end meter just disappears from every count.
         if (r.open_days) flags.push('<span class="fl-pill fl-warn" title="Checked in on a past day and never checked out — still open. Someone needs to close the day so its kilometres can be counted.">🔓 ' + r.open_days + ' still open</span>');
         if (r.bike === 'unknown') flags.push('<span class="fl-pill fl-unknown" title="No rider profile — cannot classify the bike">unclassified</span>');
+
+        /**
+         * 🏠 HOME LOCATION — on the RIDERS row, where the owner asked for it ("in the
+         * fleet we have riders and vehicles… it should be with riders in the fleet").
+         *
+         * Shown for EVERY rider, not just company-bike ones: the pin is kept whatever
+         * he happens to be riding this week, and hiding it for an 'own' row is exactly
+         * the mistake that used to lose pins. Green = on file (hover for the coordinates
+         * and who set it), amber = missing.
+         *
+         * ⚠ stopPropagation — the whole <tr> has an onclick that opens the rider's month.
+         * ⚠ Only the numeric user_id crosses the onclick boundary. A quoted string inside
+         *   an onclick="" attribute is the trap that silently kills the button.
+         */
+        if (r.home_pin) {
+            flags.push('<span class="fl-pill fl-home" title="Home location: '
+                + r.home_pin.lat.toFixed(5) + ', ' + r.home_pin.lng.toFixed(5)
+                + (r.home_pin.set_by_name ? ' · set by ' + flEsc(r.home_pin.set_by_name) : '')
+                + (r.home_pin.set_at ? ' on ' + flEsc(String(r.home_pin.set_at).slice(0, 10)) : '')
+                + '" onclick="event.stopPropagation();flOpenHomePin(' + Number(r.user_id) + ')">🏠 home</span>');
+        } else {
+            flags.push('<span class="fl-pill fl-warn" title="No home location — the overnight and morning meter checks have nowhere to measure from"'
+                + ' onclick="event.stopPropagation();flOpenHomePin(' + Number(r.user_id) + ')">🏠 set home</span>');
+        }
 
         return '<tr onclick="flSelectRider(' + r.user_id + ')" id="flRow' + r.user_id + '">' +
             '<td class="fl-name">' + flEsc(r.name) + '</td>' +
@@ -1672,13 +1777,38 @@ function flRenderDetail(r) {
     // The header pill uses the TABLE row, so it names the same machine the row does.
     const headRow = ((flData && flData.riders) || []).find(x => x.user_id === r.user_id) || r;
 
+    /**
+     * 🏠 HOME LOCATION, in the rider's own panel — beside his tickets and his service
+     * state, which is where a manager already comes to answer "what about this man?".
+     * Read from the SAME table row the pill reads, so the two can never disagree.
+     * The button opens the shared editor; everything it shows comes back from the server.
+     */
+    const hpRow = headRow.home_pin;
+    const homeHtml =
+        '<h5>🏠 Home location</h5>' +
+        (hpRow
+            ? '<div style="font-size:12px;color:#374151;line-height:1.55;margin-bottom:8px;">' +
+                '<b>' + hpRow.lat.toFixed(5) + ', ' + hpRow.lng.toFixed(5) + '</b><br>' +
+                '<a href="' + flEsc(hpRow.maps_url) + '" target="_blank" rel="noopener"' +
+                ' style="color:#047857;font-weight:700;">view on map ↗</a>' +
+                '<div style="color:#6b7280;font-size:11px;margin-top:2px;">Set' +
+                  (hpRow.set_by_name ? ' by ' + flEsc(hpRow.set_by_name) : '') +
+                  (hpRow.set_at ? ' on ' + flEsc(String(hpRow.set_at).slice(0, 10)) : '') +
+                  ' · geofence ' + (hpRow.radius_m || 300) + ' m</div>' +
+              '</div>'
+            : '<div style="font-size:12px;color:#92400e;line-height:1.5;margin-bottom:8px;">' +
+                'Not set — the overnight and morning meter checks have nowhere to measure from.' +
+              '</div>') +
+        '<button type="button" class="fl-homebtn" onclick="flOpenHomePin(' + Number(r.user_id) + ')">' +
+          (hpRow ? 'Change home location' : 'Set home location') + '</button>';
+
     document.getElementById('flDetail').innerHTML =
         '<div class="fl-dhead"><h4>' + flEsc(r.name) + '</h4>' + flBikePill(headRow) +
         '<span style="font-size:12px;color:#6b7280;">day by day · ' + flMonthLabel(r.month) + '</span>' +
         '<button class="fl-dclose" onclick="flCloseDetail()" title="Close">&times;</button></div>' +
         '<div class="fl-dbody"><div class="fl-days">' + flKmSummary(r) + machinesHtml +
         (days || '<div class="fl-empty">Nothing recorded this month.</div>') +
-        '</div><div class="fl-side">' + ticketsHtml + svcHtml + '</div></div>';
+        '</div><div class="fl-side">' + homeHtml + ticketsHtml + svcHtml + '</div></div>';
 
     // Fetched after the drawer is painted: the costs a manager opened this for must
     // never wait on a ticket list, and an older server (no tickets table) simply
@@ -1763,6 +1893,23 @@ function flRenderWorkshop(uid, visits, canSchedule) {
                      '<button class="fl-btn" onclick="flWorkshopAccept(' + v.id + ')" '
                      + 'title="Only when his app is not working — it is recorded as accepted on his behalf">'
                      + 'Accept for him</button>')
+                  /* 🚦⭐ THE TWO BUTTONS THE DEPLOY DOC ALREADY CLAIMED EXISTED (built 11-Sep).
+                       "He has gone" was promised on 10-Sep and never drawn — the note said an old
+                       APK was covered by "the manager's 'he has gone'", and there was no such
+                       control anywhere. "He is there" is the answer to a FREE-TEXT workshop: it
+                       has no pin, so the geofence can never stamp arrival and the rider shows as
+                       travelling all day.
+                     ⚠ "He is there" appears ONLY for a visit with no pin. A geofenced workshop
+                       must never be arrivable by hand, or the stamp stops meaning he was there. */
+                  + (v.departed_at ? '' :
+                     '<button class="fl-btn" onclick="flWorkshopDepart(' + v.id + ')" '
+                     + 'title="He set off but did not press the button on his phone">'
+                     + 'He has gone</button>')
+                  + ((v.departed_at && !v.arrived_at && !v.location_id)
+                     ? '<button class="fl-btn" onclick="flWorkshopArrivedHere(' + v.id + ')" '
+                       + 'title="This workshop has no pin, so nothing can detect his arrival">'
+                       + 'He is there</button>'
+                     : '')
                   + '</div>'
                 : '')
             + '</div>';
@@ -1993,7 +2140,11 @@ function flScheduleWorkshop(uid, ticketId, vehicleId) {
          *   schedule at that moment — so a stale or inapplicable choice here can never record
          *   a service the countdown cannot use.
          */
-        const wsJobs = (flData && flData.maint_types || []).filter(t => t.has_schedule || t.interval_km > 0);
+        /* ⚠ Every active job, not just the scheduled ones (11-Sep-2026). A bike goes in for an
+             overhaul or a general repair at least as often as for an oil change, and a booking
+             form that cannot name the reason sends it in as "service" — which is then the wrong
+             job pre-filled when somebody closes the visit. */
+        const wsJobs = (flData && flData.maint_types || []);
         if (wsJobs.length) {
             fields.push({ key: 'maintenance_type_id', label: 'Which job (optional)', type: 'select', value: '',
                 showIf: { key: 'purpose', value: 'service' },
@@ -2170,6 +2321,72 @@ function flWorkshopDecline(id) {
     });
 }
 
+/**
+ * ⏰ PUT THIS PROPOSAL ASIDE FOR SIX HOURS — for THIS user only (owner ask, 11-Sep-2026).
+ *
+ * ⚠⚠ WHY NOT JUST SHOW IT TO FEWER PEOPLE. Everyone holding `manage_shifts` sees every
+ *    proposal, because who decides changes day to day: Taimur is usually only being informed,
+ *    but on the days Farooq is away he is the one who must act. Narrowing the audience would
+ *    break precisely the case the audience exists for. This lets him say "not me, not now"
+ *    without hiding it from anybody else.
+ * ⭐ No confirm dialog: it decides nothing and undoes itself by waiting.
+ */
+function flWorkshopSnooze(id) {
+    flPostWorkshop('/' + id + '/snooze', {}, function (res) {
+        if (res.message) alert(res.message);
+        if (typeof flvOpenId !== 'undefined' && flvOpenId && typeof flvLoadVisits === 'function') flvLoadVisits(flvOpenId);
+        if (typeof flSelected !== 'undefined' && flSelected && typeof flLoadWorkshop === 'function') flLoadWorkshop(flSelected);
+    });
+}
+
+/**
+ * 🚦 "HE HAS GONE" — a manager starting the trip for a rider who set off without pressing the
+ *    button on his phone (promised 10-Sep, built 11-Sep; the deploy note had been describing it
+ *    as though it existed).
+ *
+ * ⚠ The server applies the SAME gate it applies to the rider: dispatched orders still out will
+ *   refuse this, and `force` is what a manager sends when he has just moved them by phone.
+ */
+function flWorkshopDepart(id) {
+    if (!confirm('Mark that he has set off for the workshop?\n\nUse this only when he really has gone and his phone did not record it.')) return;
+    flPostWorkshop('/' + id + '/depart', {},
+        function (res) { if (res.message) alert(res.message); },
+        function (msg) {
+            /* ⚠ The orders refusal is not a failure — it is the remedy, and it is actionable:
+                 he can send it again once the orders are moved. */
+            if (confirm(msg + '\n\nSend it anyway?')) {
+                flPostWorkshop('/' + id + '/depart', {force: 1},
+                    function (r2) { if (r2.message) alert(r2.message); });
+            }
+        });
+}
+
+/**
+ * 📍 "HE IS THERE" — for a workshop entered as free text, which has no pin and therefore no
+ *    geofence. Without this the rider reads "going to the workshop" until the day ends.
+ *
+ * ⭐ The rider's own phone offers him the same answer and ALSO pins the place from his GPS;
+ *   this desk version cannot (the manager is not standing there), so it stamps the arrival
+ *   only. That asymmetry is deliberate — a pin must come from somebody who was actually there.
+ */
+function flWorkshopArrivedHere(id) {
+    if (!confirm('Mark that he has reached the workshop?\n\nThis workshop has no pin, so nothing can detect it automatically.')) return;
+    fetch(FL_BASE + '/workshop/' + id + '/arrived-here', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+        body: JSON.stringify({ manager: 1 })
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (!res.success) { alert(res.message || 'Could not save.'); return; }
+        if (res.message) alert(res.message);
+        if (typeof flSelected !== 'undefined' && flSelected && typeof flLoadWorkshop === 'function') flLoadWorkshop(flSelected);
+        if (typeof flvOpenId !== 'undefined' && flvOpenId && typeof flvLoadVisits === 'function') flvLoadVisits(flvOpenId);
+    })
+    .catch(() => alert('Could not save. Please try again.'));
+}
+
 function flWorkshopCancel(id) {
     flForm({
         title: '✖ Cancel this workshop visit',
@@ -2190,22 +2407,130 @@ function flWorkshopCancel(id) {
  *   to record). If the type cannot be recorded (an "as conditions" job) the server refuses
  *   and the visit stays open — that is shown here, not lost in an alert.
  */
+/**
+ * 🛠📷⭐⭐ CLOSING A VISIT IS THE SAME FORM AS RECORDING A SERVICE (owner ruling, 11-Sep-2026).
+ *
+ * ⚠⚠ WHAT THIS REPLACES, AND WHY IT WAS WRONG. The old dialog asked for an odometer and a note
+ *    and nothing else — no job picker, no amount, no photo. Three consequences, all reported
+ *    from the floor:
+ *      • the server fell back to the job the visit was BOOKED for, so an inspection-purpose
+ *        visit plus a typed meter was a dead end no manager could get out of;
+ *      • the work that actually happened could not be named, and on prod only two of the four
+ *        maintenance types were even offerable — Shabib's "I can only see 2 categories";
+ *      • the receipt in his hand had nowhere to go, because a photo could only ride on an
+ *        expense claim and the money often arrives days later.
+ *    The record this writes has ALWAYS been the same row the Bikes screen writes
+ *    (`ServiceRecordService::record`), so the form had no business being poorer.
+ *
+ * ⭐ The job list comes from the SERVER, per visit, and every active job is in it. A job with
+ *   no countdown on this machine is offered and labelled — it records the work and resets
+ *   nothing, which is exactly "other repair".
+ */
 function flWorkshopDone(id) {
-    flForm({
-        title: '🛠 Mark the visit done',
-        fields: [
-            { key: 'meter', label: 'Odometer at the service (km)', type: 'number', min: 0, placeholder: 'e.g. 28100',
-              hint: 'Fills in the service record for the job this visit was booked for. Leave blank if nothing was serviced (an inspection).' },
-            { key: 'note', label: 'What was the outcome? (optional)', type: 'textarea', placeholder: 'e.g. Chain and sprocket replaced' },
-        ],
-        okLabel: 'Mark done',
-        onSubmit: function (v, done) {
-            const payload = {};
-            if (v.meter) payload.meter = parseInt(v.meter, 10);
-            if (v.note) payload.outcome_note = v.note;
-            flPostWorkshop('/' + id + '/done', payload, function (res) { done(true, res.message || 'Done.'); },
-                           function (msg) { done(false, msg); });
-        }
+    const box = document.getElementById('flWsDone');
+    if (!box) return;
+    box.dataset.visit = String(id);
+    document.getElementById('flWsDoneMeter').value = '';
+    document.getElementById('flWsDoneAmount').value = '';
+    document.getElementById('flWsDoneNote').value = '';
+    document.getElementById('flWsDonePhoto').value = '';
+    document.getElementById('flWsDoneErr').style.display = 'none';
+    const typeSel = document.getElementById('flWsDoneType');
+    typeSel.innerHTML = '<option value="">Loading…</option>';
+    const srcSel = document.getElementById('flWsDoneSource');
+    srcSel.innerHTML = '<option value="">—</option>';
+    box.style.display = 'flex';
+
+    fetch(FL_BASE + '/workshop/' + id + '/types', { headers: { 'Accept': 'application/json' } })
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.success) { typeSel.innerHTML = '<option value="">(could not load)</option>'; return; }
+            /* ⭐ Scheduled jobs first, then the rest marked so nobody expects a countdown to
+                 move. The server decides the order and the labels; this only draws them. */
+            const opts = ['<option value="">— choose the job —</option>'];
+            (d.types || []).forEach(t => {
+                const tag = t.counts_down ? '' : '  · no countdown';
+                const sel = (d.booked_type_id && Number(d.booked_type_id) === Number(t.id)) ? ' selected' : '';
+                opts.push('<option value="' + t.id + '"' + sel + '>'
+                    + flEsc(t.name || t.type_name || ('Type ' + t.id)) + flEsc(tag) + '</option>');
+            });
+            typeSel.innerHTML = opts.join('');
+            (d.pay_sources || []).forEach(s => {
+                const o = document.createElement('option');
+                o.value = s.id; o.textContent = s.label || s.name || ('Account ' + s.id);
+                srcSel.appendChild(o);
+            });
+        })
+        .catch(() => { typeSel.innerHTML = '<option value="">(could not load)</option>'; });
+}
+
+function flWsDoneClose() {
+    const box = document.getElementById('flWsDone');
+    if (box) box.style.display = 'none';
+}
+
+function flWsDoneSave() {
+    const box = document.getElementById('flWsDone');
+    const id  = box ? box.dataset.visit : null;
+    if (!id) return;
+    const err = document.getElementById('flWsDoneErr');
+    const meter = document.getElementById('flWsDoneMeter').value.trim();
+    const type  = document.getElementById('flWsDoneType').value;
+    const amt   = document.getElementById('flWsDoneAmount').value.trim();
+    const src   = document.getElementById('flWsDoneSource').value;
+    const note  = document.getElementById('flWsDoneNote').value.trim();
+    const file  = document.getElementById('flWsDonePhoto').files[0] || null;
+
+    /* ⚠ The meter is what makes this a SERVICE RECORD rather than just a closed visit; the
+         server refuses a reading with no job named, so ask here where the sentence is short. */
+    if (meter && !type) {
+        err.textContent = 'Choose which job was done — the odometer alone does not say which countdown to reset.';
+        err.style.display = ''; return;
+    }
+    /* ⚠ An amount with no account cannot be filed as a claim, and failing at the server would
+         leave the visit closed with the money lost. Asked here instead. */
+    if (amt && parseFloat(amt) > 0 && !src) {
+        err.textContent = 'Choose which account the bill was paid from.';
+        err.style.display = ''; return;
+    }
+    err.style.display = 'none';
+
+    /* multipart, because of the photo — which no longer needs an amount beside it: the rider
+       is handed a receipt at the counter and a manager types the figure days later. */
+    const fd = new FormData();
+    if (meter) fd.append('meter', parseInt(meter, 10));
+    if (type)  fd.append('maintenance_type_id', type);
+    if (amt && parseFloat(amt) > 0) {
+        fd.append('amount', amt);
+        fd.append('payment_source_account_id', src);
+    }
+    if (note) fd.append('outcome_note', note);
+    if (file) fd.append('photo', file);
+
+    const btn = document.getElementById('flWsDoneSubmit');
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    fetch(FL_BASE + '/workshop/' + id + '/done', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json',
+                   'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '' },
+        body: fd
+    })
+    .then(r => r.json())
+    .then(res => {
+        btn.disabled = false; btn.textContent = 'Mark done';
+        if (!res.success) { err.textContent = res.message || 'Could not save.'; err.style.display = ''; return; }
+        flWsDoneClose();
+        if (res.message) alert(res.message);
+        /* ⚠ The SAME two refreshes every other workshop action does (see flPostWorkshop) —
+             the rider's own block and, when it is open, the vehicle panel. Missing the second
+             is how a closed visit keeps showing as live on the machine's page. */
+        if (typeof flSelected !== 'undefined' && flSelected && typeof flLoadWorkshop === 'function') flLoadWorkshop(flSelected);
+        if (typeof flvOpenId !== 'undefined' && flvOpenId && typeof flvLoadVisits === 'function') flvLoadVisits(flvOpenId);
+    })
+    .catch(() => {
+        btn.disabled = false; btn.textContent = 'Mark done';
+        err.textContent = 'Could not save. Please try again.'; err.style.display = '';
     });
 }
 
@@ -3030,8 +3355,12 @@ function flMarkServiced(uid, suggested, vehicleId) {
     const fromRider = (flRider && flRider.user_id === uid && Array.isArray(flRider.service_schedule)
                        && flRider.service_schedule.length)
         ? flRider.service_schedule : null;
-    const schedTypes = (fromRider || (flData && flData.maint_types) || [])
-        .filter(t => t.interval_km > 0);
+    /* ⚠⚠ NO LONGER FILTERED ON A KILOMETRE FIGURE (11-Sep-2026). `interval_km > 0` hides a
+         TIME-based job, which reports 0 km by design, and on prod hides the two of four types
+         that carry no figure at all — which is why a manager reported "I can only see 2
+         categories". This is a "which job was this?" picker: every active job belongs in it,
+         and whether a countdown moves is the SERVER's decision (see resolveType/counts_down). */
+    const schedTypes = (fromRider || (flData && flData.maint_types) || []);
     let typeId = null;
 
     if (schedTypes.length > 1) {
@@ -5709,6 +6038,13 @@ function flvRenderDetail(v, canManage, res) {
                               ? (wsApprove
                                   ? '<button type="button" class="fl-vbtn" onclick="flWorkshopApprove(' + w.id + ')">✓ Approve</button>'
                                     + '<button type="button" class="fl-vbtn" onclick="flWorkshopDecline(' + w.id + ')">✖ Decline</button>'
+                                    /* ⏰ "Later (6h)" — the desk twin of the phone's button, so a
+                                         planner who works on the web gets the same third answer.
+                                       ⭐ Per USER and never a decision: the request stays open for
+                                         every other planner and returns to this one in six hours. */
+                                    + '<button type="button" class="fl-vbtn" onclick="flWorkshopSnooze(' + w.id + ')" '
+                                      + 'title="Hide this from YOUR list for 6 hours. It stays open for everyone else.">'
+                                      + '⏰ Later</button>'
                                   : '')
                                 + (wsCan ? '<button type="button" class="fl-vbtn" onclick="flWorkshopCancel(' + w.id + ')">Withdraw</button>' : '')
                               : (!w.accepted && wsCan ? '<button type="button" class="fl-vbtn" onclick="flWorkshopAccept(' + w.id + ')">Accept for him</button>' : '')
@@ -5973,7 +6309,21 @@ function flvServiceHistoryHtml(res) {
     const shown = flvHistShowAll ? filtered : filtered.slice(0, CAP);
     const more  = filtered.length - shown.length;
 
+    /* 🧾⭐ WORK DONE, COST NOT ENTERED (owner ask, 11-Sep-2026 — the interim nag until the
+         unpaid-visits screen exists). Counted over the WHOLE window, not the visible slice: the
+         list is capped at ten, and a reminder that only counts what happens to be on screen is
+         worse than none. The SERVER decides which rows qualify (`needs_amount`), including the
+         1-September cut-off, so this line can never disagree with the rows beneath it. */
+    const owed = inWindow.filter(r => r.needs_amount);
+
     return ''
+        + (owed.length
+            ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:8px 10px;'
+              + 'background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;font-size:12px;color:#92400E;">'
+              + '<b>🧾 ' + owed.length + ' service' + (owed.length === 1 ? '' : 's') + ' with no amount</b>'
+              + '<span style="opacity:.9;">— the work is recorded; somebody still has to enter what it cost.</span>'
+              + '</div>'
+            : '')
         + '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">'
         +   chip('all', 'All') + chip('regular', '🛢 Regular') + chip('repairs', '🔧 Repairs')
         +   chip('unclassified', '❓ Unclassified')
@@ -6037,8 +6387,27 @@ function flvServiceHistoryHtml(res) {
                 work and its cost in one action, and the claim half is dropped from this list so
                 the job appears once. So "no bill" is only true when there genuinely is none. */
           +   '<span>' + ((s.manual && !(s.amount > 0))
-                            ? '<span style="color:#9ca3af;">no bill</span>'
-                            : 'Rs ' + flNum(s.amount)) + '</span>'
+                            /* 🧾 Two different silences, and they must not look alike. A row
+                                 from BEFORE the 1-Sept cut-off is history nobody will chase —
+                                 it stays the quiet grey "no bill". A row after it is an open
+                                 job for the team, so it is amber and says what to do. The
+                                 SERVER draws that line (`needs_amount`). */
+                            ? (s.needs_amount
+                                ? '<span style="color:#92400E;font-weight:700;" '
+                                  + 'title="The work is recorded but nobody has entered what it cost.">'
+                                  + '🧾 amount needed</span>'
+                                : '<span style="color:#9ca3af;">no bill</span>')
+                            : 'Rs ' + flNum(s.amount))
+              /* 📷 THE PHOTO, ON EITHER BRANCH (11-Sep-2026). It is no longer tied to money:
+                   the rider is handed a receipt at the workshop and often pays nothing, so the
+                   commonest row carrying evidence is the one that reads "no bill". Putting the
+                   link inside just one branch would hide it exactly where a manager goes
+                   looking before he types the amount. */
+              + (s.photo_url
+                  ? ' <a href="' + flEsc(s.photo_url) + '" target="_blank" rel="noopener" '
+                    + 'title="The photo taken at the workshop" style="font-size:11px;font-weight:700;">📷</a>'
+                  : '')
+              + '</span>'
           + '</div>').join('')
         /* The rest of the record is one click away, and the button says how much. */
         + (more > 0
@@ -6072,7 +6441,12 @@ function flvServiceHistoryHtml(res) {
      panel, the alerts, the rider's chip and this card at once.
    ══════════════════════════════════════════════════════════════════════ */
 function flFixClaimReading(reqId) {
-    const types = (flData && flData.maint_types || []).filter(t => t.interval_km > 0);
+    /* ⚠⚠ NO LONGER FILTERED ON A KILOMETRE FIGURE (11-Sep-2026). `interval_km > 0` hides a
+         TIME-based job, which reports 0 km by design, and on prod hides the two of four types
+         that carry no figure at all — which is why a manager reported "I can only see 2
+         categories". This is a "which job was this?" picker: every active job belongs in it,
+         and whether a countdown moves is the SERVER's decision (see resolveType/counts_down). */
+    const types = (flData && flData.maint_types || []);
     const payload = {};
 
     if (types.length) {
@@ -6109,7 +6483,12 @@ function flFixClaimReading(reqId) {
 }
 
 function flFixServiceRecord(logId) {
-    const types = (flData && flData.maint_types || []).filter(t => t.interval_km > 0);
+    /* ⚠⚠ NO LONGER FILTERED ON A KILOMETRE FIGURE (11-Sep-2026). `interval_km > 0` hides a
+         TIME-based job, which reports 0 km by design, and on prod hides the two of four types
+         that carry no figure at all — which is why a manager reported "I can only see 2
+         categories". This is a "which job was this?" picker: every active job belongs in it,
+         and whether a countdown moves is the SERVER's decision (see resolveType/counts_down). */
+    const types = (flData && flData.maint_types || []);
     const payload = {};
 
     if (types.length) {
@@ -7318,10 +7697,22 @@ function flClearHomePin() {
         });
 }
 
-/** The card behind the modal is now stale — the nag should clear itself, or come back.
- *  Non-fatal: a failed refresh must never look like a failed save. */
+/** Whatever is behind the modal is now stale — the 🏠 pill and the vehicle-card nag
+ *  should both settle immediately.
+ *
+ *  ⚠ Refreshes the view the manager is ACTUALLY looking at. The editor opens from two
+ *    places — the riders table and a vehicle card — and reloading only the vehicles grid
+ *    left the riders row still showing "set home" after a successful save, which reads
+ *    exactly like the save failed.
+ *  Non-fatal throughout: a failed refresh must never look like a failed save. */
 function flvRefreshAfterHomePin() {
-    try { if (typeof flvLoad === 'function') { flvLoad(); } } catch (e) { /* cosmetic */ }
+    try {
+        if (flvMode === 'vehicles') {
+            if (typeof flvLoad === 'function') flvLoad();
+        } else if (typeof flLoad === 'function') {
+            flLoad(flMonth, true);
+        }
+    } catch (e) { /* cosmetic */ }
 }
 
 </script>

@@ -727,9 +727,14 @@ class FleetFuelController extends Controller
              * ⚠ Validated to the SAME rule RequestController::store applies, so a photo that
              *   would be refused there is refused here — before the service is recorded and
              *   the manager is left with a half-done action to puzzle over.
-             * ⚠ Only meaningful alongside an amount; ignored otherwise (see below).
+             * ⚠ As of 11-Sep-2026 this is NO LONGER "only meaningful alongside an amount".
+             *   The picture is saved against the service log whether money moved or not —
+             *   see `storeServicePhoto()` for why that is the ordinary workshop case.
              */
             'bill_image' => 'nullable|image|max:5120',
+            // 📷 The amount-independent name. Both are accepted so a form and a server
+            //    updated at different times cannot silently drop the picture.
+            'photo'      => 'nullable|image|max:5120',
         ]);
 
         // ⚠ Any type WITH A SCHEDULE can be recorded here — those are exactly the
@@ -742,6 +747,9 @@ class FleetFuelController extends Controller
         // "As conditions" types (Chain Set, Misc) are refused: they have no
         // countdown, so there is nothing here to record against.
         $recordType   = null;
+        // ⭐ Default TRUE so the pre-type path (no list on this install) behaves exactly as
+        //   it always has; only a resolved unscheduled job turns it off. See record().
+        $countsDown   = true;
         // ⚠ Declared out here because the recording block further down reads it. Both are
         //   guarded on `filled('meter')`, so it is only ever used when it has been resolved —
         //   but PHP's function scope makes that an easy thing to break later, so say it.
@@ -816,6 +824,12 @@ class FleetFuelController extends Controller
                 return response()->json(['success' => false, 'message' => $resolved['message']], 422);
             }
             $recordType = $resolved['type'];
+            /**
+             * ⭐ DOES THIS JOB COUNT DOWN ON THIS MACHINE (11-Sep-2026)? Carried from the
+             *   resolver to `record()` so an unscheduled job — an "other repair", or any job
+             *   with no figures for a van — is logged as work done and moves no clock.
+             */
+            $countsDown = (bool) ($resolved['counts_down'] ?? true);
         }
 
         /**
@@ -877,6 +891,12 @@ class FleetFuelController extends Controller
                     'date'       => $serviceDate,
                     'type'       => $recordType,
                     'actor_id'   => (int) auth()->id(),
+                    // ⭐ Whether a countdown moves — see resolveType(). An unscheduled job is
+                    //   logged as work done and resets nothing.
+                    'counts_down' => $countsDown,
+                    // 📷 The proof photo belongs to the WORK: stored even when no amount is
+                    //    given, which is the ordinary workshop case.
+                    'photo_path' => $this->storeServicePhoto($request),
                     'note'       => 'Recorded on the Bikes screen (no bill filed)',
                 ]);
                 if (!$recorded['ok']) {
@@ -1102,6 +1122,37 @@ class FleetFuelController extends Controller
      *
      * @return array{ok:bool, message:string, request_id?:int}
      */
+    /**
+     * 📷⭐⭐ THE PROOF PHOTO, SAVED WHETHER OR NOT ANY MONEY MOVED (owner ruling, 11-Sep-2026).
+     *
+     * ⚠⚠ A PHOTO USED TO REQUIRE AN AMOUNT, because the only place to put one was an expense
+     *    claim's attachment. That is backwards for a workshop: the rider is handed the receipt
+     *    at the counter and pays nothing, and the manager who later enters the amount needs to
+     *    SEE that receipt to know what to type. So the photo is stored against the service log
+     *    and any bill filed afterwards inherits it.
+     *
+     * ⚠ Accepts either field name: `photo` (the new, amount-independent one) or `bill_image`
+     *   (what the existing forms already send) — otherwise a form updated at a different time
+     *   from the server silently loses its picture.
+     * ⚠ Returns NULL on any failure. A photo must never cost a service recording.
+     */
+    private function storeServicePhoto(Request $request): ?string
+    {
+        try {
+            $file = $request->file('photo') ?: $request->file('bill_image');
+            if (!$file) return null;
+            $now  = now();
+            $name = 'svc_' . (int) (auth()->id() ?: 0) . '_' . $now->format('Ymd_His') . '_'
+                  . substr(bin2hex(random_bytes(3)), 0, 6) . '.jpg';
+            $path = 'service-logs/' . $now->format('Y') . '/' . $now->format('m') . '/' . $name;
+            \Storage::disk('public')->put($path, file_get_contents($file));
+            return $path;
+        } catch (\Throwable $e) {
+            \Log::warning('service photo not stored', ['error' => $e->getMessage()]);
+            return null;
+        }
+    }
+
     private function recordServiceBill(Request $request, array $data, $recordType, string $serviceDate, ?int $logId): array
     {
         try {

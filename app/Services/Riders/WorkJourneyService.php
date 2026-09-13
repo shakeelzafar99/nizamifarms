@@ -537,15 +537,41 @@ class WorkJourneyService
             //   are different risks.
             $swapDays = $this->assignmentBoundaryDays($bikeUsers, $date, $date);
 
+            /**
+             * 🔧⭐⭐ A WORKSHOP DAY IS NOT A LATE MORNING (promised 10-Sep, built 11-Sep).
+             *
+             * ⚠⚠ THE DAY-REVIEW LAYER WAS NEVER TOLD ABOUT THE WORKSHOP. A rider sent to take
+             *    his bike in rides somewhere that is not the office, arrives when the workshop
+             *    opens rather than when his shift starts, and does not begin at home if the
+             *    machine slept elsewhere — which is precisely the shape of "arrived late" and
+             *    "no home start". So the men who did exactly as instructed were the ones
+             *    collecting flags, and the reviewer had no way to tell that from a genuine one.
+             *
+             * ⭐ Only the TIMING flags are lifted. `meter_gap` stays: a jump in the odometer is
+             *   a fact about the machine, and a workshop day is if anything the day you most
+             *   want it, because the bike is being ridden by someone else.
+             * ⚠ ONE query for every rider on the page, never per row.
+             */
+            $onWorkshop = [];
+            try {
+                // ⚠ `ridersWithVisitOn`, NOT `tripsFor`: a reviewed day is already over, so the
+                //   visit is `done` and the live-trip question would answer nobody.
+                $onWorkshop = app(\App\Services\Riders\WorkshopVisitService::class)
+                    ->ridersWithVisitOn($bikeUsers, $date);
+            } catch (\Throwable $e) {
+                // A lookup wobble must not silently EXEMPT anybody — fail towards reporting.
+            }
+
             foreach ($rows as $r) {
                 $state = $this->deriveState($r);
                 $cont = $this->continuity($r, $graceByUser[$r->user_id] ?? null);
                 $onSwap = isset($swapDays[$r->user_id . '|' . substr((string) $r->attendance_date, 0, 10)]);
+                $atWorkshop = isset($onWorkshop[(int) $r->user_id]);
                 $issues = [];
-                if ($state === 'arrived_late') {
+                if ($state === 'arrived_late' && !$atWorkshop) {
                     $issues[] = 'late_vs_eta';
                 }
-                if ($state === 'no_home_start' && !$onSwap) {
+                if ($state === 'no_home_start' && !$onSwap && !$atWorkshop) {
                     $issues[] = 'no_home_start';
                 }
                 if ($cont && $cont['breach']) {
@@ -634,6 +660,21 @@ class WorkJourneyService
             //   riders, never per row (this method runs over a whole month).
             $swapDays = $this->assignmentBoundaryDays($bikeUsers);
 
+            /**
+             * 🔧 The workshop days in this whole range, keyed "user|date" to match `$swapDays`.
+             *    ONE query for the month — this method walks every rider over every day, so a
+             *    per-row lookup here would be a query per attendance row.
+             */
+            $workshopDays = [];
+            try {
+                $wsvc = app(\App\Services\Riders\WorkshopVisitService::class);
+                if ($wsvc->available()) {
+                    $workshopDays = $wsvc->visitDayKeys($bikeUsers, $from, $to);
+                }
+            } catch (\Throwable $e) {
+                // Fail towards REPORTING — never silently excuse a month of flags.
+            }
+
             // Continuity across the range without per-row queries: walk each rider's rows in
             // date order carrying the previous closing meter (seeded by ONE lookup per rider;
             // each day's own meter_home/meter_end is already in the row).
@@ -672,8 +713,16 @@ class WorkJourneyService
 
                 $issues = [];
                 $state = $this->deriveState($r);
-                if ($state === 'arrived_late') { $issues[] = 'late_vs_eta'; }
-                if ($state === 'no_home_start') { $issues[] = 'no_home_start'; }
+                /**
+                 * 🔧 A WORKSHOP DAY EXCUSES THE TIMING FLAGS — same rule as `workIssues()`
+                 *    above, applied here so the MONTH column agrees with the day page. A
+                 *    count that disagrees with the day it is counting is worse than no count.
+                 * ⚠ `meter_gap` below is deliberately NOT excused: the odometer is a fact
+                 *   about the machine, and a workshop day is when you most want it checked.
+                 */
+                $atWorkshop = isset($workshopDays[$uid . '|' . $date]);
+                if ($state === 'arrived_late' && !$atWorkshop) { $issues[] = 'late_vs_eta'; }
+                if ($state === 'no_home_start' && !$atWorkshop) { $issues[] = 'no_home_start'; }
                 if ($r->meter_start !== null && $r->meter_start !== '' && $prevByUser[$uid] !== null
                     && (string) ($r->meter_start_source ?? '') === 'home'
                     && empty($swapDays[$uid . '|' . $date])

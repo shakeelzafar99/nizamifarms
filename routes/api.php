@@ -531,6 +531,21 @@ Route::middleware('auth:sanctum')->group(function () {
      */
     Route::post('/workshop-visits/{id}/depart', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiDepart'])->where('id', '[0-9]+');
     Route::get('/workshop-visits/live', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiLive']);
+    /**
+     * 📍 …EXCEPT WHERE THERE IS NOTHING TO GEOFENCE AGAINST (11-Sep-2026). A workshop entered as
+     *    free text has no pin, so the rider is asked once — and "yes" both stamps the arrival and
+     *    PINS the place, after which that workshop is automatic for everyone, forever.
+     * ⚠ "no" is a real answer with its own route: silence must never be read as yes, because a
+     *   wrong yes pins a workshop at the wrong place for everybody.
+     */
+    Route::get('/workshop-visits/{id}/types', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiVisitTypes'])->where('id', '[0-9]+');
+    Route::post('/workshop-visits/{id}/arrived-here', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiArrivedHere'])->where('id', '[0-9]+');
+    Route::post('/workshop-visits/{id}/not-here', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiNotHere'])->where('id', '[0-9]+');
+    /**
+     * ⏰ "Baad mein (6h)" on the approval card — per USER, never a decision. The visit stays
+     *    open for every other planner and comes back to this one in six hours.
+     */
+    Route::post('/workshop-visits/{id}/snooze', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'apiSnooze'])->where('id', '[0-9]+');
     Route::post('/store/fleet/mark-serviced', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiMarkServiced']);
     // ✏️ Correct / remove a service record from the phone — same right as recording one.
     Route::post('/store/fleet/service-records/{id}', [\App\Http\Controllers\CRM\FleetFuelController::class, 'apiAmendServiceRecord'])->where('id', '[0-9]+');

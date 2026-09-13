@@ -3521,6 +3521,37 @@ class VehicleService
      *   Still capped by `$limit` — a machine with hundreds of rows must not blow the payload —
      *   and still newest-first, so "All time" means "as far back as this many rows reach".
      */
+    /**
+     * 🧾⭐⭐ "WORK WAS DONE AND NOBODY HAS ENTERED WHAT IT COST" — the interim nag, until the
+     *    proper unpaid-visits screen is built (owner ask, 11-Sep-2026).
+     *
+     * ⚠⚠ THIS DATE IS THE WHOLE POINT OF THE FEATURE. Recording a service without an amount only
+     *    became the ORDINARY case on 11-Sep, when the photo stopped needing a bill beside it —
+     *    the rider is handed a receipt at the workshop, pays nothing, and a manager enters the
+     *    figure days later. Every bill-less row before that is history nobody is going to chase,
+     *    and flagging it would bury the handful that genuinely need action under years of noise.
+     *    The owner asked for the line to be drawn at 1 September, so it is drawn ONCE, here, and
+     *    every surface reads it rather than each picking its own.
+     */
+    public const AMOUNT_NAG_FROM = '2026-09-01';
+
+    /**
+     * Does this history row still need somebody to enter what it cost?
+     *
+     * ⚠ A row is only nagged about when ALL of these hold: it is a hand-recorded SERVICE (a claim
+     *   carries its own money by definition), it has no live bill, it has no amount, and it falls
+     *   on or after the cut-off. A REJECTED bill counts as no bill — the money did not clear, so
+     *   somebody does still have to deal with it.
+     */
+    public static function rowNeedsAmount(array $row): bool
+    {
+        if (empty($row['manual']))                     return false;   // a claim is already money
+        if (!empty($row['bill_id']))                   return false;   // a live bill exists
+        if ((float) ($row['amount'] ?? 0) > 0)         return false;   // it has a figure
+        $d = substr((string) ($row['date'] ?? ''), 0, 10);
+        return $d !== '' && $d >= self::AMOUNT_NAG_FROM;
+    }
+
     public function serviceHistoryFor(int $vehicleId, int $limit = 24, bool $allTime = false): array
     {
         if (!$this->available()) return [];
@@ -3633,6 +3664,12 @@ class VehicleService
                     $cols[] = 'rq.amount as bill_amount';
                     $cols[] = 'rq.status as bill_status';
                 }
+                // 📷 The proof photo, once the Sep-12 SQL has run. Selected through the SAME
+                //    built-up list for the reason spelled out above — an addSelect here would
+                //    silently empty the whole Past-services panel.
+                if (ServiceRecordService::logKeepsPhoto()) {
+                    $cols[] = 'l.photo_path';
+                }
                 $manual = $manualQ->get($cols);
                 foreach ($manual as $m) {
                     $d = substr((string) $m->service_date, 0, 10);
@@ -3659,6 +3696,17 @@ class VehicleService
                         'manual'  => true,
                         'note'    => $m->note,
                         'log_id'  => (int) $m->id,      // ← correctable
+                        /**
+                         * 📷 THE PROOF PHOTO (11-Sep-2026) — the receipt the rider was handed
+                         *    at the workshop, kept whether or not any money has been entered
+                         *    yet. This is what a manager looks at when he types the amount days
+                         *    later, so it must ride on the history row itself.
+                         * ⚠ Schema-guarded upstream (`logKeepsPhoto`), so this is simply null
+                         *   until the Sep-12 SQL runs.
+                         */
+                        'photo_url' => !empty($m->photo_path ?? null)
+                            ? asset('public-storage/' . ltrim((string) $m->photo_path, '/'))
+                            : null,
                         // ⚠ Same shape both ways: a consumer must never have to know which
                         //   branch produced a row to read a key off it.
                         'req_id'  => null,
@@ -3677,6 +3725,14 @@ class VehicleService
             }
 
             // Newest first across BOTH kinds, so the list reads as one history.
+            /**
+             * 🧾 Stamp the "somebody still has to enter what this cost" flag onto every row, from
+             *    ONE rule (`rowNeedsAmount`), so the web list, the phone list and any counter
+             *    above them cannot disagree about which rows are outstanding.
+             */
+            foreach ($out as &$row) { $row['needs_amount'] = self::rowNeedsAmount($row); }
+            unset($row);
+
             usort($out, fn ($a, $b) => strcmp((string) $b['date'], (string) $a['date']));
 
             return array_slice($out, 0, $limit);

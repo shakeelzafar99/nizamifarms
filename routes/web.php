@@ -434,6 +434,14 @@ Route::middleware(['auth'])->group(function () {
     //    corner notice on the orders page so nobody assigns work to a man at the workshop.
     Route::post('/orders/riders-map/fleet/workshop/{id}/depart', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'depart'])->name('fleet.workshop.depart')->where('id', '[0-9]+');
     Route::get('/orders/riders-map/fleet/workshop/live', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'live'])->name('fleet.workshop.live');
+    /**
+     * ⏰ "Later (6h)" on the approval card — the desk twin of the phone's button, per USER and
+     *    never a decision, so one planner putting it aside never hides it from the others.
+     * 📍 …and a manager's "he is there" for a workshop that has no pin to geofence against.
+     */
+    Route::get('/orders/riders-map/fleet/workshop/{id}/types', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'visitTypes'])->name('fleet.workshop.types')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/snooze', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'snooze'])->name('fleet.workshop.snooze')->where('id', '[0-9]+');
+    Route::post('/orders/riders-map/fleet/workshop/{id}/arrived-here', [\App\Http\Controllers\CRM\WorkshopVisitController::class, 'arrivedHere'])->name('fleet.workshop.arrivedhere')->where('id', '[0-9]+');
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-assign', [\App\Http\Controllers\CRM\VehicleController::class, 'previewAssign'])->name('orders.riders-map.fleet.vehicles.preview-assign');
     // Who loses this machine if it is taken back — feeds the "and what about him?" prompt.
     Route::get('/orders/riders-map/fleet/vehicles/{id}/preview-release', [\App\Http\Controllers\CRM\VehicleController::class, 'releasePreview'])->name('orders.riders-map.fleet.vehicles.preview-release');

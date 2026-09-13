@@ -739,6 +739,40 @@ class DeliveryRegionController extends Controller
             }
         }
 
+        /**
+         * 🔧⭐ WHO OF THESE IS AT THE WORKSHOP (owner ruling, 11-Sep-2026: *"do not skip the
+         *    rider — even on a workshop day he should be able to be assigned orders"*).
+         *
+         * ⭐ Every order above is already assigned; this only NAMES the riders whose machine
+         *   is in, so the manager reads it once at the end instead of discovering it when the
+         *   round does not go out. Region mapping is a standing rule and must not quietly
+         *   re-route a day's work because of one morning at the workshop.
+         * ⚠ ONE query for the whole run (`tripsFor`), never per order — this loop can touch
+         *   hundreds of rows.
+         */
+        $workshopWarnings = [];
+        try {
+            $trips = app(\App\Services\Riders\WorkshopVisitService::class)
+                ->tripsFor(array_values(array_unique($regionToRider)), null, false);
+            foreach ($trips as $uid => $t) {
+                if (empty($t['is_active'])) continue;
+                // ⚠ `decorateTrip()` does NOT carry the rider's name — the name is filled in
+                //   below from `$riderNames`, which this method already looks up anyway.
+                $workshopWarnings[] = [
+                    'rider_id'   => (int) $uid,
+                    'rider_name' => null,
+                    'label'      => $t['label'] ?? 'At the workshop',
+                ];
+            }
+            if ($workshopWarnings) {
+                \Log::info('Auto-assign included riders on a workshop trip', [
+                    'riders' => array_column($workshopWarnings, 'rider_id'),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // A warning must never cost the run.
+        }
+
         $riderNames = DB::table('t_sys_user')
             ->whereIn('id', array_values($regionToRider))
             ->pluck('fullname', 'id');
@@ -773,9 +807,23 @@ class DeliveryRegionController extends Controller
             $message .= "\n(" . implode(', ', $contextParts) . ")";
         }
 
+        // 🔧 Named once at the end — the orders ARE assigned; this only says who cannot
+        //    take them out yet. Never a reason to have skipped him.
+        if (!empty($workshopWarnings)) {
+            foreach ($workshopWarnings as $i => $w) {
+                $workshopWarnings[$i]['rider_name'] = $riderNames[$w['rider_id']] ?? null;
+            }
+            $names = array_filter(array_column($workshopWarnings, 'rider_name'));
+            $message .= "\n⚠ " . count($workshopWarnings) . ' of these riders '
+                . (count($workshopWarnings) === 1 ? 'is' : 'are') . ' at the workshop'
+                . ($names ? ' (' . implode(', ', $names) . ')' : '')
+                . ' — assigned anyway; dispatch when they are back.';
+        }
+
         return response()->json([
             'success' => true,
             'message' => $message,
+            'workshop_warnings' => $workshopWarnings,
             'assigned' => $assigned,
             'changed' => $changed,
             'skipped' => $skipped,
