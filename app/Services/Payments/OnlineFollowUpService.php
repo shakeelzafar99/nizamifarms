@@ -98,6 +98,30 @@ class OnlineFollowUpService
     public const TEMPLATE_FOLLOW_UP = 'payment_reminder_single';
 
     /**
+     * Sep-2026 — the multi-invoice reminder, used when one message covers
+     * several of a customer's unpaid bills. Takes 3 body params like the single
+     * one, but they mean different things: [first name, "NF-1, NF-2", TOTAL].
+     *
+     * ⚠ It declares NO media header, so it must NEVER be sent with an order_id:
+     * order_id triggers the invoice-image attach and Meta rejects a header
+     * component on a template that doesn't declare one. The orders it covers are
+     * recorded through related_order_number(s) instead.
+     */
+    public const TEMPLATE_FOLLOW_UP_MULTI = 'payment_reminder_multiples';
+
+    /**
+     * Ledger approval statuses that still mean "this invoice is waiting for the
+     * customer's money".
+     *
+     * ⚠⚠ `pending_l2` is deliberately ABSENT. BalancePostingService runs at L1 —
+     * once an invoice clears L1 the money is already in the balances and L2 only
+     * verifies it (the same reason this board's own `proof_l1_done` group has no
+     * buttons). Listing an L1-approved invoice as an outstanding bill would ask a
+     * customer for money we have already booked.
+     */
+    public const OPEN_BILL_STATUSES = ['pending', 'pending_l1'];
+
+    /**
      * Build the board.
      *
      * @param  string|null  $riderFilter  't_fin_account' id, or 'all'
@@ -160,6 +184,13 @@ class OnlineFollowUpService
             }
         }
 
+        // Sep-2026 — what ELSE this customer owes. The board is per ORDER, so a
+        // customer with an older unpaid bill (or two rows on this very board)
+        // looked like a one-invoice chase and got a one-invoice reminder. Only
+        // Online Approvals knew about the rest, which is where the multi-invoice
+        // reminder lives. This hands the same knowledge to the chase row.
+        $chase = $this->attachOtherOpenBills($chase, $orderIds);
+
         $chase   = $this->sortChase($chase);
         $proofIn = $this->sortProofIn($proofIn);
 
@@ -215,8 +246,9 @@ class OnlineFollowUpService
             // long after it was replaced; every row already carries its own
             // `template`, and this covers the 422 fallback path too.
             'templates'      => [
-                'day_one'   => self::TEMPLATE_DAY_ONE,
-                'follow_up' => self::TEMPLATE_FOLLOW_UP,
+                'day_one'         => self::TEMPLATE_DAY_ONE,
+                'follow_up'       => self::TEMPLATE_FOLLOW_UP,
+                'follow_up_multi' => self::TEMPLATE_FOLLOW_UP_MULTI,
             ],
 
             'chase'          => $chase,
@@ -350,6 +382,241 @@ class OnlineFollowUpService
         }
     }
 
+    /**
+     * Sep-2026 — attach each chase row's OTHER unpaid online invoices.
+     *
+     * WHY: this board is built per ORDER inside a 3-day window, so a customer
+     * with an older unpaid bill showed up here as a single-invoice chase and got
+     * the single-invoice reminder. The second bill was visible only in Online
+     * Approvals, which groups by customer and switches to the multi-invoice
+     * template on its own. The operator on this screen could not know. On the
+     * replica 5 of 8 chase rows had another open bill, and one customer had TWO
+     * rows on the same board — so this is the normal case, not an edge case.
+     *
+     * WHAT COUNTS AS AN OPEN BILL: the same predicate Online Approvals uses for
+     * its L1 queue — an unapproved online invoice-queue ledger row (see
+     * OPEN_BILL_STATUSES for why pending_l2 is excluded).
+     *
+     * ⚠ Rs 0 rows are dropped. There are live Rs 0 invoices on this board (see
+     * memory: zero-amount-invoices-immortal-on-daily-closing) and there is
+     * nothing to collect on one — offering it as a bill to chase would put "Rs 0"
+     * into a customer's reminder.
+     *
+     * ⚠ Bills that already carry payment proof are RETURNED but flagged
+     * `has_proof`, and the UI leaves them unticked. They are excluded from the
+     * send by default (asking for money the customer has already sent is the
+     * exact mistake this panel exists to prevent) while still being visible, so
+     * the operator can see the customer's whole position before deciding.
+     *
+     * @param  array  $boardOrderIds  every order on this board, so a bill that is
+     *                                also a row here can be marked `in_window`.
+     */
+    private function attachOtherOpenBills(array $chase, array $boardOrderIds): array
+    {
+        // Every row gets the keys whether or not it has other bills, so no
+        // consumer — blade, mobile, JSON — has to guard for their absence.
+        foreach ($chase as &$blankRow) {
+            $blankRow['other_open_bills']        = [];
+            $blankRow['other_bills_count']       = 0;
+            $blankRow['other_bills_open_count']  = 0;
+            $blankRow['other_bills_open_amount'] = 0;
+            $blankRow['other_bills_proof_count'] = 0;
+            $blankRow['combined_total']          = $blankRow['amount'];
+        }
+        unset($blankRow);
+
+        $customerIds = array_values(array_unique(array_filter(array_column($chase, 'customer_id'))));
+
+        if (empty($customerIds)) {
+            return $chase;
+        }
+
+        try {
+            $bills = \DB::table('t_fin_ledger as l')
+                ->join('t_crm_prod_order as o', 'o.id', '=', 'l.order_id')
+                ->whereIn('o.customer_id', $customerIds)
+                ->where('l.mode', 'online')
+                ->whereIn('l.transaction_type', [
+                    \App\Models\FIN\LedgerModel::TYPE_INVOICE,
+                    \App\Models\FIN\LedgerModel::TYPE_ORDER_PAYMENT,
+                ])
+                ->whereIn('l.approval_status', self::OPEN_BILL_STATUSES)
+                // request_id rows are reimbursements/expenses riding the same
+                // table, not customer invoices — the same filter Online
+                // Approvals' L1 query uses.
+                ->whereNull('l.request_id')
+                // An invoice can be posted before delivery; only a delivered
+                // order is money the customer actually owes us today.
+                ->whereIn('o.order_status', ['delivered', 'completed'])
+                ->where('l.amount', '>', 0)
+                ->orderBy('o.id')
+                ->get(['l.amount', 'l.approval_status', 'o.id as order_id', 'o.order_number', 'o.customer_id']);
+        } catch (\Throwable $e) {
+            // Never blank the board for this — it only costs the extra context.
+            \Log::warning('OnlineFollowUp: other-open-bills lookup failed (non-critical)', ['error' => $e->getMessage()]);
+            return $chase;
+        }
+
+        if ($bills->isEmpty()) {
+            return $chase;
+        }
+
+        $billOrderIds = $bills->pluck('order_id')->map(fn ($i) => (int) $i)->unique()->values()->all();
+        $deliveredMap = $this->deliveryTimestamps($billOrderIds);
+        $billProofs   = $this->proofMap($billOrderIds);
+        $onBoard      = array_flip(array_map('intval', $boardOrderIds));
+
+        $byCustomer = [];
+        foreach ($bills as $bill) {
+            $byCustomer[(int) $bill->customer_id][] = $bill;
+        }
+
+        $today = Carbon::today();
+
+        foreach ($chase as &$row) {
+            $candidates = $byCustomer[$row['customer_id']] ?? [];
+            $others     = [];
+
+            foreach ($candidates as $bill) {
+                $billOrderId = (int) $bill->order_id;
+
+                // The row's own invoice is not an "other" bill.
+                if ($billOrderId === $row['id']) {
+                    continue;
+                }
+
+                $deliveredAt = ($rec = $deliveredMap->get($billOrderId))
+                    ? Carbon::parse($rec->changed_at)
+                    : null;
+
+                // Unclamped on purpose: the whole point is to surface bills that
+                // have aged PAST the board's 3-day window, so a "Day 4" must be
+                // allowed to say so rather than being pinned at 3.
+                $ageDays = $deliveredAt
+                    ? (int) $deliveredAt->copy()->startOfDay()->diffInDays($today)
+                    : null;
+
+                $proof    = $billProofs[$billOrderId] ?? null;
+                $hasProof = $proof && ($proof['status'] ?? PaymentProofStatusService::NONE) !== PaymentProofStatusService::NONE;
+
+                $others[] = [
+                    'id'            => $billOrderId,
+                    'order_number'  => $bill->order_number,
+                    'amount'        => (int) round((float) $bill->amount),
+                    'delivery_date' => $deliveredAt ? $deliveredAt->format('M d, Y') : null,
+                    'age_days'      => $ageDays,
+                    'age_label'     => $this->ageLabel($ageDays),
+                    // TRUE when this bill is also a row on this very board (a
+                    // customer with two deliveries inside the window). The UI
+                    // says so, and a send has to grey BOTH rows out.
+                    'in_window'     => isset($onBoard[$billOrderId]),
+                    'has_proof'     => $hasProof,
+                    'proof_label'   => $hasProof ? ($proof['label'] ?? null) : null,
+                    'ledger_stage'  => $bill->approval_status,
+                ];
+            }
+
+            if (empty($others)) {
+                continue;
+            }
+
+            // Oldest first: the most overdue bill is the one worth naming first
+            // in a message, and it is the one the operator will be asked about.
+            usort($others, fn ($a, $b) => ($b['age_days'] ?? 0) <=> ($a['age_days'] ?? 0));
+
+            $open = array_values(array_filter($others, fn ($b) => !$b['has_proof']));
+
+            $row['other_open_bills']        = $others;
+            $row['other_bills_count']       = count($others);
+            $row['other_bills_open_count']  = count($open);
+            $row['other_bills_open_amount'] = (int) array_sum(array_column($open, 'amount'));
+            $row['other_bills_proof_count'] = count($others) - count($open);
+            // What the "all bills" reminder would ask for: this invoice plus the
+            // other bills that are ticked by default.
+            $row['combined_total']          = $row['amount'] + $row['other_bills_open_amount'];
+        }
+        unset($row);
+
+        return $chase;
+    }
+
+    /**
+     * Stamp "last reminded at" on one or more online orders.
+     *
+     * Sep-2026 — one reminder can now cover SEVERAL of a customer's unpaid bills,
+     * so the stamp has to land on every order the message named. Otherwise the
+     * bills that were not the primary still read "never reminded" and get chased
+     * again tomorrow for money already asked for once.
+     *
+     * Lives here rather than in either controller because the web Daily Closing
+     * page and the mobile API both do this, and they were copy-pasted once
+     * before (see the class docblock).
+     *
+     * Validates each order independently and reports per order: a set where one
+     * id is bad must still stamp the rest, because the WhatsApp message has
+     * ALREADY gone out by the time this is called — refusing the whole batch
+     * would lose the record of a send that really happened.
+     *
+     * @return array{stamped: array<int,string>, skipped: array<int,string>}
+     */
+    public function stampReminded(array $orderIds, ?int $userId): array
+    {
+        $stamped = [];
+        $skipped = [];
+
+        $ids = array_values(array_unique(array_filter(array_map('intval', $orderIds))));
+
+        foreach ($ids as $id) {
+            $order = \App\Models\CRM\OrderModel::find($id);
+
+            if (!$order) {
+                $skipped[$id] = 'Order not found';
+                continue;
+            }
+
+            if (!in_array($order->order_status, ['delivered', 'completed'])) {
+                $skipped[$id] = 'Order must be delivered first';
+                continue;
+            }
+
+            $paymentMethod = strtolower($order->payment_method ?? 'cash');
+            if (in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod'])) {
+                $skipped[$id] = 'This is not an online payment order';
+                continue;
+            }
+
+            $order->online_message_sent_at = now();
+            $order->online_message_sent_by = $userId;
+            $order->save();
+
+            $stamped[$id] = $order->online_message_sent_at->format('h:i A');
+        }
+
+        if (!empty($stamped)) {
+            \Log::info('OnlineFollowUp: reminder stamped', [
+                'order_ids' => array_keys($stamped),
+                'skipped'   => $skipped,
+                'user_id'   => $userId,
+            ]);
+        }
+
+        return ['stamped' => $stamped, 'skipped' => $skipped];
+    }
+
+    /** "today" / "yesterday" / "4 days ago". Phrased once, for both clients. */
+    private function ageLabel(?int $ageDays): ?string
+    {
+        if ($ageDays === null) {
+            return null;
+        }
+
+        return match (true) {
+            $ageDays <= 0 => 'today',
+            $ageDays === 1 => 'yesterday',
+            default => $ageDays . ' days ago',
+        };
+    }
+
     private function proofMap(array $orderIds): array
     {
         if (!config('payment_signals.enabled')) {
@@ -429,7 +696,7 @@ class OnlineFollowUpService
                 return collect();
             }
 
-            return \DB::table('t_wa_messages')
+            $history = \DB::table('t_wa_messages')
                 ->whereIn('related_order_number', $numbers)
                 ->whereIn('template_name', self::REMINDER_TEMPLATES)
                 ->where('direction', 'outbound')
@@ -437,11 +704,83 @@ class OnlineFollowUpService
                 ->groupBy('related_order_number')
                 ->selectRaw('related_order_number, COUNT(*) AS c, MAX(created_at) AS last_at')
                 ->get()
-                ->keyBy('related_order_number');
+                ->mapWithKeys(fn ($r) => [$r->related_order_number => [
+                    'count'   => (int) $r->c,
+                    'last_at' => $r->last_at,
+                ]]);
+
+            return $this->mergeMultiInvoiceHistory($history, $numbers);
         } catch (\Throwable $e) {
             \Log::warning('OnlineFollowUp: reminder history lookup failed', ['error' => $e->getMessage()]);
             return collect();
         }
+    }
+
+    /**
+     * Fold in the reminders that covered SEVERAL invoices at once.
+     *
+     * ⚠⚠ `related_order_number` is one varchar — it can only ever name the
+     * message's primary order, so a multi-invoice reminder was invisible to the
+     * query above for every other bill it covered. (Before Sep-2026 it was worse:
+     * not one of the 33 multi sends in 60 days carried ANY order at all, so the
+     * whole template was missing from this history.) The full list now rides in
+     * `t_wa_messages.metadata` under `related_order_numbers`, which needs no
+     * schema change.
+     *
+     * Read as a small bounded FETCH, deliberately not a `LIKE '%…%'` scan:
+     * metadata is an unindexed longtext, and there is no index a wildcard search
+     * could use. Multi sends run at roughly 33 per 60 days, and every order on
+     * this board was delivered inside the window, so a reminder about one cannot
+     * predate the window — which makes this handful of rows both cheap and
+     * complete.
+     */
+    private function mergeMultiInvoiceHistory(Collection $history, Collection $numbers): Collection
+    {
+        if (!\Schema::hasColumn('t_wa_messages', 'metadata')) {
+            return $history;
+        }
+
+        $wanted = array_flip($numbers->all());
+
+        $rows = \DB::table('t_wa_messages')
+            ->where('template_name', self::TEMPLATE_FOLLOW_UP_MULTI)
+            ->where('direction', 'outbound')
+            ->where('status', '!=', 'failed')
+            ->where('created_at', '>=', Carbon::today()->subDays(self::WINDOW_DAYS - 1)->startOfDay())
+            ->whereNotNull('metadata')
+            ->get(['metadata', 'created_at', 'related_order_number']);
+
+        foreach ($rows as $row) {
+            $meta = json_decode((string) $row->metadata, true);
+            $list = is_array($meta) ? ($meta['related_order_numbers'] ?? null) : null;
+
+            if (!is_array($list)) {
+                continue;
+            }
+
+            foreach ($list as $number) {
+                if (!is_string($number) || !isset($wanted[$number])) {
+                    continue;
+                }
+
+                // The primary order is already counted by the indexed query —
+                // counting it again here would read "×2" for a single send.
+                if ($number === $row->related_order_number) {
+                    continue;
+                }
+
+                $prev = $history->get($number, ['count' => 0, 'last_at' => null]);
+
+                $history->put($number, [
+                    'count'   => $prev['count'] + 1,
+                    'last_at' => ($prev['last_at'] === null || $row->created_at > $prev['last_at'])
+                        ? $row->created_at
+                        : $prev['last_at'],
+                ]);
+            }
+        }
+
+        return $history;
     }
 
     /** One display row. */
@@ -467,7 +806,7 @@ class OnlineFollowUpService
             : null;
 
         $history       = $reminderMap->get($order->order_number);
-        $reminderCount = $history ? (int) $history->c : 0;
+        $reminderCount = $history ? (int) $history['count'] : 0;
 
         // The WA log is authoritative once stamped; before Aug-2026 it wasn't
         // written at all, so a legacy online_message_sent_at still counts as one.
@@ -478,6 +817,11 @@ class OnlineFollowUpService
         return [
             'id'             => $id,
             'order_number'   => $order->order_number,
+            // Needed to find the customer's OTHER open bills. Grouped by id, not
+            // by the display name Online Approvals groups on: two customers can
+            // share a name, and one customer's name can be spelled two ways
+            // across the order address and the customer record.
+            'customer_id'    => $order->customer_id ? (int) $order->customer_id : null,
             'customer_name'  => $this->customerName($order),
             'customer_phone' => $this->customerPhone($order),
             'rider_name'     => $order->assignedRider->fullname ?? 'Unassigned',
@@ -680,10 +1024,31 @@ class OnlineFollowUpService
             ->where('approval_date', '>=', $windowStart)
             ->count();
 
+        // Sep-2026 — the OTHER pane on this screen. Petrol and maintenance
+        // requests are raised by riders from their phones all day, so the
+        // Requests pane goes stale exactly the same way the Messages pane does,
+        // and the operator had no way to know a new one had arrived.
+        //
+        // ⚠ Counted WITHOUT the category relation the display query joins: this
+        // is polled, and a plain indexed COUNT on status is the cheap half. A
+        // non-expense pending request moving would cost one wasted panel
+        // re-render, which is harmless — this is a change DETECTOR, never a
+        // figure the page renders.
+        $requests = 0;
+        try {
+            $requests = \App\Models\Request\RequestModel::query()
+                ->where('status', 'pending')
+                ->whereIn('expense_category', ['Petrol', 'Maintenance'])
+                ->count();
+        } catch (\Throwable $e) {
+            $requests = 0;
+        }
+
         return [
             'deliveries' => (int) $deliveries,
             'proofs'     => (int) $proofs,
             'settled'    => (int) $settled,
+            'requests'   => (int) $requests,
         ];
     }
 

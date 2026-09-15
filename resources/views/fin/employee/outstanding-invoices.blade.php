@@ -40,6 +40,13 @@
     .dc-pane-body { overflow-y: auto; overflow-x: hidden; max-height: 56vh; }
     .dc-panel { margin: 8px; }
     .dc-pane-empty { padding: 14px 16px; color: #94a3b8; font-size: 12.5px; font-style: italic; }
+    /* Sep-2026 — the ONLY visible trace of a background refresh. A quiet "updated
+       17:42" that fades, not a call to action: the operator should notice that
+       the pane is live, without being pulled away from what they are doing. */
+    .dc-fresh { font-size: 10.5px; color: #64748b; margin-left: auto; margin-right: 8px;
+                opacity: 0; transition: opacity .5s ease; white-space: nowrap; }
+    .dc-fresh.dc-fresh-on { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) { .dc-fresh { transition: none; } }
 
     /* Maximize puts a class on the pane ITSELF — the node is never re-parented,
        so every button, <select> and inline handler inside keeps working exactly
@@ -229,21 +236,23 @@
          half-finished approval), the page carries the counters it was born with,
          polls 3 cheap COUNTs, and offers a refresh when they move. Hidden until
          something actually changes. --}}
+    {{-- Sep-2026 — the "Refresh page" bar that used to live here is GONE. It asked
+         the operator to do something the page can do for itself, and it cost a
+         full ~1,130ms / 62-query reload that threw away scroll position, the open
+         groups and any half-finished approval.
+
+         Now the page polls the same cheap counters and, when they move, quietly
+         re-renders ONLY the two panes above — never the rider closings below,
+         where the money is actually approved. This element is just the baseline
+         it compares against; it renders nothing.
+
+         ⚠ The bar never worked anyway: its endpoint was swallowed by the `/{id}`
+         route registered before it (see routes/web.php), so it 404'd on every
+         poll from the day it shipped. Fixed in the same round. --}}
     @if(isset($onlineFollowUpHeartbeat) && $onlineFollowUpHeartbeat)
-    <div id="fu-stale-bar" class="mb-3 hidden" data-baseline="{{ json_encode($onlineFollowUpHeartbeat) }}">
-        <div style="background: linear-gradient(to right, #eff6ff, #dbeafe); border: 2px solid #93c5fd;" class="rounded-lg px-4 py-2.5 flex items-center justify-between gap-3">
-            <div class="flex items-center gap-2 min-w-0">
-                <span class="text-base">🔄</span>
-                <span id="fu-stale-text" class="text-xs font-semibold text-blue-900 truncate"></span>
-                <span class="text-xs text-blue-700 opacity-75">— this page hasn't updated since you opened it</span>
-            </div>
-            <button type="button" onclick="window.location.reload()"
-                style="background-color:#2563eb;"
-                class="text-xs text-white px-3 py-1.5 rounded-lg font-bold hover:opacity-90 whitespace-nowrap shadow-sm">
-                Refresh page
-            </button>
-        </div>
-    </div>
+    <div id="dc-refresh-state" class="hidden"
+         data-baseline="{{ json_encode($onlineFollowUpHeartbeat) }}"
+         data-rider="{{ $filters['rider'] ?? 'all' }}"></div>
     @endif
 
     {{-- ══ The day's two queues, side by side (Aug-2026) ═══════════════════
@@ -261,261 +270,22 @@
             <div class="dc-pane-hd">
                 <div class="dc-pane-ttl">
                     <span>🧾 Requests</span>
-                    @if($dcPetrolCount > 0)
-                    <span class="dc-pane-badge" style="background:#ffedd5; color:#c2410c;">⛽ {{ $dcPetrolCount }}</span>
-                    @endif
-                    @if($dcMaintCount > 0)
-                    <span class="dc-pane-badge" style="background:#ccfbf1; color:#0f766e;">🔧 {{ $dcMaintCount }}</span>
-                    @endif
-                    @if($dcReqAmount > 0)
-                    <span class="dc-pane-badge">Rs. {{ number_format($dcReqAmount) }}</span>
-                    @endif
+                    {{-- ⚠ Always RENDERED, hidden when zero, rather than omitted by
+                         an @if. The background refresh updates these in place, and
+                         a badge that does not exist in the DOM cannot be revealed
+                         when its count rises from 0 — the header would keep saying
+                         nothing while new requests piled up in the pane below. --}}
+                    <span class="dc-pane-badge {{ $dcPetrolCount > 0 ? '' : 'hidden' }}" data-dc-badge="petrol" style="background:#ffedd5; color:#c2410c;">⛽ {{ $dcPetrolCount }}</span>
+                    <span class="dc-pane-badge {{ $dcMaintCount > 0 ? '' : 'hidden' }}" data-dc-badge="maint" style="background:#ccfbf1; color:#0f766e;">🔧 {{ $dcMaintCount }}</span>
+                    <span class="dc-pane-badge {{ $dcReqAmount > 0 ? '' : 'hidden' }}" data-dc-badge="reqamt">Rs. {{ number_format($dcReqAmount) }}</span>
                 </div>
+                <span class="dc-fresh" id="dc-fresh-requests" aria-live="polite"></span>
                 <button type="button" class="dc-max-btn" onclick="dcToggleMax('dc-pane-requests', this)">⛶ Maximize</button>
             </div>
-            <div class="dc-pane-body">
-    <!-- ⛽ Petrol Requests (Meter-based + Manual) -->
-    @if(isset($pendingPetrolRequests) && $pendingPetrolRequests)
-    <div class="dc-panel">
-        <div style="background: linear-gradient(to right, #fff7ed, #ffedd5); border: 2px solid #fdba74;" class="rounded-lg shadow-sm overflow-hidden">
-            <!-- Header -->
-            <div style="background: linear-gradient(to right, #ea580c, #c2410c);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('petrol-requests-body').classList.toggle('hidden')">
-                <div class="flex items-center gap-3">
-                    <span class="text-lg">⛽</span>
-                    <h3 class="text-sm font-bold text-white">Petrol Requests</h3>
-                </div>
-                <div class="flex items-center gap-3">
-                    <span class="animate-pulse text-xs bg-white text-orange-700 px-2 py-0.5 rounded-full font-bold">{{ $pendingPetrolRequests['total_count'] }} Pending</span>
-                    <span class="text-xs bg-orange-900 bg-opacity-30 text-white px-2 py-0.5 rounded-full font-bold">Rs. {{ number_format($pendingPetrolRequests['total_amount']) }}</span>
-                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                </div>
-            </div>
-            <!-- Body (auto-expanded since these are pending) -->
-            <div id="petrol-requests-body">
-                <!-- Summary Row -->
-                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #fdba74;">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Total Requests:</span>
-                        <span class="text-xs font-bold text-gray-900">{{ $pendingPetrolRequests['total_count'] }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Total Amount:</span>
-                        <span class="text-xs font-bold text-orange-700">Rs. {{ number_format($pendingPetrolRequests['total_amount'], 2) }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Riders:</span>
-                        <span class="text-xs font-bold text-gray-900">{{ count($pendingPetrolRequests['by_rider']) }}</span>
-                    </div>
-                </div>
-                
-                <!-- Rider Groups -->
-                @foreach($pendingPetrolRequests['by_rider'] as $riderIdx => $riderData)
-                <div class="border-b last:border-b-0" style="border-color: #fdba74;">
-                    <!-- Rider Header -->
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-orange-50 transition-colors" 
-                         onclick="document.getElementById('petrol-rider-{{ $riderIdx }}').classList.toggle('hidden')">
-                        <div class="flex items-center gap-3">
-                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
-                            <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
-                            {{-- Month view: the rider's full fuel month (meter km, every claim,
-                                 duplicate flags) so the approver can judge THIS request in
-                                 context instead of in isolation. stopPropagation keeps the
-                                 row's expand/collapse from also firing. --}}
-                            @if(!empty($riderData['rider_user_id']))
-                            <button onclick="event.stopPropagation(); fmOpen({{ $riderData['rider_user_id'] }}, '{{ addslashes($riderData['rider_name']) }}')"
-                                    style="background:#fff; border:1px solid #fdba74; color:#c2410c; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer;">
-                                📊 Month view
-                            </button>
-                            @endif
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <span class="text-sm font-bold text-orange-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
-                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                        </div>
-                    </div>
-                    
-                    <!-- Rider Request Details (expanded by default) -->
-                    <div id="petrol-rider-{{ $riderIdx }}">
-                        @foreach($riderData['requests'] as $petrolReq)
-                        <div id="petrol-req-{{ $petrolReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #fff7ed; border: 1px solid #fed7aa;">
-                            <div class="px-4 py-3">
-                                <div class="flex items-center justify-between mb-2">
-                                    <div class="flex items-center flex-wrap gap-3">
-                                        <span class="text-xs font-mono font-bold text-orange-800">{{ $petrolReq['request_number'] }}</span>
-                                        <span class="text-xs text-gray-500">{{ $petrolReq['expense_date'] }}</span>
-                                        @if(($petrolReq['source'] ?? 'meter') === 'manual')
-                                        <span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-semibold">Manual</span>
-                                        @else
-                                        <span class="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-semibold">Meter</span>
-                                        @endif
-                                        @include('fin.employee.partials.machine-chip', ['req' => $petrolReq, 'tone' => '#fdba74'])
-                                    </div>
-                                    <span class="text-sm font-bold text-orange-800">Rs. {{ number_format($petrolReq['amount'], 2) }}</span>
-                                </div>
-                                @if(($petrolReq['source'] ?? 'meter') === 'meter')
-                                <div class="flex items-center gap-4 mb-2">
-                                    <div class="flex items-center gap-1.5">
-                                        <span class="text-xs text-gray-500">Distance:</span>
-                                        <span class="text-xs font-bold text-gray-800">{{ $petrolReq['meter_distance'] }} km</span>
-                                    </div>
-                                    <div class="flex items-center gap-1.5">
-                                        <span class="text-xs text-gray-500">Rate:</span>
-                                        <span class="text-xs font-bold text-gray-800">Rs. {{ $petrolReq['petrol_rate'] }}/km</span>
-                                    </div>
-                                </div>
-                                @endif
-                                @if($petrolReq['notes'])
-                                <div class="text-xs text-gray-500 mb-2 italic">{{ $petrolReq['notes'] }}</div>
-                                @endif
-                                @if(!empty($petrolReq['attachment_url']))
-                                <div class="mb-2">
-                                    <a href="{{ $petrolReq['attachment_url'] }}" target="_blank" class="inline-block">
-                                        <img src="{{ $petrolReq['attachment_url'] }}" alt="Receipt" class="h-20 w-auto rounded border border-orange-200 hover:opacity-80 transition-opacity cursor-pointer" />
-                                    </a>
-                                </div>
-                                @endif
-                                <div class="flex items-center gap-2 mt-2">
-                                    @include('fin.employee.partials.pay-source-row', [
-                                        'req' => $petrolReq,
-                                        'accounts' => $petrolPaymentAccounts,
-                                        'banks' => $petrolPayBanks,
-                                        'ringClass' => 'focus:ring-orange-400',
-                                    ])
-                                    <button type="button" 
-                                        onclick="approvePetrolRequest({{ $petrolReq['id'] }}, {{ $petrolReq['requires_level_1'] ? '1' : '2' }})"
-                                        style="background-color: #16a34a;"
-                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
-                                        ✅ Approve
-                                    </button>
-                                    <button type="button" 
-                                        onclick="rejectPetrolRequest({{ $petrolReq['id'] }}, {{ $petrolReq['requires_level_1'] ? '1' : '2' }})"
-                                        style="background-color: #dc2626;"
-                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
-                                        ❌ Reject
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endforeach
-            </div>
-        </div>
-    </div>
-    @endif
-    <!-- 🔧 Maintenance Requests -->
-    @if(isset($pendingMaintenanceRequests) && $pendingMaintenanceRequests)
-    <div class="dc-panel">
-        <div style="background: linear-gradient(to right, #f0fdfa, #ccfbf1); border: 2px solid #5eead4;" class="rounded-lg shadow-sm overflow-hidden">
-            <!-- Header (collapsed by default — keeps the closing screen tidy) -->
-            <div style="background: linear-gradient(to right, #0d9488, #0f766e);" class="px-4 py-3 flex items-center justify-between cursor-pointer" onclick="document.getElementById('maint-requests-body').classList.toggle('hidden')">
-                <div class="flex items-center gap-3">
-                    <span class="text-lg">🔧</span>
-                    <h3 class="text-sm font-bold text-white">Maintenance Requests</h3>
-                </div>
-                <div class="flex items-center gap-3">
-                    <span class="text-xs bg-white text-teal-700 px-2 py-0.5 rounded-full font-bold">{{ $pendingMaintenanceRequests['total_count'] }} Pending</span>
-                    <span class="text-xs bg-teal-900 bg-opacity-30 text-white px-2 py-0.5 rounded-full font-bold">Rs. {{ number_format($pendingMaintenanceRequests['total_amount']) }}</span>
-                    <svg class="w-4 h-4 text-white transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                </div>
-            </div>
-            {{-- Aug-2026: was class="hidden". A queue holding money that needs
-                 approval must not load collapsed — the pane scrolls on its own
-                 now, so an open group costs nothing. --}}
-            <div id="maint-requests-body">
-                <!-- Summary Row -->
-                <div class="px-4 py-2 flex gap-4 border-b" style="border-color: #5eead4;">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Total Requests:</span>
-                        <span class="text-xs font-bold text-gray-900">{{ $pendingMaintenanceRequests['total_count'] }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">Total Amount:</span>
-                        <span class="text-xs font-bold text-teal-700">Rs. {{ number_format($pendingMaintenanceRequests['total_amount'], 2) }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold text-gray-600">People:</span>
-                        <span class="text-xs font-bold text-gray-900">{{ count($pendingMaintenanceRequests['by_rider']) }}</span>
-                    </div>
-                </div>
-
-                @foreach($pendingMaintenanceRequests['by_rider'] as $mIdx => $riderData)
-                <div class="border-b last:border-b-0" style="border-color: #5eead4;">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-teal-50 transition-colors"
-                         onclick="document.getElementById('maint-rider-{{ $mIdx }}').classList.toggle('hidden')">
-                        <div class="flex items-center gap-3">
-                            <span class="text-sm font-bold text-gray-800">{{ $riderData['rider_name'] }}</span>
-                            <span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full font-medium">{{ $riderData['count'] }} request(s)</span>
-                            @if(!empty($riderData['rider_user_id']))
-                            <button onclick="event.stopPropagation(); fmOpen({{ $riderData['rider_user_id'] }}, '{{ addslashes($riderData['rider_name']) }}')"
-                                    style="background:#fff; border:1px solid #5eead4; color:#0f766e; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; cursor:pointer;">
-                                📊 Month view
-                            </button>
-                            @endif
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <span class="text-sm font-bold text-teal-700">Rs. {{ number_format($riderData['total_amount'], 2) }}</span>
-                            <svg class="w-3 h-3 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                        </div>
-                    </div>
-
-                    <div id="maint-rider-{{ $mIdx }}">
-                        @foreach($riderData['requests'] as $mReq)
-                        <div id="petrol-req-{{ $mReq['id'] }}" class="mx-4 mb-2 rounded-lg overflow-hidden" style="background-color: #f0fdfa; border: 1px solid #99f6e4;">
-                            <div class="px-4 py-3">
-                                <div class="flex items-center justify-between mb-2">
-                                    <div class="flex items-center flex-wrap gap-3">
-                                        <span class="text-xs font-mono font-bold text-teal-800">{{ $mReq['request_number'] }}</span>
-                                        <span class="text-xs text-gray-500">{{ $mReq['expense_date'] }}</span>
-                                        <span class="text-xs bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded font-semibold">🔧 Maintenance</span>
-                                        @include('fin.employee.partials.machine-chip', ['req' => $mReq, 'tone' => '#5eead4'])
-                                    </div>
-                                    <span class="text-sm font-bold text-teal-800">Rs. {{ number_format($mReq['amount'], 2) }}</span>
-                                </div>
-                                @if($mReq['notes'])
-                                <div class="text-xs text-gray-500 mb-2 italic">{{ $mReq['notes'] }}</div>
-                                @endif
-                                @if(!empty($mReq['attachment_url']))
-                                <div class="mb-2">
-                                    <a href="{{ $mReq['attachment_url'] }}" target="_blank" class="inline-block">
-                                        <img src="{{ $mReq['attachment_url'] }}" alt="Receipt" class="h-20 w-auto rounded border border-teal-200 hover:opacity-80 transition-opacity cursor-pointer" />
-                                    </a>
-                                </div>
-                                @endif
-                                <div class="flex items-center gap-2 mt-2">
-                                    @include('fin.employee.partials.pay-source-row', [
-                                        'req' => $mReq,
-                                        'accounts' => $petrolPaymentAccounts,
-                                        'banks' => $petrolPayBanks,
-                                        'ringClass' => 'focus:ring-teal-400',
-                                    ])
-                                    <button type="button"
-                                        onclick="approvePetrolRequest({{ $mReq['id'] }}, {{ $mReq['requires_level_1'] ? '1' : '2' }})"
-                                        style="background-color: #16a34a;"
-                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
-                                        ✅ Approve
-                                    </button>
-                                    <button type="button"
-                                        onclick="rejectPetrolRequest({{ $mReq['id'] }}, {{ $mReq['requires_level_1'] ? '1' : '2' }})"
-                                        style="background-color: #dc2626;"
-                                        class="text-xs text-white px-4 py-1.5 rounded-md font-bold hover:opacity-90 transition-all cursor-pointer flex items-center gap-1">
-                                        ❌ Reject
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endforeach
-            </div>
-        </div>
-    </div>
-    @endif
-                @if(empty($pendingPetrolRequests) && empty($pendingMaintenanceRequests))
-                <div class="dc-pane-empty">✅ No petrol or maintenance requests waiting for approval.</div>
-                @endif
+            {{-- id + data-pane: the background refresh swaps THIS element's
+                 contents and nothing else on the page. --}}
+            <div class="dc-pane-body" id="dc-body-requests" data-pane="requests">
+                @include('fin.employee.partials.panel-requests')
             </div>
         </section>
 
@@ -524,265 +294,26 @@
             <div class="dc-pane-hd">
                 <div class="dc-pane-ttl">
                     <span>💬 Messages</span>
-                    @if(!empty($onlineFollowUp) && ($onlineFollowUp['chase_count'] ?? 0) > 0)
-                    <span class="dc-pane-badge" style="background:#ffe4e6; color:#be123c;">{{ $onlineFollowUp['chase_count'] }} to chase</span>
-                    @endif
-                    @if(!empty($onlineFollowUp) && ($onlineFollowUp['proof_in_count'] ?? 0) > 0)
-                    {{-- Counts the REVIEW group (?? for a stale server): the L1-done
-                         rows have their own line, and this number is what the
-                         in-place decrement moves — the total would bounce back
-                         up on reload after an approval. --}}
-                    <span class="dc-pane-badge" data-fu-proof style="background:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count'] }} proof in</span>
-                    @endif
+                    @php
+                        $dcChaseCount = !empty($onlineFollowUp) ? ($onlineFollowUp['chase_count'] ?? 0) : 0;
+                        // Counts the REVIEW group (?? for a stale server): the L1-done
+                        // rows have their own line, and this number is what the
+                        // in-place decrement moves — the total would bounce back
+                        // up on reload after an approval.
+                        $dcProofCount = !empty($onlineFollowUp)
+                            ? ($onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count'] ?? 0)
+                            : 0;
+                    @endphp
+                    {{-- Always rendered, hidden when zero — see the note on the
+                         Requests badges. --}}
+                    <span class="dc-pane-badge {{ $dcChaseCount > 0 ? '' : 'hidden' }}" data-dc-badge="chase" style="background:#ffe4e6; color:#be123c;">{{ $dcChaseCount }} to chase</span>
+                    <span class="dc-pane-badge {{ $dcProofCount > 0 ? '' : 'hidden' }}" data-dc-badge="proof" data-fu-proof style="background:#fef3c7; color:#92400e;">{{ $dcProofCount }} proof in</span>
                 </div>
+                <span class="dc-fresh" id="dc-fresh-messages" aria-live="polite"></span>
                 <button type="button" class="dc-max-btn" onclick="dcToggleMax('dc-pane-messages', this)">⛶ Maximize</button>
             </div>
-            <div class="dc-pane-body">
-    <!-- 💰 Payment Follow-ups (Aug-2026) — replaces the old today-only "Online
-         WhatsApp Messages" panel. Three tiers: chase / proof-in / settled, held
-         for a 3-day window. Built by OnlineFollowUpService. -->
-    @if(isset($onlineFollowUp) && $onlineFollowUp)
-    @php
-        $fuNeedsAction = $onlineFollowUp['chase_count'] > 0;
-        // The panel's own colour reports its state: red while anything needs a
-        // message, green once the chase list is clear.
-        $fuHeadGradient = $fuNeedsAction
-            ? 'linear-gradient(to right, #e11d48, #be123c)'
-            : 'linear-gradient(to right, #059669, #047857)';
-        $fuBodyBg = $fuNeedsAction
-            ? 'linear-gradient(to right, #fff1f2, #ffe4e6)'
-            : 'linear-gradient(to right, #f0fdf4, #dcfce7)';
-        $fuBorder = $fuNeedsAction ? '#fda4af' : '#86efac';
-    @endphp
-    <div class="dc-panel">
-        <div style="background: {{ $fuBodyBg }}; border: 2px solid {{ $fuBorder }};" class="rounded-lg shadow-sm overflow-hidden">
-            <!-- Header -->
-            <div style="background: {{ $fuHeadGradient }};" class="px-4 py-3 flex flex-wrap items-center justify-between gap-2 cursor-pointer" onclick="document.getElementById('followup-body').classList.toggle('hidden')">
-                <div class="flex flex-wrap items-center gap-3">
-                    <span class="text-lg">💰</span>
-                    <h3 class="text-sm font-bold text-white">Payment Follow-ups</h3>
-                    <span class="text-xs text-white opacity-75">online deliveries · last {{ $onlineFollowUp['window_days'] }} days</span>
-                </div>
-                <div class="flex flex-wrap items-center gap-2">
-                    @if($onlineFollowUp['chase_count'] > 0)
-                    <span class="animate-pulse text-xs bg-white text-red-700 px-2 py-0.5 rounded-full font-bold">{{ $onlineFollowUp['chase_count'] }} to chase</span>
-                    @endif
-                    @if($onlineFollowUp['new_customer_count'] > 0)
-                    <span class="text-xs bg-amber-300 text-amber-900 px-2 py-0.5 rounded-full font-bold" style="background-color:#fcd34d; color:#78350f;">⚠ {{ $onlineFollowUp['new_customer_count'] }} new</span>
-                    @endif
-                    {{-- Same number as the pane badge and the review group — see the
-                         data-fu-proof note there. --}}
-                    @if(($onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count']) > 0)
-                    <span data-fu-proof class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#fef3c7; color:#92400e;">{{ $onlineFollowUp['proof_review_count'] ?? $onlineFollowUp['proof_in_count'] }} proof in</span>
-                    @endif
-                    @if($onlineFollowUp['settled_count'] > 0)
-                    <span class="text-xs px-2 py-0.5 rounded-full font-bold" style="background-color:#dcfce7; color:#166534;">✅ {{ $onlineFollowUp['settled_count'] }} settled</span>
-                    @endif
-                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                </div>
-            </div>
-
-            <!-- Body (open whenever something needs chasing) -->
-            <div id="followup-body" class="{{ $fuNeedsAction ? '' : 'hidden' }}">
-
-                <!-- ── TIER 1 · CHASE ───────────────────────────────────── -->
-                @if($onlineFollowUp['chase_count'] > 0)
-
-                {{-- Open group: new customers (any day) + everything delivered
-                     today. Day 1 is when the confirmation-and-bank-details
-                     message is worth sending, and a new customer is worth
-                     chasing on all three days. --}}
-                @if($onlineFollowUp['chase_primary_count'] > 0)
-                <div class="px-4 py-2 border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="flex items-center justify-between mb-2">
-                        <span class="text-xs font-bold text-red-700">🔴 Chase now — new customers &amp; delivered today</span>
-                        <span class="text-xs font-semibold text-gray-600">{{ $onlineFollowUp['chase_primary_count'] }} · Rs. {{ number_format($onlineFollowUp['chase_primary_amount']) }}</span>
-                    </div>
-                    @foreach($onlineFollowUp['chase_primary'] as $row)
-                        @include('fin.employee.partials.followup-row', ['row' => $row])
-                    @endforeach
-                </div>
-                @endif
-
-                {{-- Collapsed group: established customers from day 2-3. They are
-                     already unapproved L1/L2 items in Online Approvals, which has
-                     its own invoice-bearing reminder — so this panel shouldn't
-                     shout about them a second and third time. One click away,
-                     never gone. --}}
-                @if($onlineFollowUp['chase_secondary_count'] > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-older').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold text-gray-600">🕓 {{ $onlineFollowUp['chase_secondary_count'] }} older · Rs. {{ number_format($onlineFollowUp['chase_secondary_amount']) }}</span>
-                            <span class="text-xs text-gray-500">existing customers from day 2–3 — also chaseable from Online Approvals</span>
-                        </div>
-                        <span class="text-xs text-gray-400">▸</span>
-                    </div>
-                    <div id="followup-older" class="hidden px-4 pb-2">
-                        @foreach($onlineFollowUp['chase_secondary'] as $row)
-                            @include('fin.employee.partials.followup-row', ['row' => $row])
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                {{-- Collapsed group: already messaged TODAY, by the delivered →
-                     payment-confirmation automation or by hand. Their Send button
-                     is disabled for the rest of the day anyway, so leaving them in
-                     the open group above would fill it with rows that need no
-                     action. They come back OPEN tomorrow as day 2, where the
-                     button offers the invoice-bearing payment reminder. --}}
-                @if(($onlineFollowUp['chase_messaged_count'] ?? 0) > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-messaged').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold text-gray-600">✓ {{ $onlineFollowUp['chase_messaged_count'] }} messaged today · Rs. {{ number_format($onlineFollowUp['chase_messaged_amount']) }}</span>
-                            @if(($onlineFollowUp['chase_auto_count'] ?? 0) > 0)
-                                <span class="text-xs px-2 py-0.5 rounded-full" style="background:#dcfce7;color:#166534;">🤖 {{ $onlineFollowUp['chase_auto_count'] }} sent automatically</span>
-                            @endif
-                            <span class="text-xs text-gray-500">nothing to do today — they return tomorrow if still unpaid</span>
-                        </div>
-                        <span class="text-xs text-gray-400">▸</span>
-                    </div>
-                    <div id="followup-messaged" class="hidden px-4 pb-2">
-                        @foreach($onlineFollowUp['chase_messaged'] as $row)
-                            @include('fin.employee.partials.followup-row', ['row' => $row])
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                @else
-                <div class="px-4 py-3 text-xs font-semibold text-green-700">
-                    ✅ Nothing to chase — every online delivery from the last {{ $onlineFollowUp['window_days'] }} days has proof or is settled.
-                </div>
-                @endif
-                {{-- ── TIER 2 · PROOF IN ──────────────────────────────────
-                     Aug-2026: this tier used to be one collapsed list captioned
-                     "waiting on Online Approvals, no action here". It now splits
-                     by what is LEFT TO DO, because the closing manager approves
-                     these himself from this screen:
-
-                       review   proof landed, invoice still unapproved — OPEN by
-                                default, and the only group with a button.
-                       L1 done  already approved at L1, so the money is ALREADY in
-                                the balances (BalancePostingService runs at L1 —
-                                L2 only verifies). Collapsed, nothing to press,
-                                kept visible until Taimur clears it at L2.
-
-                     Without the split an order looked exactly the same before and
-                     after it was approved. --}}
-                @if(($onlineFollowUp['proof_review_count'] ?? 0) > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-proof').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold" style="color:#92400e;">🟡 {{ $onlineFollowUp['proof_review_count'] }} proof in · Rs. {{ number_format($onlineFollowUp['proof_review_amount']) }}</span>
-                            <span class="text-xs text-gray-500">{{ $canApproveL1 ? 'open each proof, then approve' : 'proof received — waiting on Online Approvals' }}</span>
-                            @foreach($onlineFollowUp['proof_in_breakdown'] as $b)
-                            <span class="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style="background-color: {{ $b['color'] }};">{{ $b['count'] }} {{ $b['label'] }}</span>
-                            @endforeach
-                        </div>
-                        <span class="text-xs text-gray-400">▾</span>
-                    </div>
-                    <div id="followup-proof" class="px-4 pb-2">
-                        @foreach($onlineFollowUp['proof_review'] as $row)
-                        @php $proof = $row['payment_proof'] ?? null; @endphp
-                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #fffdf5;">
-                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
-                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
-                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
-                                @if($row['is_new_customer'])
-                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#fef3c7; color:#92400e;">new</span>
-                                @endif
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
-                                @if($canWaChat && !empty($row['customer_phone']))
-                                <button type="button" class="dc-chat-btn"
-                                        onclick="event.stopPropagation(); openWaChatDrawer(@js($row['customer_phone']), @js($row['customer_name']))"
-                                        title="Read this customer's WhatsApp chat">💬</button>
-                                @endif
-                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
-                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
-                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
-                                      onclick="event.stopPropagation(); dcOpenProof(this)"
-                                      data-proof="{{ json_encode(['orderId' => $row['id'], 'orderNumber' => $row['order_number'], 'ledgerId' => $row['ledger_id'] ?? null, 'amount' => $row['amount'], 'customerName' => $row['customer_name'], 'canApprove' => (bool) ($row['can_approve'] ?? false)]) }}"
-                                      title="{{ $proof['label'] }} — open the proof{{ ($canApproveL1 && !empty($row['can_approve'])) ? ' and approve it' : '' }}">
-                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }}
-                                    {{ ($canApproveL1 && !empty($row['can_approve'])) ? '🔍 review' : '🔍' }}
-                                </span>
-                                @endif
-                            </div>
-                        </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                {{-- L1 DONE — approved here (or in Approvals) but not yet verified
-                     at L2. The money is already counted; this group exists so the
-                     manager can see what he has done today, and so an approved
-                     order stops looking identical to one nobody has touched. --}}
-                @if(($onlineFollowUp['proof_l1_done_count'] ?? 0) > 0)
-                <div class="border-b" style="border-color: {{ $fuBorder }};">
-                    <div class="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white"
-                         onclick="document.getElementById('followup-l1done').classList.toggle('hidden')">
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <span class="text-xs font-bold" style="color:#1d4ed8;">☑ {{ $onlineFollowUp['proof_l1_done_count'] }} approved · Rs. {{ number_format($onlineFollowUp['proof_l1_done_amount']) }}</span>
-                            <span class="text-xs text-gray-500">already in the balances — waiting on Level 2 verification</span>
-                        </div>
-                        <span class="text-xs text-gray-400">▸</span>
-                    </div>
-                    <div id="followup-l1done" class="hidden px-4 pb-2">
-                        @foreach($onlineFollowUp['proof_l1_done'] as $row)
-                        @php $proof = $row['payment_proof'] ?? null; @endphp
-                        <div class="flex items-center justify-between py-1.5 px-3 mb-1 rounded" style="background-color: #f0f7ff;">
-                            <div class="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
-                                <span class="text-xs text-gray-400">Day {{ $row['day_number'] }}</span>
-                                <span class="text-xs font-mono font-bold text-gray-700">{{ $row['order_number'] }}</span>
-                                <span class="text-xs text-gray-600 truncate">{{ $row['customer_name'] }}</span>
-                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background-color:#dbeafe; color:#1e40af;">L1 done</span>
-                            </div>
-                            <div class="flex items-center gap-2">
-                                <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
-                                @if($canWaChat && !empty($row['customer_phone']))
-                                <button type="button" class="dc-chat-btn"
-                                        onclick="event.stopPropagation(); openWaChatDrawer(@js($row['customer_phone']), @js($row['customer_name']))"
-                                        title="Read this customer's WhatsApp chat">💬</button>
-                                @endif
-                                @if($proof && ($proof['status'] ?? 'none') !== 'none')
-                                <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white whitespace-nowrap"
-                                      style="background-color: {{ $proof['color'] }}; cursor: pointer;"
-                                      onclick="event.stopPropagation(); dcOpenProof(this)"
-                                      data-proof="{{ json_encode(['orderId' => $row['id'], 'orderNumber' => $row['order_number'], 'ledgerId' => null, 'amount' => $row['amount'], 'customerName' => $row['customer_name'], 'canApprove' => false]) }}"
-                                      title="{{ $proof['label'] }} — view the proof">
-                                    {{ $proof['has_whatsapp'] ? '📷' : '' }}{{ !empty($proof['has_sms']) ? '📱' : '' }}{{ $proof['has_email'] ? '✉️' : '' }} {{ $proof['label'] }} 🔍
-                                </span>
-                                @endif
-                            </div>
-                        </div>
-                        @endforeach
-                    </div>
-                </div>
-                @endif
-
-                <!-- ── TIER 3 · SETTLED (count only) ─────────────────────── -->
-                @if($onlineFollowUp['settled_count'] > 0)
-                <div class="px-4 py-2 text-xs font-semibold" style="color:#166534;">
-                    ✅ {{ $onlineFollowUp['settled_count'] }} settled · Rs. {{ number_format($onlineFollowUp['settled_amount']) }} — approved in the ledger, nothing to do.
-                </div>
-                @endif
-            </div>
-        </div>
-    </div>
-    @endif
-                @if(empty($onlineFollowUp))
-                <div class="dc-pane-empty">No online deliveries in the follow-up window.</div>
-                @endif
+            <div class="dc-pane-body" id="dc-body-messages" data-pane="messages">
+                @include('fin.employee.partials.panel-messages')
             </div>
         </section>
     </div>
@@ -1424,6 +955,48 @@
 @include('partials.proof-signal-card')
 
 <!-- Payment Proof viewer (screenshot + parsed bank email) -->
+{{-- ── Sep-2026 · "which bills should this reminder cover?" ─────────────────
+     This board is per ORDER. A customer with a second unpaid invoice — an older
+     one that has aged out of the 3-day window, or a second delivery sitting on
+     this very board — looked here like a one-invoice chase, and got the
+     one-invoice reminder. Only Online Approvals, which groups by customer, knew
+     better and switched to the multi-invoice template on its own.
+
+     ⭐⭐ EVERY OTHER BILL STARTS UNTICKED, including ones with no proof. The
+     workflow this serves is: the operator sees there is more outstanding, asks
+     the manager, and only then widens the message. Defaulting to "all" would
+     turn a hurried click into a bigger demand than anyone authorised, so the
+     default is exactly what the button did before this existed. --}}
+<div id="fuBillsModal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(17,24,39,0.6); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)fuCloseBills()">
+    <div style="background:#fff; border-radius:14px; max-width:660px; width:100%; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,0.3);" onclick="event.stopPropagation()">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #eef2f7;">
+            <div style="font-weight:700; color:#111827;">Payment reminder <span id="fuBillsCustomer" style="color:#6b7280; font-weight:600;"></span></div>
+            <button type="button" onclick="fuCloseBills()" style="border:0; background:#f3f4f6; width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:16px; color:#374151;">&times;</button>
+        </div>
+        <div id="fuBillsIntro" style="padding:12px 18px; background:#fffbeb; border-bottom:1px solid #fde68a; font-size:13px; color:#92400e;"></div>
+        <div style="padding:14px 18px; overflow-y:auto; flex:1 1 auto; min-height:0;">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:9px;">
+                <div style="font-size:11px; font-weight:700; color:#6b7280; letter-spacing:0.03em;">TICK THE BILLS THIS MESSAGE SHOULD COVER</div>
+                <button type="button" id="fuBillsAllBtn" onclick="fuToggleAllBills()"
+                        style="border:0; background:#eff6ff; color:#1d4ed8; font-size:11.5px; font-weight:700; padding:4px 9px; border-radius:7px; cursor:pointer;"></button>
+            </div>
+            <div id="fuBillsList"></div>
+            <div style="margin-top:14px;">
+                <div style="font-size:11px; font-weight:700; color:#166534; margin-bottom:6px;">💬 WHAT THE CUSTOMER WILL RECEIVE</div>
+                <div id="fuBillsPreview" style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:10px; padding:13px; font-size:12.5px; color:#1f2937; line-height:1.6; white-space:pre-wrap; max-height:190px; overflow-y:auto;"></div>
+            </div>
+        </div>
+        <div style="border-top:1px solid #eef2f7; background:#f8fafc; padding:12px 18px; border-radius:0 0 14px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <span id="fuBillsSummary" style="font-size:12.5px; color:#6b7280;"></span>
+            <div style="display:flex; gap:8px;">
+                <button type="button" onclick="fuCloseBills()" style="border:0; background:#e5e7eb; color:#374151; border-radius:9px; padding:9px 16px; font-size:13px; font-weight:700; cursor:pointer;">Cancel</button>
+                <button type="button" id="fuBillsSendBtn" onclick="fuSendSelectedBills()"
+                        style="background:#25D366; color:#fff; border:0; border-radius:9px; padding:9px 18px; font-size:13.5px; font-weight:700; cursor:pointer; white-space:nowrap;"></button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="proofModal" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(17,24,39,0.6); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeProofModal()">
     <div style="background:#fff; border-radius:14px; max-width:680px; width:100%; max-height:90vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3);" onclick="event.stopPropagation()">
         <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #eef2f7;">
@@ -1615,6 +1188,8 @@ async function dcApproveFromProof() {
         + ' for ' + (dcProofCtx.orderNumber || 'this order') + ' at Level 1?\n\n'
         + 'This posts the payment to the balances now.')) return;
 
+    dcPaneTouched('messages');
+
     btn.disabled = true;
     btn.textContent = 'Approving…';
     btn.style.background = '#9ca3af';
@@ -1738,9 +1313,16 @@ function dcBumpProofCounts(amount) {
         head.textContent = (left === 0) ? '✓ all proofs reviewed' : txt;
     }
     document.querySelectorAll('[data-fu-proof]').forEach(function (chip) {
+        var left = 0;
         chip.textContent = chip.textContent.replace(/^([0-9]+)/, function (m, n) {
-            return String(Math.max(0, parseInt(n, 10) - 1));
+            left = Math.max(0, parseInt(n, 10) - 1);
+            return String(left);
         });
+        // Sep-2026: the badge is now always in the DOM (hidden when zero) so the
+        // background refresh can reveal it again. Hide it at zero here too, or
+        // approving the last proof leaves a "0 proof in" chip sitting in the
+        // header claiming there is work left.
+        chip.classList.toggle('hidden', left === 0);
     });
 }
 
@@ -1828,6 +1410,11 @@ function formatPhoneForWhatsApp(phone) {
 //     is still used for the wa.me fallback only, which has no server in the path.
 const FU_TEMPLATE_DAY_ONE = 'delivery_confirmation_online_v2';
 const FU_TEMPLATE_FOLLOW_UP = 'payment_reminder_single';
+// Sep-2026 — one reminder covering SEVERAL of a customer's unpaid bills.
+// ⚠⚠ It declares NO media header, so it must never be sent with an order_id:
+// order_id triggers the invoice-image attach and Meta rejects a header component
+// on a template that doesn't declare one, failing the whole send.
+const FU_TEMPLATE_FOLLOW_UP_MULTI = 'payment_reminder_multiples';
 
 // wa.me manual fallback text, used only when the API send fails and the operator
 // sends by hand. Accounts come from the server (BankDetailsProvider) so this can
@@ -1978,11 +1565,25 @@ function sendFollowUp(btn) {
         return;
     }
 
+    // Sep-2026 — this customer owes on more than this one invoice, so ask WHICH
+    // bills the message should cover before sending anything. A row whose
+    // customer has no other open bill is untouched and still sends immediately:
+    // everything below this branch is the pre-existing single-invoice flow.
+    if (row.other_bills_count > 0) {
+        fuOpenBills(row, btn);
+        return;
+    }
+
     // NOTE: there is deliberately no page-load proof check here any more. It used
     // to warn from row.proof_label, but that data is only as fresh as the page —
     // it missed exactly the case that matters (proof arriving after load) while
     // adding a second dialog for the case the server already catches. The
     // precheck below asks the server instead, and is strictly better informed.
+    // Hands the Messages pane off the background refresh while this send runs
+    // and for a few seconds after, so the row cannot be swapped mid-flight and
+    // the "✓ Reminded today" it turns into is actually seen.
+    dcPaneTouched('messages');
+
     btn.disabled = true;
     fuStatus(btn, 'checking…', '#6b7280');
 
@@ -2055,6 +1656,531 @@ function fuDispatch(row, btn) {
         });
 }
 
+// ── Multi-bill reminders (Sep-2026) ────────────────────────────────────────
+//
+// The problem this solves: the follow-up board is built per ORDER over a 3-day
+// window, so a customer with a second unpaid invoice — an older one that has
+// aged past the window, or a second delivery sitting on this very board — read
+// here as a one-invoice chase and got the one-invoice reminder. The operator had
+// no way to know. Online Approvals, which groups by customer, already switches
+// to `payment_reminder_multiples` on its own; this brings the same knowledge and
+// the same template to the screen the chasing actually happens on.
+//
+// ⭐⭐ The other bills start UNTICKED. The real workflow is "notice there's more,
+// ask the manager, then widen the message" — so the default must stay exactly
+// what the button did before, and widening has to be a deliberate act. Ticking
+// everything by default would let a hurried click demand more than was agreed.
+//
+// ⭐ A selection of exactly the row that was clicked hands straight back to
+// fuDispatch() — the untouched pre-existing path, with its 422-to-day-one
+// fallback and its manual wa.me fallback. The new code below only ever runs for
+// a selection that the old flow could not express.
+var fuBillsState = null;   // { row, btn, bills: [...], selected: [ids] }
+
+// Own escaper on purpose. This page has no global escapeHtml — the one in
+// partials/proof-signal-card is private to that renderer — and an apostrophe in
+// a customer name must never be able to break the modal's markup.
+function fuEsc(s) {
+    return String(s === null || s === undefined ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fuMoney(n) {
+    return Number(n || 0).toLocaleString();
+}
+
+// payment_reminder_multiples greets with the first name only — same as the
+// Online Approvals send, so one customer never gets two different salutations.
+function fuFirstName(name) {
+    return String(name || '').split(' ')[0] || name || '';
+}
+
+function fuSingleReminderText(name, orderNumber, amount) {
+    return 'Assalamoalikum ' + name + ',\n\n'
+        + 'We hope this message finds you well. We are writing to kindly remind you of an outstanding invoice '
+        + orderNumber + ' on your account. Please settle the payment of Rs ' + fuMoney(amount)
+        + ' at your earliest convenience.\n\n'
+        + 'If you have already made the payment, kindly share a screenshot of the transaction so we can update our records accordingly.\n\n'
+        + 'Thank you for your understanding and cooperation';
+}
+
+function fuMultiReminderText(firstName, numbers, total) {
+    return 'Dear ' + firstName + ',\n\n'
+        + 'This is a payment reminder from Nizami Farms for invoice(s): ' + numbers + '.\n\n'
+        + 'Total pending amount: PKR ' + fuMoney(total) + '.\n\n'
+        + 'If payment has already been made, please reply with the payment confirmation so we can update your account.\n\n'
+        + 'Thank you,\nNizami Farms';
+}
+
+function fuOpenBills(row, btn) {
+    var bills = [{
+        id: row.id,
+        order_number: row.order_number,
+        amount: Number(row.amount) || 0,
+        delivery_date: row.delivery_date,
+        // The board clamps day_number to the 3-day window, so phrase the
+        // clicked row's age from that rather than inventing a second number.
+        age_label: row.day_number > 1 ? (row.day_number - 1) + ' days ago' : 'today',
+        in_window: true,
+        has_proof: !!row.proof_label,
+        proof_label: row.proof_label || null,
+        settled: false,
+        fresh_note: null,
+        is_primary: true
+    }];
+
+    (row.other_open_bills || []).forEach(function (b) {
+        bills.push({
+            id: b.id,
+            order_number: b.order_number,
+            amount: Number(b.amount) || 0,
+            delivery_date: b.delivery_date,
+            age_label: b.age_label,
+            in_window: !!b.in_window,
+            has_proof: !!b.has_proof,
+            proof_label: b.proof_label || null,
+            settled: false,
+            fresh_note: null,
+            is_primary: false
+        });
+    });
+
+    fuBillsState = { row: row, btn: btn, bills: bills, selected: [row.id] };
+
+    document.getElementById('fuBillsCustomer').textContent = '— ' + row.customer_name;
+
+    var openCount = row.other_bills_open_count || 0;
+    var proofCount = row.other_bills_proof_count || 0;
+    var intro = '<strong>' + fuEsc(row.customer_name) + '</strong> has '
+        + (row.other_bills_count === 1 ? 'another unpaid bill' : row.other_bills_count + ' other unpaid bills')
+        + ' besides this one';
+    if (openCount > 0) {
+        intro += ' — Rs. ' + fuMoney(row.other_bills_open_amount) + ' on top of this invoice.';
+    } else {
+        intro += '.';
+    }
+    if (proofCount > 0) {
+        intro += ' ' + proofCount + ' of them already ' + (proofCount === 1 ? 'has' : 'have')
+            + ' payment proof and ' + (proofCount === 1 ? 'is' : 'are') + ' left unticked.';
+    }
+    intro += '<br><span style="color:#78350f;">Only this invoice is ticked. Confirm with the manager before widening the message.</span>';
+    document.getElementById('fuBillsIntro').innerHTML = intro;
+
+    fuRenderBills();
+    document.getElementById('fuBillsModal').style.display = 'flex';
+
+    // Ask the server what each bill looks like RIGHT NOW. The page's own data is
+    // only as fresh as the last load, and a proof that landed after it would
+    // otherwise go unseen at exactly the moment the operator is deciding how much
+    // money to ask for. Fails open, per bill: a precheck problem never blocks or
+    // changes a send, it only annotates.
+    bills.forEach(function (bill) {
+        fuPrecheck({ id: bill.id }).then(function (pre) {
+            if (!pre || !pre.success || pre.error) return;
+
+            if (pre.settled) {
+                bill.settled = true;
+                bill.fresh_note = 'Payment already APPROVED in the ledger';
+                // Money that is in the ledger is not money to chase — untick it
+                // even if it is the row that was clicked.
+                fuBillsState.selected = fuBillsState.selected.filter(function (id) { return id !== bill.id; });
+            } else if (pre.has_proof && !bill.has_proof) {
+                bill.has_proof = true;
+                bill.proof_label = pre.proof_label;
+                bill.fresh_note = 'Proof arrived since this page loaded';
+            }
+
+            if (bill.fresh_note) fuRenderBills();
+        });
+    });
+}
+
+function fuRenderBills() {
+    if (!fuBillsState) return;
+
+    var html = '';
+
+    fuBillsState.bills.forEach(function (bill) {
+        var ticked = fuBillsState.selected.indexOf(bill.id) !== -1;
+        var blocked = bill.settled;
+        var border = ticked ? '#86efac' : (bill.has_proof || blocked ? '#fca5a5' : '#e5e7eb');
+        var bg = ticked ? '#f0fdf4' : (bill.has_proof || blocked ? '#fef2f2' : '#fff');
+
+        var chips = '';
+        if (bill.is_primary) {
+            chips += '<span style="background:#e0e7ff; color:#3730a3; font-size:10.5px; font-weight:700; padding:1px 6px; border-radius:5px;">the row you clicked</span>';
+        } else if (bill.in_window) {
+            chips += '<span style="background:#e0f2fe; color:#075985; font-size:10.5px; font-weight:700; padding:1px 6px; border-radius:5px;">also on this board</span>';
+        } else {
+            chips += '<span style="background:#f1f5f9; color:#475569; font-size:10.5px; font-weight:700; padding:1px 6px; border-radius:5px;">older than this board</span>';
+        }
+        if (bill.proof_label) {
+            chips += ' <span style="background:#fee2e2; color:#991b1b; font-size:10.5px; font-weight:700; padding:1px 6px; border-radius:5px;">' + fuEsc(bill.proof_label) + '</span>';
+        }
+
+        html += '<label style="display:flex; gap:10px; align-items:flex-start; padding:9px 11px; border:1px solid ' + border
+            + '; background:' + bg + '; border-radius:10px; margin-bottom:7px; cursor:' + (blocked ? 'not-allowed' : 'pointer') + ';">'
+            + '<input type="checkbox" style="margin-top:3px; width:16px; height:16px; cursor:' + (blocked ? 'not-allowed' : 'pointer') + ';"'
+            + ' data-bill-id="' + bill.id + '" onchange="fuBillToggled(this)"'
+            + (ticked ? ' checked' : '') + (blocked ? ' disabled' : '') + '>'
+            + '<div style="flex:1; min-width:0;">'
+            + '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">'
+            + '<span style="font-family:ui-monospace,monospace; font-weight:700; color:#111827; font-size:13px;">' + fuEsc(bill.order_number) + '</span>'
+            + chips + '</div>'
+            + '<div style="font-size:11.5px; color:#6b7280; margin-top:2px;">delivered '
+            + fuEsc(bill.delivery_date || 'date unknown')
+            + (bill.age_label ? ' · ' + fuEsc(bill.age_label) : '') + '</div>'
+            + (bill.fresh_note
+                ? '<div style="font-size:11.5px; color:#b91c1c; font-weight:700; margin-top:3px;">⚠ ' + fuEsc(bill.fresh_note) + '</div>'
+                : '')
+            + '</div>'
+            + '<div style="font-weight:800; color:#111827; font-size:13px; white-space:nowrap;">Rs. ' + fuMoney(bill.amount) + '</div>'
+            + '</label>';
+    });
+
+    document.getElementById('fuBillsList').innerHTML = html;
+    fuUpdateBillsFooter();
+}
+
+function fuBillToggled(el) {
+    if (!fuBillsState) return;
+    var id = parseInt(el.getAttribute('data-bill-id'), 10);
+    var at = fuBillsState.selected.indexOf(id);
+
+    if (el.checked && at === -1) {
+        fuBillsState.selected.push(id);
+    } else if (!el.checked && at !== -1) {
+        fuBillsState.selected.splice(at, 1);
+    }
+
+    fuRenderBills();
+}
+
+// One button for both directions: widen to every chaseable bill, or fall back to
+// the single invoice the operator started from.
+function fuToggleAllBills() {
+    if (!fuBillsState) return;
+
+    var chaseable = fuBillsState.bills.filter(function (b) { return !b.settled && !b.has_proof; });
+    var allTicked = chaseable.length > 0 && chaseable.every(function (b) {
+        return fuBillsState.selected.indexOf(b.id) !== -1;
+    });
+
+    if (allTicked) {
+        // Back to exactly what the row's own button would have sent.
+        fuBillsState.selected = fuBillsState.bills.filter(function (b) {
+            return b.is_primary && !b.settled;
+        }).map(function (b) { return b.id; });
+    } else {
+        // Bills that already carry proof stay out — they are the ones the
+        // customer has most likely already paid.
+        fuBillsState.selected = chaseable.map(function (b) { return b.id; });
+    }
+
+    fuRenderBills();
+}
+
+function fuSelectedBills() {
+    if (!fuBillsState) return [];
+    return fuBillsState.bills.filter(function (b) {
+        return fuBillsState.selected.indexOf(b.id) !== -1;
+    });
+}
+
+function fuUpdateBillsFooter() {
+    var sel = fuSelectedBills();
+    var total = sel.reduce(function (sum, b) { return sum + b.amount; }, 0);
+    var btn = document.getElementById('fuBillsSendBtn');
+    var summary = document.getElementById('fuBillsSummary');
+    var allBtn = document.getElementById('fuBillsAllBtn');
+
+    var chaseable = fuBillsState.bills.filter(function (b) { return !b.settled && !b.has_proof; });
+    var allTicked = chaseable.length > 0 && chaseable.every(function (b) {
+        return fuBillsState.selected.indexOf(b.id) !== -1;
+    });
+    allBtn.textContent = allTicked ? '↩ Just this bill' : '✓ Tick all ' + chaseable.length + ' chaseable';
+    allBtn.style.display = chaseable.length > 1 ? '' : 'none';
+
+    if (sel.length === 0) {
+        summary.textContent = 'Nothing ticked — the customer gets no message.';
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'not-allowed';
+        btn.textContent = 'Send reminder';
+        document.getElementById('fuBillsPreview').textContent = 'Tick at least one bill to see the message.';
+        return;
+    }
+
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+    summary.innerHTML = '<strong style="color:#111827;">' + sel.length + ' '
+        + (sel.length === 1 ? 'bill' : 'bills') + ' · Rs. ' + fuMoney(total) + '</strong> in one message';
+    btn.textContent = sel.length === 1
+        ? '📱 Send reminder'
+        : '📱 Send one reminder for ' + sel.length + ' bills';
+
+    document.getElementById('fuBillsPreview').textContent = fuPreviewText(sel);
+}
+
+function fuPreviewText(sel) {
+    var row = fuBillsState.row;
+
+    if (sel.length > 1) {
+        var total = sel.reduce(function (sum, b) { return sum + b.amount; }, 0);
+        var numbers = sel.map(function (b) { return b.order_number; }).join(', ');
+        return fuMultiReminderText(fuFirstName(row.customer_name), numbers, total);
+    }
+
+    // A single tick on the row that was clicked is the untouched original send —
+    // on day 1 that is still the delivery confirmation, not a payment chase.
+    if (sel[0].id === row.id && row.template === FU_TEMPLATE_DAY_ONE) {
+        return fuBankDetailsMessage(row);
+    }
+
+    return fuSingleReminderText(row.customer_name, sel[0].order_number, sel[0].amount)
+        + '\n\n[the invoice image is attached to this one]';
+}
+
+function fuCloseBills() {
+    document.getElementById('fuBillsModal').style.display = 'none';
+    if (fuBillsState && fuBillsState.btn) {
+        // Nothing was sent, so the row stays actionable.
+        fuBillsState.btn.disabled = false;
+    }
+    fuBillsState = null;
+}
+
+// Grey out another row on the board that this message also covered, so the
+// operator cannot chase the same bill twice in one day from two rows.
+function fuGreyRow(orderId, label) {
+    var rowEl = document.getElementById('fu-row-' + orderId);
+    if (!rowEl) return;
+    var btn = rowEl.querySelector('button[data-row]');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.style.backgroundColor = '#cbd5e1';
+    btn.textContent = label || '✓ Reminded today';
+    btn.title = 'Already reminded today — try again tomorrow';
+}
+
+function fuSendSelectedBills() {
+    if (!fuBillsState) return;
+
+    var sel = fuSelectedBills();
+    if (sel.length === 0) return;
+
+    dcPaneTouched('messages');
+
+    var row = fuBillsState.row;
+    var btn = fuBillsState.btn;
+
+    // Exactly the row that was clicked, and nothing else: hand back to the
+    // original single-invoice path untouched — same template ladder, same
+    // 422-to-day-one fallback, same manual wa.me fallback, same stamping.
+    if (sel.length === 1 && sel[0].id === row.id) {
+        fuCloseBills();
+        btn.disabled = true;
+        fuStatus(btn, 'checking…', '#6b7280');
+        fuPrecheck(row)
+            .then(function (pre) {
+                if (pre && pre.stale) {
+                    var proceed = confirm(
+                        '⚠️ This changed after the page was loaded\n\n'
+                        + row.order_number + ' — ' + row.customer_name + '\n\n'
+                        + pre.message + '\n\nSend the reminder anyway?'
+                    );
+                    if (!proceed) {
+                        btn.disabled = false;
+                        fuStatus(btn, 'not sent — refresh the page', '#b91c1c');
+                        return;
+                    }
+                }
+                return fuDispatch(row, btn);
+            })
+            .catch(function () { return fuDispatch(row, btn); });
+        return;
+    }
+
+    var sendBtn = document.getElementById('fuBillsSendBtn');
+    sendBtn.disabled = true;
+    sendBtn.style.opacity = '0.6';
+    sendBtn.textContent = '⏳ Checking…';
+
+    // Re-ask the server about every ticked bill at the moment of sending. The
+    // modal may have been open for a while, and this is the check that decides
+    // whether real money gets demanded twice. Fails open, as everywhere else.
+    Promise.all(sel.map(function (b) {
+        return fuPrecheck({ id: b.id }).then(function (pre) { return { bill: b, pre: pre }; });
+    }))
+    .then(function (results) {
+        var stale = results.filter(function (r) { return r.pre && r.pre.stale; });
+
+        if (stale.length > 0) {
+            var lines = stale.map(function (r) { return '• ' + r.bill.order_number + ' — ' + r.pre.message; }).join('\n');
+            var proceed = confirm(
+                '⚠️ Some of these changed after the page was loaded\n\n'
+                + row.customer_name + '\n\n' + lines
+                + '\n\nSend the reminder anyway?'
+            );
+            if (!proceed) {
+                sendBtn.disabled = false;
+                sendBtn.style.opacity = '1';
+                fuUpdateBillsFooter();
+                return;
+            }
+        }
+
+        return fuDispatchBills(row, btn, sel, sendBtn);
+    })
+    .catch(function () {
+        return fuDispatchBills(row, btn, sel, sendBtn);
+    });
+}
+
+function fuDispatchBills(row, btn, sel, sendBtn) {
+    var numbers = sel.map(function (b) { return b.order_number; });
+    var ids = sel.map(function (b) { return b.id; });
+    var total = sel.reduce(function (sum, b) { return sum + b.amount; }, 0);
+    var isMulti = sel.length > 1;
+
+    var payload = {
+        phone: row.customer_phone,
+        template_name: isMulti ? FU_TEMPLATE_FOLLOW_UP_MULTI : FU_TEMPLATE_FOLLOW_UP,
+        body_params: isMulti
+            ? [fuFirstName(row.customer_name), numbers.join(', '), fuMoney(total)]
+            : [row.customer_name, numbers[0], fuMoney(total)]
+    };
+
+    if (isMulti) {
+        // ⚠⚠ NO order_id on the multi template. order_id triggers the
+        // invoice-image attach and payment_reminder_multiples declares no media
+        // header — Meta rejects a header component on a template that doesn't
+        // have one, which fails the whole send. The orders it covers ride in
+        // related_order_numbers instead, which stamps history without touching
+        // the header (see WhatsAppService::saveOutboundMessage).
+        payload.related_order_numbers = numbers;
+        payload.related_order_number = numbers[0];
+    } else {
+        // A single bill that is NOT the clicked row: the invoice-bearing
+        // reminder, with its own invoice image.
+        payload.order_id = ids[0];
+    }
+
+    sendBtn.textContent = '⏳ Sending…';
+
+    return fetch('/messages/send-template', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': fuCsrf(),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(function (resp) {
+        return resp.json().catch(function () { return {}; }).then(function (data) {
+            return { ok: resp.ok && data && data.success, status: resp.status, data: data || {} };
+        });
+    })
+    .then(function (res) {
+        // payment_reminder_single is refused 422 when no invoice PNG was ever
+        // captured for that order — the image is made in the BROWSER on the
+        // invoice page, so for an older bill it may simply not exist. Retry as
+        // the multi template, which carries no image and still reads as a
+        // payment chase (the day-one confirmation would be the wrong message
+        // for a bill this old).
+        if (!res.ok && res.status === 422 && !isMulti) {
+            var retry = {
+                phone: row.customer_phone,
+                template_name: FU_TEMPLATE_FOLLOW_UP_MULTI,
+                body_params: [fuFirstName(row.customer_name), numbers[0], fuMoney(total)],
+                related_order_number: numbers[0]
+            };
+            return fetch('/messages/send-template', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': fuCsrf(),
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(retry)
+            })
+            .then(function (r2) {
+                return r2.json().catch(function () { return {}; }).then(function (d2) {
+                    return { ok: r2.ok && d2 && d2.success, status: r2.status, data: d2 || {}, noImage: true };
+                });
+            });
+        }
+        return res;
+    })
+    .then(function (res) {
+        if (!res.ok) {
+            sendBtn.disabled = false;
+            sendBtn.style.opacity = '1';
+            fuUpdateBillsFooter();
+            alert('Could not send the reminder.\n\n'
+                + (res.data.message || ('HTTP ' + res.status))
+                + '\n\nNothing was sent and nothing was marked as reminded.');
+            return;
+        }
+
+        return fuMarkRemindedBills(row, btn, ids, sel, res.noImage);
+    });
+}
+
+// Stamp EVERY order the message named. Without this the bills that were not the
+// primary still read "never reminded" and get chased again tomorrow for money
+// that was already asked for today.
+function fuMarkRemindedBills(row, btn, ids, sel, noImage) {
+    return fetch('{{ route("fin.employee.mark-online-message-sent", ["orderId" => "__ID__"]) }}'.replace('__ID__', row.id), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': fuCsrf(),
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ order_ids: ids })
+    })
+    .then(function (resp) { return resp.json(); })
+    .then(function (data) {
+        fuCloseBills();
+
+        var note = sel.length > 1
+            ? 'sent — ' + sel.length + ' bills'
+            : 'sent' + (noImage ? ' (no invoice image)' : '');
+
+        if (!data || !data.success) {
+            fuStatus(btn, 'Sent, but not recorded — refresh', '#b91c1c');
+            return;
+        }
+
+        // Every ticked bill that is also a row on this board goes grey, not just
+        // the one that was clicked.
+        sel.forEach(function (b) {
+            if (b.id === row.id) return;
+            if (b.in_window) fuGreyRow(b.id, '✓ Reminded today');
+        });
+
+        if (ids.indexOf(row.id) !== -1) {
+            btn.disabled = true;
+            btn.style.backgroundColor = '#cbd5e1';
+            btn.textContent = '✓ Reminded today';
+            btn.title = 'Already reminded today — try again tomorrow';
+            fuStatus(btn, note, '#166534');
+        } else {
+            // The clicked row was deliberately unticked, so it stays chaseable.
+            btn.disabled = false;
+            fuStatus(btn, 'other bills reminded — this one not sent', '#92400e');
+        }
+    })
+    .catch(function () {
+        fuCloseBills();
+        fuStatus(btn, 'Sent, but not recorded — refresh', '#b91c1c');
+    });
+}
+
 // ⭐ Show the 🏦 bank select only while a BANK account is chosen, and never leave a
 // stale bank id behind on a cash source — a bank tag on a cash row is drift in the
 // opposite direction (it credits a bank that never moved).
@@ -2069,68 +2195,285 @@ function petrolSourceChanged(requestId) {
     if (!isOnline && bank) bank.value = '';
 }
 
-// ── Staleness poller (Aug-2026) ────────────────────────────────────────────
-// The page never reloads itself. It polls 3 cheap COUNTs (~12ms server-side,
-// vs ~1,130ms of SQL to rebuild the page) and, when they move, offers a manual
-// refresh. Deliberately NOT an auto-reload: this screen carries expanded groups,
-// scroll position and half-finished approvals that a timed reload would destroy.
+// ── Live panes: silent background refresh (Sep-2026) ───────────────────────
+//
+// REPLACES the Aug-2026 "Refresh page" bar. That bar asked the operator to do
+// something the page can do for itself, and the reload it triggered cost
+// ~1,130ms of SQL and threw away scroll position, every open group and any
+// half-finished approval. (It also never once fired: its endpoint was swallowed
+// by the `/{id}` route registered above it — see routes/web.php.)
+//
+// Now: poll the same handful of cheap COUNTs (~12ms) and, only when they move,
+// fetch and swap the two pane BODIES in place.
+//
+// ⭐⭐ THE ONE RULE: this may only ever touch #dc-body-requests and
+// #dc-body-messages. Everything below them — the rider closings, their deposit
+// and settlement forms, the invoice tables, where the actual money is approved —
+// is never in the response and never re-rendered. A refresh cannot disturb work
+// in progress down there because it cannot reach it.
+//
+// ⭐ And inside those two panes it still refuses to swap while the operator is
+// working: a modal open, a native dialog up, focus or a text selection inside
+// the pane, a half-chosen pay-source or bank <select>, or a recent local action.
+// A deferred swap is kept and retried, never dropped.
 (function () {
-    var bar = document.getElementById('fu-stale-bar');
-    if (!bar) return;
+    var state = document.getElementById('dc-refresh-state');
+    if (!state) return;
 
     var baseline;
     try {
-        baseline = JSON.parse(bar.dataset.baseline);
+        baseline = JSON.parse(state.dataset.baseline);
     } catch (e) {
         return; // No baseline, nothing to compare against.
     }
 
-    var POLL_MS = 60000;
-    var LABELS = {
-        deliveries: ['new delivery', 'new deliveries'],
-        proofs:     ['payment proof arrived', 'payment proofs arrived'],
-        settled:    ['payment approved', 'payments approved']
+    var RIDER    = state.dataset.rider || 'all';
+    var POLL_MS  = 45000;   // how often to ask "did anything change?"
+    var RETRY_MS = 7000;    // a deferred swap looks again sooner than a poll
+    var QUIET_MS = 20000;   // hands off a pane this long after a local action
+
+    var PANES = {
+        requests: { bodyId: 'dc-body-requests', freshId: 'dc-fresh-requests', key: 'requests_html' },
+        messages: { bodyId: 'dc-body-messages', freshId: 'dc-fresh-messages', key: 'messages_html' }
     };
 
-    function describe(counts) {
-        var parts = [];
-        Object.keys(LABELS).forEach(function (key) {
-            var delta = (counts[key] || 0) - (baseline[key] || 0);
-            // Only ever report growth. A counter going DOWN (an order edited, a
-            // signal unmatched, an approval reversed) is not something to nag
-            // about, and phrasing it as "-1 deliveries" would just confuse.
-            if (delta > 0) {
-                parts.push(delta + ' ' + LABELS[key][delta === 1 ? 0 : 1]);
+    // A fetched payload waiting for a safe moment. Held, never discarded: if the
+    // operator is busy for five minutes, the swap happens when they stop.
+    //
+    // ⚠ `pendingDone` tracks which panes of THIS payload are already swapped, and
+    // lives here rather than on the payload object. A partial swap must not be
+    // re-applied on the retry (it would throw away whatever the operator did in
+    // the pane meanwhile), and writing that flag onto the response would quietly
+    // make the server's data carry client state.
+    var pending = null;
+    var pendingDone = {};
+    var retryTimer = null;
+
+    // ── Is it safe to touch anything at all? ───────────────────────────────
+    // A native confirm()/prompt() blocks every timer while it is up, so it needs
+    // no guard of its own — JS simply cannot run underneath it.
+    function anyModalOpen() {
+        var ids = ['fuBillsModal', 'proofModal', 'fmModal'];
+        for (var i = 0; i < ids.length; i++) {
+            var el = document.getElementById(ids[i]);
+            if (el && el.style.display && el.style.display !== 'none') return true;
+        }
+        var drawer = document.getElementById('waChatOverlay');
+        if (drawer && drawer.classList.contains('open')) return true;
+        return false;
+    }
+
+    // ── Is it safe to touch THIS pane? ─────────────────────────────────────
+    function paneBusy(body) {
+        // Something in it has focus — they are tabbing, typing or picking.
+        var active = document.activeElement;
+        if (active && active !== document.body && body.contains(active)) return true;
+
+        // They are selecting text inside it (reading a request out to someone,
+        // copying an order number).
+        var sel = window.getSelection && window.getSelection();
+        if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+            var node = sel.getRangeAt(0).commonAncestorContainer;
+            if (node && body.contains(node.nodeType === 1 ? node : node.parentNode)) return true;
+        }
+
+        // ⭐⭐ A half-made choice. The pay-source and bank <select>s next to each
+        // approve button hold the operator's decision and NOTHING else does — it
+        // lives nowhere but that DOM node until Approve is pressed. Swapping the
+        // pane would silently reset a chosen bank to the default, and the next
+        // click would then post the money against the wrong account. Any select
+        // moved off its rendered default freezes this pane.
+        var selects = body.querySelectorAll('select');
+        for (var i = 0; i < selects.length; i++) {
+            if (dcSelectChanged(selects[i])) return true;
+        }
+
+        return false;
+    }
+
+    // "Changed" means: differs from the option the server marked selected. Read
+    // off the DOM's own defaultSelected rather than a remembered snapshot, so it
+    // stays correct across any number of swaps.
+    function dcSelectChanged(sel) {
+        for (var i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].defaultSelected) {
+                return sel.value !== sel.options[i].value;
             }
+        }
+        // No explicit default: the browser picks the first option, so anything
+        // else is a deliberate choice.
+        return sel.selectedIndex > 0;
+    }
+
+    function quietFor(pane) {
+        var until = (window.dcPaneQuietUntil || {})[pane] || 0;
+        return Date.now() < until;
+    }
+
+    // ── Preserve what the operator set up ──────────────────────────────────
+    // Which groups they collapsed, and where they had scrolled to. Only the
+    // `hidden` class is carried over, and only for ids that still exist.
+    function snapshot(body) {
+        var hidden = {};
+        var nodes = body.querySelectorAll('[id]');
+        for (var i = 0; i < nodes.length; i++) {
+            hidden[nodes[i].id] = nodes[i].classList.contains('hidden');
+        }
+        return { hidden: hidden, scrollTop: body.scrollTop };
+    }
+
+    function restore(body, snap) {
+        Object.keys(snap.hidden).forEach(function (id) {
+            var el = document.getElementById(id);
+            if (!el || !body.contains(el)) return;
+            el.classList.toggle('hidden', snap.hidden[id]);
         });
-        return parts;
+        body.scrollTop = snap.scrollTop;
+    }
+
+    function flash(freshId, when) {
+        var el = document.getElementById(freshId);
+        if (!el) return;
+        el.textContent = 'updated ' + when;
+        el.classList.add('dc-fresh-on');
+        clearTimeout(el._dcFade);
+        el._dcFade = setTimeout(function () { el.classList.remove('dc-fresh-on'); }, 6000);
+    }
+
+    function setBadges(b) {
+        if (!b) return;
+        // Each badge is rendered only when non-zero, so a badge that does not
+        // exist yet is left alone rather than invented — the pane header would
+        // otherwise grow a "0" chip the server never shows.
+        var map = [
+            ['[data-dc-badge="petrol"]', b.petrol_count, '⛽ ' + b.petrol_count],
+            ['[data-dc-badge="maint"]',  b.maint_count,  '🔧 ' + b.maint_count],
+            ['[data-dc-badge="reqamt"]', b.req_amount,   'Rs. ' + Number(b.req_amount).toLocaleString()],
+            ['[data-dc-badge="chase"]',  b.chase_count,  b.chase_count + ' to chase'],
+            ['[data-dc-badge="proof"]',  b.proof_count,  b.proof_count + ' proof in']
+        ];
+        map.forEach(function (row) {
+            document.querySelectorAll(row[0]).forEach(function (el) {
+                if (!row[1]) { el.classList.add('hidden'); return; }
+                el.classList.remove('hidden');
+                el.textContent = row[2];
+            });
+        });
+    }
+
+    // ── Apply a payload, pane by pane ──────────────────────────────────────
+    // Returns true when BOTH panes have been dealt with, so the payload can be
+    // dropped. A pane that was busy leaves the payload pending for a retry.
+    function apply(data) {
+        if (anyModalOpen()) return false;
+
+        var when = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        var allDone = true;
+
+        Object.keys(PANES).forEach(function (pane) {
+            var cfg  = PANES[pane];
+            var body = document.getElementById(cfg.bodyId);
+            var html = data[cfg.key];
+
+            // A pane the server did not send is not a pane we are waiting on.
+            if (!body || typeof html !== 'string') return;
+            if (pendingDone[pane]) return;   // already swapped on an earlier try
+
+            if (paneBusy(body) || quietFor(pane)) { allDone = false; return; }
+
+            var snap = snapshot(body);
+            body.innerHTML = html;
+            restore(body, snap);
+
+            pendingDone[pane] = true;
+            flash(cfg.freshId, when);
+        });
+
+        // Badges only once both panes carry the same data, so a header count can
+        // never describe rows that are not on screen yet.
+        if (allDone) setBadges(data.badges);
+
+        return allDone;
+    }
+
+    function scheduleRetry() {
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(function () {
+            if (!pending) return;
+            if (apply(pending)) {
+                pending = null;
+            } else {
+                scheduleRetry();
+            }
+        }, RETRY_MS);
+    }
+
+    function changed(counts) {
+        if (!counts) return false;
+        return Object.keys(counts).some(function (k) {
+            return (counts[k] || 0) !== (baseline[k] || 0);
+        });
+    }
+
+    function fetchPanels() {
+        fetch('{{ route("fin.employee.panels-refresh") }}?rider=' + encodeURIComponent(RIDER),
+              { headers: { 'Accept': 'application/json' } })
+            .then(function (resp) { return resp.json(); })
+            .then(function (data) {
+                if (!data || !data.success) return;
+
+                // Re-baseline the moment the fresh markup is IN HAND, not when it
+                // is shown. Otherwise a pane deferred for a busy operator would
+                // re-report the same change on every poll for as long as they
+                // stayed busy, and each poll would refetch the panels.
+                if (data.heartbeat) baseline = data.heartbeat;
+
+                pending = data;
+                pendingDone = {};   // a new payload: every pane is owed a swap again
+                if (apply(pending)) {
+                    pending = null;
+                } else {
+                    scheduleRetry();
+                }
+            })
+            .catch(function () { /* offline or a blip — the next poll retries */ });
     }
 
     function poll() {
+        // Already holding markup nobody could accept yet: don't pile up another.
+        if (pending) { scheduleRetry(); return; }
+
         fetch('{{ route("fin.employee.followup-heartbeat") }}', { headers: { 'Accept': 'application/json' } })
             .then(function (resp) { return resp.json(); })
             .then(function (data) {
                 if (!data || !data.success || !data.counts) return;
-                var parts = describe(data.counts);
-                if (parts.length === 0) {
-                    bar.classList.add('hidden');
-                    return;
-                }
-                document.getElementById('fu-stale-text').textContent = parts.join(' · ');
-                bar.classList.remove('hidden');
+                // ⭐ Any movement, in either direction. The old bar deliberately
+                // reported growth only, because it was asking a human to act on
+                // the news. Nobody is being asked anything now, so a proof that
+                // was un-matched or an approval that was reversed is just as
+                // worth showing as a new one.
+                if (changed(data.counts)) fetchPanels();
             })
             .catch(function () { /* offline or a blip — try again next tick */ });
     }
 
     setInterval(poll, POLL_MS);
 
-    // Re-check the moment the operator comes back to the tab, so someone
-    // returning after ten minutes elsewhere sees the truth immediately instead
-    // of waiting out the interval.
+    // Coming back to the tab is the moment the page is most likely to be stale,
+    // and the moment the operator is about to trust what it says.
     document.addEventListener('visibilitychange', function () {
         if (!document.hidden) poll();
     });
 })();
+
+// Called by every action that changes a pane, BEFORE its request goes out.
+// Holds the background refresh off that pane for a few seconds so it cannot
+// swap the row out from under a click, and so the operator actually sees their
+// own "✅ Approved" / "✓ Reminded today" confirmation before the list rebuilds.
+function dcPaneTouched(pane) {
+    window.dcPaneQuietUntil = window.dcPaneQuietUntil || {};
+    window.dcPaneQuietUntil[pane] = Date.now() + 20000;
+}
 
 function approvePetrolRequest(requestId, level) {
     // Read the selected payment source for this request
@@ -2151,6 +2494,11 @@ function approvePetrolRequest(requestId, level) {
     }
 
     if (!confirm('Approve this request?')) return;
+
+    // Hands off this pane for a few seconds: the background refresh must not
+    // swap the row out from under this click, and the operator should see their
+    // own "✅ Approved" before the list rebuilds without it.
+    dcPaneTouched('requests');
 
     var btn = event.target;
     btn.disabled = true;
@@ -2200,7 +2548,9 @@ function approvePetrolRequest(requestId, level) {
 function rejectPetrolRequest(requestId, level) {
     var reason = prompt('Reason for rejecting this request:');
     if (!reason) return;
-    
+
+    dcPaneTouched('requests');
+
     var btn = event.target;
     btn.disabled = true;
     btn.textContent = 'Rejecting...';

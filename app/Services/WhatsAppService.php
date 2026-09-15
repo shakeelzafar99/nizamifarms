@@ -1681,7 +1681,7 @@ class WhatsAppService
         }
     }
 
-    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false, ?string $relatedOrderNumber = null): ?MessageModel
+    public function saveOutboundMessage(int $conversationId, array $apiResponse, string $type, string $content, ?int $sentBy = null, ?string $templateName = null, ?array $templateParams = null, bool $forcedDedupOverride = false, ?string $relatedOrderNumber = null, ?array $relatedOrderNumbers = null): ?MessageModel
     {
         $waMessageId = $apiResponse['messages'][0]['id'] ?? null;
 
@@ -1721,6 +1721,26 @@ class WhatsAppService
         if ($relatedOrderNumber !== null && $relatedOrderNumber !== ''
             && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'related_order_number')) {
             $payload['related_order_number'] = $relatedOrderNumber;
+        }
+
+        // Sep-2026: ONE message can be about SEVERAL orders — the multi-invoice
+        // payment reminder covers every unpaid bill it names. related_order_number
+        // is a single varchar and can only hold the primary, so the full list
+        // goes to metadata, which is already a JSON column and needs no schema
+        // change. OnlineFollowUpService::mergeMultiInvoiceHistory reads it back
+        // so a customer's other bills are not counted as "never reminded".
+        if (!empty($relatedOrderNumbers)
+            && \Illuminate\Support\Facades\Schema::hasColumn('t_wa_messages', 'metadata')) {
+            $clean = array_values(array_unique(array_filter(
+                array_map(fn ($n) => is_string($n) ? trim($n) : '', $relatedOrderNumbers),
+                fn ($n) => $n !== ''
+            )));
+
+            // A single-order send gains nothing from the list — related_order_number
+            // already says it, and an indexed column beats a JSON scan.
+            if (count($clean) > 1) {
+                $payload['metadata'] = json_encode(['related_order_numbers' => $clean]);
+            }
         }
 
         $message = MessageModel::create($payload);

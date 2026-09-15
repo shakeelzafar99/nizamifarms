@@ -1589,6 +1589,29 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/invoice-breakdown', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'getInvoiceBreakdown'])->name('invoice-breakdown');
             Route::get('/debug-missing-metadata', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'debugMissingMetadata'])->name('debug-missing-metadata');
             Route::get('/debug-invoice/{invoiceId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'debugInvoiceSettlement'])->name('debug-invoice-settlement');
+
+            // ⚠⚠ EVERY single-segment LITERAL route in this group MUST be declared
+            // ABOVE `/{id}` below. Laravel matches in registration order, so a
+            // literal registered after it is swallowed by the wildcard, which then
+            // tries to resolve the literal as an AccountModel id and 404s with
+            // "No query results for model [AccountModel] <your-route>".
+            //
+            // That is exactly what happened to followup-heartbeat, added in
+            // Aug-2026 at the BOTTOM of this group: the Daily Closing staleness
+            // check it powers had never once succeeded, so the page silently
+            // never learned that anything had changed. Found Sep-2026.
+            // (`followup-precheck/{orderId}` escaped only because it has two
+            // segments, which `/{id}` cannot match.)
+            //
+            //   heartbeat      — a handful of COUNTs, safe to poll, that says
+            //                    whether anything changed since the page loaded.
+            //   panels-refresh — re-renders ONLY the Requests and Messages panes
+            //                    so the page can freshen them in place, without a
+            //                    ~1,130ms full reload that would destroy scroll,
+            //                    open groups and any half-finished approval.
+            Route::get('/followup-heartbeat', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'followUpHeartbeat'])->name('followup-heartbeat');
+            Route::get('/panels-refresh', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'dailyClosingPanels'])->name('panels-refresh');
+
             Route::get('/{id}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'show'])->name('show');
             Route::post('/{id}/deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordDeposit'])->name('deposit');
             Route::post('/{id}/settlement-deposit', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'recordSettlementDeposit'])->name('settlement-deposit');
@@ -1604,16 +1627,14 @@ Route::middleware(['auth'])->group(function () {
             
             Route::post('/mark-online-message-sent/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'markOnlineMessageSentWeb'])->name('mark-online-message-sent');
 
-            // Aug-2026 — Daily Closing is a load-time snapshot with no polling of
-            // any kind, so a proof that lands after the page opens is invisible.
-            // These two keep it honest without reloading a 62-query page:
-            //   precheck  — re-reads ONE order's proof/settled state at the moment
-            //               of sending, so a stale page can't nag a customer who
-            //               has already paid.
-            //   heartbeat — a handful of COUNTs, safe to poll, that tells the page
-            //               whether anything changed since it loaded.
+            // Aug-2026 — Daily Closing is a load-time snapshot, so a proof that
+            // lands after the page opens is invisible. `precheck` re-reads ONE
+            // order's proof/settled state at the moment of sending, so a stale
+            // page can't nag a customer who has already paid.
+            // ⭐ Two segments, so `/{id}` above cannot swallow it — unlike its
+            // heartbeat sibling, which had to be moved up there. See the note by
+            // `/{id}` before adding any single-segment route to this group.
             Route::get('/followup-precheck/{orderId}', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'followUpPrecheck'])->name('followup-precheck');
-            Route::get('/followup-heartbeat', [\App\Http\Controllers\FIN\EmployeeCashController::class, 'followUpHeartbeat'])->name('followup-heartbeat');
         });
 
         // Ledger Hub (parallel-run modern UI — additive; reads existing data, writes via existing

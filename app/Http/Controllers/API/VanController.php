@@ -121,6 +121,33 @@ class VanController extends Controller
 
         $uid  = (int) $user->id;
 
+        /**
+         * ⭐⭐ THE SAME GUARD `setStop` CARRIES — starting a leg also mints a trip.
+         *
+         * Sep-2026: this endpoint was authenticated but never asked whether the caller
+         * actually drives a van. `ensureTrip` below therefore let ANY rider open a van trip
+         * with a `departed_at`, and an open departed trip is trusted for 14h by
+         * `riderIsAtVanMeetPoint()` / `riderIsDrivingVanNow()` — so that rider silently lost
+         * the phantom-GPS office anchor AND the +5 min fresh-dispatch grace on his next
+         * dispatch, and a ghost van card appeared on the store panel.
+         *
+         * The app hides the control for non-drivers, so this only fires on stale client state
+         * or a hand-made request — which is exactly when it matters.
+         *
+         * ⚠ Placed BEFORE every other branch: `loadedStopsConfirm` and the finish confirm both
+         *   read the manifest, and a non-driver must not be able to probe a van's contents.
+         * ⚠ `isCarrying` is OR-ed in for the same reason setStop does it: on a handover day the
+         *   outgoing driver can still be holding boxes while the registry has moved on.
+         */
+        if (!$van->isVanDriver($uid) && !$van->isCarrying($uid)) {
+            $who = DB::table('t_sys_user')->where('id', $uid)->value('fullname');
+            return response()->json([
+                'success' => false,
+                'message' => ($who ?: 'That user') . ' is not driving a van right now. '
+                           . 'Refresh the van board and try again.',
+            ], 422);
+        }
+
         // ⭐⭐ IS HIS PICTURE OF THE VAN CURRENT? (Aug-31, from the prod run.)
         //
         //    Rajab dispatched 3 of 5 four minutes after all five were stamped
@@ -212,7 +239,27 @@ class VanController extends Controller
             //    lives in closeOnLegChange: a REACHED stop closes when he drives
             //    off; a merely-PLANNED one survives the deliveries wave, because
             //    "deliver these three, then meet at X" is the whole point.
+            /**
+             * ⚠⚠ FINISHING WITH CARGO ABOARD MUST ANNOUNCE ITSELF TOO (Sep-2026).
+             *
+             * Pressing "Done" at the stop announces the abandonment (see completeStop), but
+             * finishing the whole TRIP force-closes the same stop through closeOnLegChange and
+             * said nothing at all — the quieter of the two doors for the louder act. The
+             * confirm has already been answered by the time we get here (`force`), so this is
+             * reporting a decision, never asking about one.
+             *
+             * Captured BEFORE the close: once the stop is completed and the trip ends, there is
+             * nobody left to name.
+             */
+            $abandoned = ($data['leg'] === VanService::LEG_DONE)
+                ? $van->ridersAwaitingDetail($uid)
+                : [];
+
             (new \App\Services\Riders\VanStopService())->closeOnLegChange($uid, $data['leg']);
+
+            if (!empty($abandoned)) {
+                $this->announceForcedClose($uid, $abandoned);
+            }
 
             // A deliveries leg with picked stops dispatches them in the same
             // action — one press, not two.
@@ -458,9 +505,14 @@ class VanController extends Controller
 
             // Same engine, same rules. `scope=undispatched` keeps any wave he has
             // already promised frozen at its original times.
+            // ⭐ ONLY WHAT HE PICKED (Sep-2026). `scope=undispatched` is rider-wide, so any
+            //    other stop of his that was sitting out-for-delivery without a time — a store
+            //    hand-flip, or a dispatch the engine refused earlier — was swept into this
+            //    wave and promised to its customer without appearing in the picker at all.
             $sub = Request::create('/internal/van-dispatch', 'POST', [
                 'scope'          => 'undispatched',
                 'order_sequence' => $sequence,
+                'only_order_ids' => $orderIds,
             ]);
             $sub->setUserResolver(fn () => Auth::user());
 
@@ -1152,6 +1204,10 @@ class VanController extends Controller
                 $van->completeStopIfHandoverDone($did, $stops);
                 $m    = $van->manifest($did);
                 $trip = $van->openTrip($did);
+                // ⚠ The trip REPORTS (timeline + abandoned-cargo banner) must outlive the trip
+                //   itself — see lastTripToday(). Falls back to the open one so a board that
+                //   somehow sees a trip from before today still renders its own timeline.
+                $reportTrip = $van->lastTripToday($did) ?: $trip;
                 $stop = $stops->currentStopPayload($did);
                 $name = DB::table('t_sys_user')->where('id', $did)->value('fullname');
                 $pos  = $this->lastFix($did);
@@ -1305,12 +1361,15 @@ class VanController extends Controller
                     // Tagged "On Van", not yet scanned aboard — the loading list.
                     'to_load'        => $m['to_load'] ?? [],
                     'totals'         => $m['totals'],
-                    'trip_stops'     => $stops->tripStops($trip->id ?? null),
+                    'trip_stops'     => $stops->tripStops($reportTrip->id ?? null),
                     // ⚠️ Meet-ups this driver ABANDONED with cargo still aboard.
                     //    Reported like a meter / verified-pin bypass: the store
                     //    finds out while it is happening, from the boards it is
                     //    already watching, not in tomorrow's report.
-                    'forced_closes'  => $stops->forcedCloses($trip->id ?? null),
+                    // ⚠⚠ Keyed to the day's LAST trip, not the OPEN one (Sep-2026): pressing
+                    //    "Finish anyway" closes the trip, which made `openTrip()` null and
+                    //    erased this banner in the same request that earned it.
+                    'forced_closes'  => $stops->forcedCloses($reportTrip->id ?? null),
                 ];
             }
 
@@ -1890,6 +1949,29 @@ class VanController extends Controller
                 'success' => false,
                 'message' => 'You cannot load this van.',
             ], 403);
+        }
+
+        /**
+         * ⭐ THE TARGET MUST BE A VAN DRIVER (Sep-2026).
+         *
+         * The store-staff branch trusted `van_user_id` from the request and never checked it.
+         * The picker only ever lists today's drivers, so this needs a stale client or a
+         * hand-made request — but the consequence is quiet and bad: cargo stamped onto an
+         * ordinary rider, who then satisfies `isCarrying()` and inherits the van powers that
+         * hangs off it (setStop/startLeg → an open trip → the 14h dispatch-origin bypass),
+         * while the real van's manifest never shows the box at all.
+         *
+         * ⚠ The own-van branch already proved it via `isVanDriver`, so this only tightens the
+         *   store path — and `isVanDriver` asks `todaysDrivers()`, which is the same ranked
+         *   answer the boards use on a handover day.
+         */
+        if ($isStoreStaff && !$isOwnVan && !$van->isVanDriver((int) $data['van_user_id'])) {
+            $who = DB::table('t_sys_user')->where('id', (int) $data['van_user_id'])->value('fullname');
+            return response()->json([
+                'success' => false,
+                'message' => ($who ?: 'That user') . ' is not driving a van today, so boxes cannot '
+                           . 'be loaded onto them. Refresh the van board and pick the right van.',
+            ], 422);
         }
 
         $order = OrderModel::find($id);

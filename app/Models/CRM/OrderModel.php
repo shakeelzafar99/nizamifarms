@@ -1666,11 +1666,21 @@ class OrderModel extends BaseModel
                 //   died, and that is history worth keeping. Every van query
                 //   filters on on_van/out_for_delivery, so those rows drop out of
                 //   the live boards on their own.
+                //
+                // ⚠⚠ THE CUSTODY SCANS GO TOO (Sep-2026). Clearing only the van_* columns left
+                //    `handover_scanned_packets` / `handover_at` / `dispatch_scanned_*` behind.
+                //    A box a rider had collected 2 of 3 packets of, then taken off the van and
+                //    re-loaded the next day, met its first collect scan with a packet list that
+                //    already held [1,2]: one beep merged index 3, `count >= target` went true,
+                //    and the order completed with two packets never accounted for. Coming off
+                //    the van means the custody chain starts again from nothing.
                 if ($previousNfStatus === 'on_van'
                     && in_array($statusCode, ['processing', 'new', 'pending'], true)) {
                     foreach ([
                         'van_user_id', 'van_vehicle_id', 'van_trip_id',
                         'van_loaded_at', 'van_loaded_by', 'van_loaded_packets',
+                        'handover_scanned_packets', 'handover_at',
+                        'dispatch_scanned_at', 'dispatch_scanned_by',
                     ] as $col) {
                         if (\Illuminate\Support\Facades\Schema::hasColumn($this->getTable(), $col)) {
                             $this->{$col} = null;

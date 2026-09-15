@@ -3967,6 +3967,13 @@ function showPaymentReminderConfirmation(items, customerName, customerPhone) {
         customerName: customerName,
         orderId: isSingle ? items[0].order_id : null,
         isSingle: isSingle,
+        // Sep-2026 — every invoice this one message names. A multi-invoice send
+        // can carry no order_id (the template declares no media header, and Meta
+        // rejects a header on one that doesn't), so before this NOT ONE of these
+        // sends recorded which orders it was about: 0 of 33 in 60 days. The
+        // Daily Closing follow-up board reads reminder history off that record,
+        // so every bill covered here looked like it had never been chased.
+        orderNumbers: invoiceNumbers,
     };
 
     const messagePreview = isSingle
@@ -4111,6 +4118,20 @@ async function confirmSendPaymentReminder() {
         template_name: pendingReminderData.template_name,
         body_params: pendingReminderData.body_params,
     };
+
+    // Record WHICH invoices this reminder covered. related_order_number is a
+    // single column, so the primary goes there (indexed, what every existing
+    // reader joins on) and the full list rides in metadata. Logging only — it
+    // changes nothing about what the customer receives.
+    // ⚠ Only the MULTI send needs this. A single send already carries order_id,
+    // and the server resolves the order number from it — which is strictly more
+    // trustworthy than the displayed one, because a ledger row with no order
+    // shows a synthetic "TXN-123" here that is not an order number at all.
+    const reminderNumbers = pendingReminderData.orderNumbers || [];
+    if (!pendingReminderData.isSingle && reminderNumbers.length > 1) {
+        payload.related_order_number = reminderNumbers[0];
+        payload.related_order_numbers = reminderNumbers;
+    }
 
     try {
         if (pendingReminderData.isSingle && pendingReminderData.orderId) {

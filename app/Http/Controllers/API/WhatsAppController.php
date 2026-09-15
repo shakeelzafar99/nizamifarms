@@ -1422,6 +1422,9 @@ class WhatsAppController extends Controller
                 // Aug-2026: stamp send history without triggering the
                 // invoice-image attach that order_id implies.
                 'related_order_number' => 'nullable|string|max:50',
+                // Sep-2026: every order a MULTI-invoice reminder covers.
+                'related_order_numbers'   => 'nullable|array|max:50',
+                'related_order_numbers.*' => 'string|max:50',
             ]);
 
             // ── Aug-2026 RETIRED-TEMPLATE ALIAS ────────────────────────────
@@ -1538,7 +1541,8 @@ class WhatsAppController extends Controller
                 $this->whatsapp->resolveRelatedOrderNumber(
                     $request->input('related_order_number'),
                     $request->input('order_id')
-                )
+                ),
+                $request->input('related_order_numbers')
             );
 
             return response()->json([

@@ -193,6 +193,8 @@
 .vp-ostate.wait{background:#fef3c7;color:#92400e;}
 .vp-ostate.ok{background:#dcfce7;color:#166534;}
 .vp-ostate.stale{background:#fee2e2;color:#991b1b;}
+.vp-ostate.warn{background:#ffedd5;color:#9a3412;}
+.vp-orow.vp-stranded{background:#fff7ed;}
 /* The store's release row — an ACTION inside the driver's own group, so it sits
    with the stops it acts on rather than in a toolbar away from them. */
 .vp-oact{justify-content:flex-start;padding:7px 10px;background:#f8fafc;}
@@ -551,7 +553,8 @@ function vpGroups(v) {
             o.status === 'on_van' ? 'on the van' : (o.dispatched ? 'delivering' : 'out for delivery'),
             o.status === 'on_van' ? 'wait' : 'ok',
             o.dispatched_at ? vpWhen(o.dispatched_at) : '',
-            o.priority   // planned drop position — see vpORow
+            o.priority,   // planned drop position — see vpORow
+            '', o.stranded
         )).join('');
 
         /* ⭐⭐ THE STORE'S RELEASE DOOR (Aug-30, from the 29-Aug prod run).
@@ -600,7 +603,7 @@ function vpGroups(v) {
                 o.handed_over ? 'ok' : 'wait',
                 o.handover_at ? vpWhen(o.handover_at) : '',
                 o.priority,   // planned drop position — see vpORow
-                vpRepairRow(o, g.name)
+                vpRepairRow(o, g.name), o.stranded
             )).join(''));
     });
 
@@ -628,11 +631,16 @@ function vpGrp(vid, key, title, count, right, dflt, rows) {
    an absent plan must look absent, not like stop zero. The to-load group never
    passes it — those rows aren't aboard yet, so a drop position would be a
    promise the load scan hasn't made. */
-function vpORow(no, cust, state, tone, time, seq, extra) {
-    return '<div class="vp-orow">'
+/* ⚠ `stranded` (Sep-2026) = aboard longer than the 20h bound every other van pointer
+   uses, i.e. left over from an earlier run. The manifest FLAGS it and never hides it —
+   a box quietly dropped off a loading list is the one genuinely dangerous outcome — so
+   the row still draws, with the reason said out loud. */
+function vpORow(no, cust, state, tone, time, seq, extra, stranded) {
+    return '<div class="vp-orow' + (stranded ? ' vp-stranded' : '') + '">'
          +   (seq != null ? '<span class="vp-oseq">' + vpEsc(seq) + '</span>' : '')
          +   '<span class="vp-ono">' + vpEsc(no) + '</span>'
          +   '<span class="vp-ocust">' + vpEsc(cust) + '</span>'
+         +   (stranded ? '<span class="vp-ostate warn">from an earlier run</span>' : '')
          +   (time ? '<span class="vp-otime">' + vpEsc(time) + '</span>' : '')
          +   '<span class="vp-ostate ' + tone + '">' + vpEsc(state) + '</span>'
          + '</div>'

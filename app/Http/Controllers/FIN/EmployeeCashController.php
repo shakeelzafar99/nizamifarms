@@ -2649,73 +2649,19 @@ class EmployeeCashController extends Controller
             // Purely informational: no ledger, settlement or invoice impact.
             // Wrapped so a surprise here can never take down daily closing.
             // ============================================================
-            $onlineFollowUp = null;
-            $onlineFollowUpHeartbeat = null;
-            try {
-                $followUpService = app(\App\Services\Payments\OnlineFollowUpService::class);
-                $onlineFollowUp = $followUpService->build($riderFilter);
-                // Baseline for the staleness bar: the page records what the world
-                // looked like when it rendered, then polls the same counters and
-                // offers a refresh if they move. Costs ~12ms here, versus ~1,130ms
-                // of SQL to reload the page on a timer.
-                $onlineFollowUpHeartbeat = $followUpService->heartbeat();
-            } catch (\Exception $followUpEx) {
-                \Log::warning('Payment follow-ups panel failed (non-critical)', [
-                    'error' => $followUpEx->getMessage(),
-                ]);
-            }
-            
-            // ============================================================
-            // ⛽ Petrol Requests from Rider Attendance
-            // Pending petrol expense requests raised via meter reading
-            // ============================================================
-            $pendingPetrolRequests = $this->fetchPendingPetrolRequests();
-            // 🔧 Maintenance requests — shown in their own collapsed panel next to petrol so the
-            // closing manager approves both from one screen (same approval path).
-            $pendingMaintenanceRequests = $this->fetchPendingExpenseRequests('Maintenance');
+            // Everything the two side-by-side panes need. Built by ONE method so
+            // the page and the in-place background refresh (dailyClosingPanels)
+            // can never disagree about what is pending.
+            $panelData = $this->buildDailyClosingPanelData($riderFilter);
 
-            // Fetch payment source accounts for the petrol/maintenance approval dropdowns.
-            // ⭐ Aug-27-2026: was a hardcoded four-code list (NF_CASH/EXP_FUND/ONLINE/
-            // PETTY_CASH) with NF Cash forced first — the LAST surviving copy of "which
-            // accounts may this person pay from", and it ignored the account tags entirely,
-            // so it offered accounts the approve endpoint would then refuse. Now the one
-            // service, exactly as the mobile Daily Closing does.
-            // ⚠ Shape change: arrays, not AccountModel rows — the Blade reads $acc['id'].
-            $petrolPaymentAccounts = [];
-            $petrolPayBanks = [];
-            // An online invoice approved here must name the bank it landed in,
-            // exactly as Online Approvals demands — so the chips have to be
-            // available whenever the proof tier has something approvable, not
-            // only when a petrol/maintenance request happens to be pending.
-            $hasApprovableProof = !empty($onlineFollowUp['proof_review_count']);
-            if ($pendingPetrolRequests || $pendingMaintenanceRequests || $hasApprovableProof) {
-                $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
-                $petrolPaymentAccounts = $paySvc->sourcesFor(
-                    auth()->user(), 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE
-                );
-                // ⭐ A bank source has to name WHICH bank or the per-bank balances never
-                // see the money (BankAttributionService). This list is what the 🏦 select
-                // next to each approve button is built from.
-                $needsBanks = $hasApprovableProof
-                    || (bool) array_filter($petrolPaymentAccounts, fn ($s) => !empty($s['is_online']));
-                if ($needsBanks) {
-                    $petrolPayBanks = $paySvc->banks();
-                }
-            }
-
-            // ⭐ Capability flags, decided server-side. They only control what the
-            // page OFFERS: /finance/ledger/{id}/approve-l1-only re-checks approval
-            // rights on every call (guardApprovalRights) and /messages has its own
-            // permission gate, so a stale page can never grant anything.
-            $canApproveL1 = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 1)
-                || \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
-
-            // Hidden rather than broken: /messages answers 403 for a user without
-            // WhatsApp access, and a 403 inside the chat drawer's iframe reads as
-            // "the app is broken", not "you may not see this".
-            $canWaChat = auth()->user()
-                && (auth()->user()->hasMobilePermission('view_whatsapp_messages')
-                    || auth()->user()->hasMobilePermission('view_whatsapp_messages_limited'));
+            $onlineFollowUp             = $panelData['onlineFollowUp'];
+            $onlineFollowUpHeartbeat    = $panelData['onlineFollowUpHeartbeat'];
+            $pendingPetrolRequests      = $panelData['pendingPetrolRequests'];
+            $pendingMaintenanceRequests = $panelData['pendingMaintenanceRequests'];
+            $petrolPaymentAccounts      = $panelData['petrolPaymentAccounts'];
+            $petrolPayBanks             = $panelData['petrolPayBanks'];
+            $canApproveL1               = $panelData['canApproveL1'];
+            $canWaChat                  = $panelData['canWaChat'];
 
             return view('fin.employee.outstanding-invoices', [
                 'invoicesByRider' => $invoicesByRider,
@@ -2745,6 +2691,172 @@ class EmployeeCashController extends Controller
         } catch (\Exception $e) {
             \Log::error("Error fetching all outstanding invoices: " . $e->getMessage());
             return back()->with('error', 'Error loading outstanding invoices: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Everything the Daily Closing side-by-side panes render from.
+     *
+     * Sep-2026 — lifted out of allOutstandingInvoices() so the page and the
+     * in-place background refresh (dailyClosingPanels) build from ONE place. The
+     * refresh re-renders these two panes without reloading a ~1,130ms / 62-query
+     * page, and a second copy of this logic would eventually disagree with the
+     * first about what is still pending — which on an approvals screen means
+     * showing money as unapproved when it is not.
+     *
+     * Read-only. Wrapped so a surprise here can never take down daily closing.
+     *
+     * @param  string|null  $riderFilter  't_fin_account' id, or 'all'
+     */
+    private function buildDailyClosingPanelData(?string $riderFilter): array
+    {
+        // ============================================================
+        // 💰 Payment Follow-ups (Aug-2026) — splits online deliveries from the
+        // last 3 days into chase / proof-in / settled so the badge counts only
+        // what actually needs a message. See OnlineFollowUpService.
+        // Purely informational: no ledger, settlement or invoice impact.
+        // ============================================================
+        $onlineFollowUp = null;
+        $onlineFollowUpHeartbeat = null;
+        try {
+            $followUpService = app(\App\Services\Payments\OnlineFollowUpService::class);
+            $onlineFollowUp = $followUpService->build($riderFilter);
+            // Baseline for the background refresh: the page records what the
+            // world looked like when it rendered, then polls the same counters
+            // and re-renders these panes only when they actually move. Costs
+            // ~12ms, versus ~1,130ms of SQL to rebuild the whole page.
+            $onlineFollowUpHeartbeat = $followUpService->heartbeat();
+        } catch (\Exception $followUpEx) {
+            \Log::warning('Payment follow-ups panel failed (non-critical)', [
+                'error' => $followUpEx->getMessage(),
+            ]);
+        }
+
+        // ============================================================
+        // ⛽ Petrol Requests from Rider Attendance
+        // Pending petrol expense requests raised via meter reading
+        // ============================================================
+        $pendingPetrolRequests = $this->fetchPendingPetrolRequests();
+        // 🔧 Maintenance requests — shown in their own collapsed panel next to petrol so the
+        // closing manager approves both from one screen (same approval path).
+        $pendingMaintenanceRequests = $this->fetchPendingExpenseRequests('Maintenance');
+
+        // Fetch payment source accounts for the petrol/maintenance approval dropdowns.
+        // ⭐ Aug-27-2026: was a hardcoded four-code list (NF_CASH/EXP_FUND/ONLINE/
+        // PETTY_CASH) with NF Cash forced first — the LAST surviving copy of "which
+        // accounts may this person pay from", and it ignored the account tags entirely,
+        // so it offered accounts the approve endpoint would then refuse. Now the one
+        // service, exactly as the mobile Daily Closing does.
+        // ⚠ Shape change: arrays, not AccountModel rows — the Blade reads $acc['id'].
+        $petrolPaymentAccounts = [];
+        $petrolPayBanks = [];
+        // An online invoice approved here must name the bank it landed in,
+        // exactly as Online Approvals demands — so the chips have to be
+        // available whenever the proof tier has something approvable, not
+        // only when a petrol/maintenance request happens to be pending.
+        $hasApprovableProof = !empty($onlineFollowUp['proof_review_count']);
+        if ($pendingPetrolRequests || $pendingMaintenanceRequests || $hasApprovableProof) {
+            $paySvc = app(\App\Services\FIN\PaymentSourceService::class);
+            $petrolPaymentAccounts = $paySvc->sourcesFor(
+                auth()->user(), 1, \App\Services\FIN\PaymentSourceService::PURPOSE_EXPENSE
+            );
+            // ⭐ A bank source has to name WHICH bank or the per-bank balances never
+            // see the money (BankAttributionService). This list is what the 🏦 select
+            // next to each approve button is built from.
+            $needsBanks = $hasApprovableProof
+                || (bool) array_filter($petrolPaymentAccounts, fn ($s) => !empty($s['is_online']));
+            if ($needsBanks) {
+                $petrolPayBanks = $paySvc->banks();
+            }
+        }
+
+        // ⭐ Capability flags, decided server-side. They only control what the
+        // page OFFERS: /finance/ledger/{id}/approve-l1-only re-checks approval
+        // rights on every call (guardApprovalRights) and /messages has its own
+        // permission gate, so a stale page can never grant anything.
+        $canApproveL1 = \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 1)
+            || \App\Models\SysAdmin\RoleApprovalLevelModel::userHasApprovalLevel(auth()->id(), 2);
+
+        // Hidden rather than broken: /messages answers 403 for a user without
+        // WhatsApp access, and a 403 inside the chat drawer's iframe reads as
+        // "the app is broken", not "you may not see this".
+        $canWaChat = auth()->user()
+            && (auth()->user()->hasMobilePermission('view_whatsapp_messages')
+                || auth()->user()->hasMobilePermission('view_whatsapp_messages_limited'));
+
+        return [
+            'onlineFollowUp'             => $onlineFollowUp,
+            'onlineFollowUpHeartbeat'    => $onlineFollowUpHeartbeat,
+            'pendingPetrolRequests'      => $pendingPetrolRequests,
+            'pendingMaintenanceRequests' => $pendingMaintenanceRequests,
+            'petrolPaymentAccounts'      => $petrolPaymentAccounts,
+            'petrolPayBanks'             => $petrolPayBanks,
+            'canApproveL1'               => $canApproveL1,
+            'canWaChat'                  => $canWaChat,
+        ];
+    }
+
+    /**
+     * Re-render ONLY the two Daily Closing panes, for the background refresh.
+     *
+     * WHY THIS EXISTS: Daily Closing is a load-time snapshot. A payment proof
+     * that lands, or a petrol request a rider raises from his phone, is invisible
+     * until someone reloads — and reloading costs ~1,130ms of SQL and destroys
+     * scroll position, the open groups, and any half-finished approval. Aug-2026
+     * answered that with a "Refresh page" bar; this replaces the bar with the
+     * page quietly rebuilding the two panes in place.
+     *
+     * ⚠ Returns the pane BODIES ONLY. Nothing below them — the rider closings,
+     * their settlement and deposit forms, the invoice tables — is in this
+     * response, so a refresh can never disturb work in progress down there.
+     *
+     * Read-only: no writes of any kind live on this path.
+     */
+    public function dailyClosingPanels(Request $request)
+    {
+        try {
+            $riderFilter = $request->input('rider', 'all');
+
+            $data = $this->buildDailyClosingPanelData($riderFilter);
+
+            // Rendered from the SAME partials the page @includes, so the swapped
+            // markup is identical to what a full reload would have produced —
+            // same ids, same inline handlers, same <select> options.
+            $requestsHtml = view('fin.employee.partials.panel-requests', $data)->render();
+            $messagesHtml = view('fin.employee.partials.panel-messages', $data)->render();
+
+            $followUp = $data['onlineFollowUp'];
+
+            $petrolCount = $data['pendingPetrolRequests']['total_count'] ?? 0;
+            $maintCount  = $data['pendingMaintenanceRequests']['total_count'] ?? 0;
+            $reqAmount   = ($data['pendingPetrolRequests']['total_amount'] ?? 0)
+                + ($data['pendingMaintenanceRequests']['total_amount'] ?? 0);
+
+            return response()->json([
+                'success'       => true,
+                'requests_html' => $requestsHtml,
+                'messages_html' => $messagesHtml,
+                // The pane-header and jump-bar badges, so the counts the operator
+                // scans can't disagree with the rows underneath them.
+                'badges' => [
+                    'petrol_count' => (int) $petrolCount,
+                    'maint_count'  => (int) $maintCount,
+                    'req_amount'   => (int) round($reqAmount),
+                    'chase_count'  => (int) ($followUp['chase_count'] ?? 0),
+                    'proof_count'  => (int) ($followUp['proof_review_count'] ?? $followUp['proof_in_count'] ?? 0),
+                ],
+                // The client re-baselines to these, so one change is reported once
+                // rather than on every poll from now on.
+                'heartbeat' => $data['onlineFollowUpHeartbeat'],
+            ]);
+
+        } catch (\Exception $e) {
+            \Log::warning('Daily Closing panel refresh failed (non-critical)', [
+                'error' => $e->getMessage(),
+            ]);
+
+            // Fails soft: the page keeps the panes it already has.
+            return response()->json(['success' => false], 200);
         }
     }
 
@@ -2958,35 +3070,37 @@ class EmployeeCashController extends Controller
     public function markOnlineMessageSentWeb(Request $request, $orderId)
     {
         try {
-            $order = \App\Models\CRM\OrderModel::find($orderId);
-
-            if (!$order) {
-                return response()->json(['success' => false, 'message' => 'Order not found'], 404);
-            }
-
-            if (!in_array($order->order_status, ['delivered', 'completed'])) {
-                return response()->json(['success' => false, 'message' => 'Order must be delivered first'], 400);
-            }
-
-            $paymentMethod = strtolower($order->payment_method ?? 'cash');
-            if (in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod'])) {
-                return response()->json(['success' => false, 'message' => 'This is not an online payment order'], 400);
-            }
-
-            $order->online_message_sent_at = now();
-            $order->online_message_sent_by = \Auth::id();
-            $order->save();
-
-            \Log::info('Online message marked as sent from daily closing', [
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'marked_by' => \Auth::id(),
+            $request->validate([
+                // Sep-2026: the orders a MULTI-invoice reminder covered. Absent
+                // for the ordinary one-invoice send, which still stamps the
+                // route's own order and returns exactly what it always did.
+                'order_ids'   => 'nullable|array|max:50',
+                'order_ids.*' => 'integer',
             ]);
+
+            $ids = $request->input('order_ids') ?: [$orderId];
+
+            $result = app(\App\Services\Payments\OnlineFollowUpService::class)
+                ->stampReminded($ids, \Auth::id());
+
+            if (empty($result['stamped'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => reset($result['skipped']) ?: 'Order not found',
+                ], 400);
+            }
+
+            // `sent_at` is kept as the primary order's time so the existing
+            // single-send caller reads unchanged; `stamped` is the new per-order
+            // map the multi-bill flow uses to grey out the other rows.
+            $primary = (int) $orderId;
 
             return response()->json([
                 'success' => true,
                 'message' => 'Message status updated',
-                'sent_at' => $order->online_message_sent_at->format('h:i A'),
+                'sent_at' => $result['stamped'][$primary] ?? reset($result['stamped']),
+                'stamped' => $result['stamped'],
+                'skipped' => $result['skipped'],
             ]);
 
         } catch (\Exception $e) {

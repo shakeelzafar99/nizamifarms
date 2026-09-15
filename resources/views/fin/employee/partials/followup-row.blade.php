@@ -19,7 +19,18 @@
                             'template'      => $row['template'],
                             'day_number'    => $row['day_number'],
                             'proof_label'   => $proofLabel,
+                            // Sep-2026 — the customer's OTHER unpaid online bills.
+                            // Present (as an empty list) on every row so the JS
+                            // never has to guard for the key being missing.
+                            'other_open_bills'        => $row['other_open_bills'] ?? [],
+                            'other_bills_count'       => $row['other_bills_count'] ?? 0,
+                            'other_bills_open_count'  => $row['other_bills_open_count'] ?? 0,
+                            'other_bills_open_amount' => $row['other_bills_open_amount'] ?? 0,
+                            'other_bills_proof_count' => $row['other_bills_proof_count'] ?? 0,
+                            'combined_total'          => $row['combined_total'] ?? $row['amount'],
                         ];
+                        $otherCount = $row['other_bills_count'] ?? 0;
+                        $otherOpen  = $row['other_bills_open_count'] ?? 0;
                         $dayColors = [1 => ['#f1f5f9', '#475569'], 2 => ['#fef3c7', '#92400e'], 3 => ['#fee2e2', '#991b1b']];
                         [$dayBg, $dayFg] = $dayColors[$row['day_number']] ?? $dayColors[3];
                         $rowBg = $row['is_new_customer'] ? '#fffbeb' : ($row['reminded_today'] ? '#f8fafc' : '#fef2f2');
@@ -41,6 +52,24 @@
                             <span class="text-xs font-semibold text-gray-800">Rs. {{ number_format($row['amount']) }}</span>
                             @if($row['reminded_label'])
                             <span class="text-xs text-gray-500 italic">{{ $row['reminded_label'] }}</span>
+                            @endif
+                            {{-- Sep-2026 — this customer owes on more than this one
+                                 invoice. The board is per ORDER, so without this the
+                                 operator sent a single-invoice reminder never knowing
+                                 a second bill existed; only Online Approvals (which
+                                 groups by customer) did. Amber when there is
+                                 something to chase, grey when every other bill
+                                 already has proof and only the record matters. --}}
+                            @if($otherCount > 0)
+                            <span class="text-xs font-bold px-1.5 py-0.5 rounded whitespace-nowrap"
+                                  style="{{ $otherOpen > 0 ? 'background:#fef3c7;color:#92400e;' : 'background:#f1f5f9;color:#64748b;' }}"
+                                  title="{{ collect($row['other_open_bills'])->map(fn ($b) => $b['order_number'] . ' · Rs. ' . number_format($b['amount']) . ' · ' . ($b['age_label'] ?? 'date unknown') . ($b['has_proof'] ? ' · ' . $b['proof_label'] : ''))->implode("\n") }}">
+                                @if($otherOpen > 0)
+                                    🧾 +{{ $otherOpen }} more {{ \Illuminate\Support\Str::plural('bill', $otherOpen) }} · Rs. {{ number_format($row['other_bills_open_amount']) }}
+                                @else
+                                    🧾 {{ $otherCount }} other {{ \Illuminate\Support\Str::plural('bill', $otherCount) }} · proof in
+                                @endif
+                            </span>
                             @endif
                             {{-- Sent by the delivered → payment-confirmation automation rather
                                  than by a person, so the reminder history reads honestly. --}}
@@ -71,7 +100,11 @@
                                 @if($row['reminded_today']) disabled title="Already reminded today — try again tomorrow" @endif
                                 style="background-color: {{ $row['reminded_today'] ? '#cbd5e1' : ($proofLabel ? '#f59e0b' : '#25D366') }}; min-width: 132px;"
                                 class="text-sm hover:opacity-90 text-white px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer whitespace-nowrap flex items-center justify-center gap-1.5 shadow-sm">
-                                {{ $row['reminded_today'] ? '✓ Reminded today' : '📱 ' . $row['button_label'] }}
+                                {{-- The trailing ellipsis is the usual "this opens a
+                                     dialog" signal: with other bills in play the
+                                     button no longer sends straight away, it asks
+                                     which bills the message should cover. --}}
+                                {{ $row['reminded_today'] ? '✓ Reminded today' : '📱 ' . $row['button_label'] . ($otherCount > 0 ? '…' : '') }}
                             </button>
                         </div>
                     </div>

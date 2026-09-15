@@ -1366,6 +1366,22 @@ class RiderController extends Controller
             //    times frozen. Default 'all' dispatches every OFD order.
             $scope = $request->input('scope', 'all');
 
+            /**
+             * ⭐ RESTRICT THE WAVE TO WHAT WAS ACTUALLY PICKED (Sep-2026, van picker).
+             *
+             * `scope=undispatched` is rider-wide: it times EVERY out-for-delivery order of his
+             * that has no ETA yet. That is right for the ordinary Dispatch button, but the van
+             * wave picker is a deliberate selection — so a stop that happened to be sitting
+             * OFD-without-a-time (a store hand-flip, or a failed earlier dispatch) was silently
+             * appended to the route and PROMISED to a customer without anyone choosing it.
+             *
+             * ⚠ Absent = unchanged behaviour for every existing caller; only the van's
+             *   dispatch-selected path sends it.
+             */
+            $onlyOrderIds = array_values(array_filter(array_map(
+                'intval', (array) $request->input('only_order_ids', [])
+            )));
+
             // ⭐ Start grace offset (minutes): pushes the whole route's start
             //    time forward before the first leg so the rider has time to
             //    reach his motorbike (e.g. dispatch at 10:00 → first ETA from
@@ -1382,6 +1398,10 @@ class RiderController extends Controller
                 ->where('o.order_status', 'out_for_delivery')
                 ->when($scope === 'undispatched', function ($q) {
                     $q->whereNull('o.eta_calculated_at');
+                })
+                // See $onlyOrderIds above — the van picker's explicit selection.
+                ->when(!empty($onlyOrderIds), function ($q) use ($onlyOrderIds) {
+                    $q->whereIn('o.id', $onlyOrderIds);
                 })
                 ->select([
                     'o.id',
@@ -2749,12 +2769,25 @@ class RiderController extends Controller
             //    "Auto Route" answered "no orders" about a list the store was
             //    looking at. Everything downstream is status-agnostic, and the
             //    apply step goes through the same whitelist.
+            /**
+             * ⭐ `processing` JOINS THE ROUTE (Sep-2026, owner ruling).
+             *
+             * The three sequencing halves had drifted apart: the SAVE half
+             * (updateDeliveryPriorities) has whitelisted `processing` since Aug-2026 and the
+             * store board counts it as sequenceable, but this SUGGESTION half did not — so the
+             * 📋 Delivery Order button appeared for a rider whose orders were all still being
+             * prepared, and Auto Route then answered "no orders to optimize" about the exact
+             * list on screen. Manual reorder worked on the same rows the whole time.
+             *
+             * Pre-planning the route while the boxes are still being packed is the point of
+             * the pre-plan feature; everything downstream is status-agnostic.
+             */
             $orders = \DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->where('o.assigned_rider_user_id', $riderId)
-                ->whereIn('o.order_status', ['out_for_delivery', 'on_van'])
+                ->whereIn('o.order_status', ['out_for_delivery', 'on_van', 'processing'])
                 ->select([
-                    'o.id', 'o.order_number', 'o.delivery_priority',
+                    'o.id', 'o.order_number', 'o.delivery_priority', 'o.order_status',
                     'c.latitude', 'c.longitude', 'c.geocoded_latitude', 'c.geocoded_longitude',
                     'c.geocode_precision',
                     \DB::raw('CONCAT(COALESCE(c.first_name, ""), " ", COALESCE(c.last_name, "")) as customer_name'),
@@ -2764,7 +2797,7 @@ class RiderController extends Controller
                 ->get();
 
             if ($orders->isEmpty()) {
-                return response()->json(['success' => false, 'message' => 'No orders out for delivery or on the van found'], 400);
+                return response()->json(['success' => false, 'message' => 'No orders to route — nothing is being prepared, on the van, or out for delivery for this rider'], 400);
             }
 
             $waypoints = [['lat' => (float)$riderLocation->latitude, 'lng' => (float)$riderLocation->longitude]];
@@ -2835,6 +2868,9 @@ class RiderController extends Controller
                     'order_number' => $order->order_number,
                     'customer_name' => trim($order->customer_name),
                     'address_short' => trim($order->address_short),
+                    // Lets a preview row say WHERE the box is (on the van / being packed /
+                    // already on his run) — the route sheet mixes all three by design.
+                    'status' => $order->order_status ?? null,
                     'priority' => $priority + 1,
                     'travel_minutes' => round($legDuration),
                     'cumulative_minutes' => round($cumulativeMinutes),
@@ -4517,50 +4553,35 @@ class RiderController extends Controller
     {
         try {
             $user = Auth::user();
-            
-            $order = \App\Models\CRM\OrderModel::find($id);
 
-            if (!$order) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Order not found',
-                ], 404);
-            }
-
-            // Order must be delivered
-            if (!in_array($order->order_status, ['delivered', 'completed'])) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Order must be delivered first',
-                ], 400);
-            }
-
-            // Verify it's an online/bank transfer order
-            $paymentMethod = strtolower($order->payment_method ?? 'cash');
-            $isCash = in_array($paymentMethod, ['cash', 'cash_on_delivery', 'cod']);
-            if ($isCash) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This is not an online payment order',
-                ], 400);
-            }
-
-            // Set the message sent flag (simple flag - no ledger/settlement impact)
-            $order->online_message_sent_at = now();
-            $order->online_message_sent_by = $user->id;
-            $order->save();
-
-            \Log::info('Online payment WhatsApp message marked as sent', [
-                'order_id' => $order->id,
-                'order_number' => $order->order_number,
-                'rider_id' => $user->id,
-                'rider_name' => $user->fullname,
+            $request->validate([
+                // Sep-2026: the orders a MULTI-invoice reminder covered. Absent
+                // for the ordinary one-invoice send, which behaves exactly as
+                // before — including for the APK already on riders' phones.
+                'order_ids'   => 'nullable|array|max:50',
+                'order_ids.*' => 'integer',
             ]);
+
+            $ids = $request->input('order_ids') ?: [$id];
+
+            $result = app(\App\Services\Payments\OnlineFollowUpService::class)
+                ->stampReminded($ids, $user->id);
+
+            if (empty($result['stamped'])) {
+                $reason = reset($result['skipped']) ?: 'Order not found';
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $reason,
+                ], $reason === 'Order not found' ? 404 : 400);
+            }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Message status updated',
-                'online_message_sent_at' => $order->online_message_sent_at->toIso8601String(),
+                'online_message_sent_at' => now()->toIso8601String(),
+                'stamped' => $result['stamped'],
+                'skipped' => $result['skipped'],
             ]);
 
         } catch (\Exception $e) {
@@ -9661,24 +9682,56 @@ class RiderController extends Controller
                     AND DATE(osh.changed_at) = '{$targetDate}'
                 ) as delivered"), 'u.id', '=', 'delivered.user_id');
             } else {
-                // For live view, get recent location data
+                /**
+                 * ⚡ LIVE last-fix per rider (Sep-2026 rewrite — same output, bounded cost).
+                 *
+                 * The old shape GROUP_CONCAT'ed EVERY location row of the last 24h for every
+                 * user just to read the newest one via SUBSTRING_INDEX. That cost grows with
+                 * the GPS ping rate (a shorter heartbeat makes it strictly worse) and, once a
+                 * rider's day exceeds group_concat_max_len, MySQL silently TRUNCATES the list —
+                 * which would start returning a wrong "last position" with no error at all.
+                 *
+                 * Same answer, computed the cheap way: newest captured_at per user, then join
+                 * that one row back for its coordinates. Identical columns, identical window.
+                 * ⚠ The ties join can only duplicate a user if two rows share the exact same
+                 *   captured_at; MIN(id) on the inner pick keeps it to one row per user.
+                 */
                 $riders->leftJoin(\DB::raw('(
-                    SELECT user_id, 
-                           MAX(captured_at) as last_location_at,
-                           SUBSTRING_INDEX(GROUP_CONCAT(latitude ORDER BY captured_at DESC), ",", 1) as last_lat,
-                           SUBSTRING_INDEX(GROUP_CONCAT(longitude ORDER BY captured_at DESC), ",", 1) as last_lng
-                    FROM t_ops_rider_location 
-                    WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                    GROUP BY user_id
+                    SELECT l.user_id,
+                           l.captured_at as last_location_at,
+                           l.latitude    as last_lat,
+                           l.longitude   as last_lng
+                    FROM t_ops_rider_location l
+                    INNER JOIN (
+                        SELECT user_id, MAX(captured_at) as mx
+                        FROM t_ops_rider_location
+                        WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                        GROUP BY user_id
+                    ) newest ON newest.user_id = l.user_id AND newest.mx = l.captured_at
+                    INNER JOIN (
+                        SELECT user_id, captured_at, MIN(id) as keep_id
+                        FROM t_ops_rider_location
+                        WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                        GROUP BY user_id, captured_at
+                    ) one ON one.user_id = l.user_id AND one.captured_at = l.captured_at AND one.keep_id = l.id
+                    WHERE l.captured_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
                 ) as loc'), 'u.id', '=', 'loc.user_id');
             }
             
             // ⭐ Join to get last sync time from orders (more reliable than location heartbeat)
+            /**
+             * ⚡ Bounded to 24h (Sep-2026). This aggregated EVERY order ever assigned, with no
+             *    date bound, on a 30s-polling endpoint — the scan grows forever with the order
+             *    table. The value only ever feeds the "app sync" freshness bands (<=2 min /
+             *    <=10 min, riders-map index.blade), so anything older than a day already read
+             *    as Offline; bounding it changes no verdict, only the cost.
+             */
             $riders->leftJoin(\DB::raw('(
                 SELECT assigned_rider_user_id as user_id,
                        MAX(rider_last_sync_at) as last_sync_at
-                FROM t_crm_prod_order 
+                FROM t_crm_prod_order
                 WHERE rider_last_sync_at IS NOT NULL
+                  AND rider_last_sync_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
                 GROUP BY assigned_rider_user_id
             ) as sync'), 'u.id', '=', 'sync.user_id')
             // ⭐ Join to get app login status (check if user HAS any tokens)
@@ -12436,7 +12489,18 @@ class RiderController extends Controller
             if (in_array($frid, $ofdRiderIds, true)) {
                 continue; // Already covered (still has OFD orders, or is at the workshop).
             }
-            $returnInfo = $this->getReturnToOfficeInfo($frid, $officeLat, $officeLng, $radiusMeters);
+            /**
+             * ⚠⚠ $useGoogleEta MUST be passed here (Sep-2026 fix). Omitting it fell back to
+             *    the parameter default TRUE, so the 30s-polling live-status board fired a
+             *    BLOCKING Google Directions call (up to ~15s) for every finished rider on a
+             *    cold cache — the single biggest cause of "the riders map loads slowly".
+             *    The OFD loop above always passed it correctly; this loop was the leak.
+             *    With false, an un-warmed rider shows the distance approximation for one
+             *    poll and the precise value lands on the next one: getRidersLiveStatus
+             *    already queues every row whose source === 'approx' into $warmRiderIds and
+             *    warms it in app()->terminating(), so NO extra warming code is needed here.
+             */
+            $returnInfo = $this->getReturnToOfficeInfo($frid, $officeLat, $officeLng, $radiusMeters, $useGoogleEta);
             if (!$returnInfo) {
                 continue; // At office / not fresh / not eligible.
             }
@@ -15074,6 +15138,23 @@ class RiderController extends Controller
                 $query->where('order_status', $statusFilter);
             }
             
+            /**
+             * ⭐ OPTIONAL RIDER FILTER (Sep-2026) — for the van board's route sheet.
+             *
+             * The sheet needs ONE rider's complete sequenceable list, and the van payload
+             * cannot supply it: the manifest only knows boxes physically aboard, so it cannot
+             * see his non-van out-for-delivery stops, his `processing` rows, or (for a cargo
+             * rider) the run he is on right now. Renumbering from a partial list would write
+             * priorities that collide with orders the screen never saw.
+             *
+             * ⚠ Absent = the whole board, exactly as every existing caller expects. This only
+             *   spares the sheet from pulling every open order in the store to filter five.
+             */
+            $riderFilter = $request->get('rider_id');
+            if ($riderFilter !== null && $riderFilter !== '') {
+                $query->where('assigned_rider_user_id', (int) $riderFilter);
+            }
+
             // Order by date
             $orders = $query->orderBy('order_date', 'desc')->get();
 

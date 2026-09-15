@@ -429,6 +429,28 @@ class VanService
     }
 
     /**
+     * The driver's most recent trip TODAY, open or already finished.
+     *
+     * ⚠⚠ For anything that must survive the trip ending (Sep-2026). `openTrip()` goes null the
+     *    instant "Finish" closes the trip, which silently wiped the abandoned-cargo banner off
+     *    the store board at the one moment it was telling the truth — the driver had just
+     *    driven away with someone's boxes. A report about what happened on a trip must be
+     *    keyed to that trip, not to whether it is still running.
+     */
+    public function lastTripToday(int $userId)
+    {
+        if (!$this->available()) return null;
+        try {
+            return DB::table(self::T_TRIP)
+                ->where('van_user_id', $userId)
+                ->whereDate('trip_date', today()->format('Y-m-d'))
+                ->orderByDesc('id')->first();
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
      * The trip a load belongs to, created on first use.
      *
      * ⚠ Deliberately NOT created at login or check-in: a trip row exists because
@@ -450,6 +472,42 @@ class VanService
             if (substr((string) $open->trip_date, 0, 10) === today()->format('Y-m-d')) {
                 return $open;
             }
+
+            /**
+             * ⭐⭐ A GENUINE PAST-MIDNIGHT RUN IS NOT A FORGOTTEN TRIP (Sep-2026).
+             *
+             * The comment above describes this as running only when the STORE starts loading
+             * the next trip — but `ensureTrip` is also reached from `startLeg` ("Where to
+             * next?") and from `VanStopService::setStop`. So a van that left at 23:50 and was
+             * still out at 00:30 destroyed itself on the driver's first tap after midnight:
+             * the live trip was closed, its open meet-up CANCELLED (every waiting rider's card
+             * blanked), a fresh trip minted and "🚚 van nikal gayi" pushed a second time.
+             *
+             * A trip that is still REAL has cargo aboard or an open stop. Keep those — unless
+             * the departure is older than the 14h bound every other van pointer uses, which is
+             * the shape of a trip nobody ever closed.
+             */
+            $stillCarrying = DB::table('t_crm_prod_order')
+                ->where('van_user_id', $userId)
+                ->where('order_status', self::STATUS_ON_VAN)
+                ->whereNotNull('van_loaded_at')
+                ->where('van_loaded_at', '>=', now()->subHours(self::STALE_TAG_HOURS))
+                ->exists();
+            $hasOpenStop = DB::table(self::T_HANDOVER)
+                ->where('van_user_id', $userId)
+                ->whereNull('completed_at')
+                ->exists();
+            $departedRecently = !empty($open->departed_at)
+                && \Carbon\Carbon::parse($open->departed_at)->gt(now()->subHours(14));
+
+            if (($stillCarrying || $hasOpenStop) && $departedRecently) {
+                Log::info('Van trip crossed midnight and is still live — kept open', [
+                    'trip_id' => $open->id, 'user' => $userId,
+                    'carrying' => $stillCarrying, 'open_stop' => $hasOpenStop,
+                ]);
+                return $open;
+            }
+
             DB::table(self::T_TRIP)->where('id', $open->id)->update([
                 'ended_at'    => now(),
                 'current_leg' => self::LEG_DONE,
@@ -565,6 +623,30 @@ class VanService
         }
         if (!$order->assigned_rider_user_id) {
             return $this->fail('Assign this order to a rider before loading it on the van.');
+        }
+
+        /**
+         * ⭐⭐ THE BOX IS ALREADY ON A DIFFERENT VAN (Sep-2026).
+         *
+         * `to_load` is not van-scoped — every van sees the same tagged orders — so with two
+         * vans out, a box already aboard van A could be scanned at van B. The stamp block
+         * below only writes when `van_loaded_at` is EMPTY, so van B's scan wrote nothing but
+         * still reported the full green "on the van": the box silently stayed on van A's
+         * manifest while van B's crew believed they had it. Worse, the packet merge that
+         * follows would have appended to van A's `van_loaded_packets`.
+         *
+         * ⚠ Only fires when the stamps name a DIFFERENT van. A re-scan on the same van is
+         *   normal (that is how a multi-packet order is completed) and is untouched, so with
+         *   one van on the road this condition can never be true.
+         * ⚠ Deliberately AFTER the OFD branch, which has its own, more specific refusals for a
+         *   box that was already collected and driven away.
+         */
+        $stampedVan = (int) ($order->van_user_id ?? 0);
+        if (!empty($order->van_loaded_at) && $stampedVan > 0 && $stampedVan !== $vanUserId) {
+            $otherDriver = DB::table('t_sys_user')->where('id', $stampedVan)->value('fullname');
+            return $this->fail('Order ' . $order->order_number . ' is already loaded on '
+                . ($otherDriver ? $otherDriver . "'s van" : 'another van')
+                . '. Take it off that van first if it is being moved.');
         }
 
         $parsed = $this->parseScan($scanCode, $order);
@@ -708,6 +790,17 @@ class VanService
             $order->van_loaded_at = null;
             $order->van_loaded_by = null;
             $order->van_loaded_packets = null;
+            /**
+             * ⚠⚠ THE CUSTODY SCANS RESET TOO (Sep-2026) — same rule as the status-change door
+             *    in OrderModel::changeStatus. A half-collected box (2 of 3 packets scanned)
+             *    taken off the van kept `handover_scanned_packets`, so after a re-load the
+             *    first collect beep merged the third index, hit `count >= target` and closed
+             *    the handover with two packets never actually accounted for.
+             */
+            foreach (['handover_scanned_packets', 'handover_at',
+                      'dispatch_scanned_at', 'dispatch_scanned_by'] as $col) {
+                if (Schema::hasColumn('t_crm_prod_order', $col)) $order->{$col} = null;
+            }
             if (self::hasHelpNoteColumn()) $order->handover_help_note = null;
             $order->save();
             $order->changeStatus('processing', 'Taken off the van', $actorId);
@@ -762,6 +855,24 @@ class VanService
             $name = DB::table('t_sys_user')->where('id', $order->assigned_rider_user_id)->value('fullname');
             return $this->fail('This order is for ' . ($name ?: 'another rider')
                 . ' — ask the store to reassign it before you take it.');
+        }
+
+        /**
+         * ⚠⚠ A MAN CANNOT HAND OVER TO HIMSELF (Sep-2026).
+         *
+         * The assigned-rider rule above passes for the DRIVER's own box — he is both the
+         * assigned rider and the carrier — so this scanner would have flipped his own stop to
+         * `out_for_delivery` with no ETA. That is precisely the state `manualChangeReason`
+         * refuses at every manual door, and it would strand the stop outside the wave picker
+         * (which reads the manifest) with no promise attached.
+         *
+         * His own boxes are proven by the LOAD scan and leave through the wave picker. No
+         * client offers this path today (`meetCard` excludes `van_user_id = himself`), so this
+         * closes the hole before a future surface finds it.
+         */
+        if ((int) $order->van_user_id === $scannerId) {
+            return $this->fail('These are your own stops — they are already yours. '
+                . 'Send them out with "My deliveries" when you are ready.');
         }
 
         $parsed = $this->parseScan($scanCode, $order, 'handover');
@@ -1002,6 +1113,11 @@ class VanService
             $cols = [
                 'o.id', 'o.order_number', 'o.order_status', 'o.assigned_rider_user_id',
                 'o.delivery_priority', 'o.expected_packets', 'o.handover_at',
+                // 📋 WHO planned this sequence, and when (Sep-2026). The store's Route Sheet
+                //    saves through updateDeliveryPriorities, which stamps these two; the
+                //    driver's screens said "#1 #2 #3" but never whose plan it was.
+                'o.delivery_priority_updated_by', 'o.delivery_priority_updated_at',
+                'rs.fullname as route_set_by_name',
                 'o.eta_calculated_at', 'o.address_line1', 'o.address_city',
                 'o.van_loaded_packets', 'o.van_loaded_at',
                 'u.fullname as rider_name',
@@ -1012,6 +1128,7 @@ class VanService
             $rows = DB::table('t_crm_prod_order as o')
                 ->leftJoin('t_crm_prod_customer as c', 'c.id', '=', 'o.customer_id')
                 ->leftJoin('t_sys_user as u', 'u.id', '=', 'o.assigned_rider_user_id')
+                ->leftJoin('t_sys_user as rs', 'rs.id', '=', 'o.delivery_priority_updated_by')
                 ->where('o.van_user_id', $vanUserId)
                 ->whereIn('o.order_status', [self::STATUS_ON_VAN, self::STATUS_OFD])
                 ->whereNotNull('o.van_loaded_at')
@@ -1055,6 +1172,28 @@ class VanService
                     //   no-scan handover (Sep-2026). Cleared by the scan, the
                     //   override, or the unload. Null = nothing asked.
                     'help_note'     => $r->handover_at === null ? ($r->handover_help_note ?? null) : null,
+                    /**
+                     * ⚠⚠ STRANDED = aboard longer than every other van pointer's 20h bound
+                     *    (Sep-2026). The manifest itself is deliberately NOT bounded: hiding a
+                     *    box from the loading/handover lists is the one genuinely dangerous
+                     *    outcome (an order silently off the list = left behind, nobody told) —
+                     *    the same rule the stale TAG already follows. So it FLAGS and never
+                     *    hides, and the boards can say "still aboard from an earlier run"
+                     *    instead of counting it as today's work.
+                     */
+                    'stranded'      => $r->van_loaded_at !== null
+                        && Carbon::parse($r->van_loaded_at)->lt(now()->subHours(self::STALE_TAG_HOURS)),
+                    /**
+                     * 📋 Whose plan the sequence is (Sep-2026). Null when nobody has sequenced
+                     *    it, and null when the assigned rider set it HIMSELF — his own reorder
+                     *    is not "the office set your route". Only a plan made by someone else
+                     *    is worth announcing to him.
+                     */
+                    'route_set_by'  => ($r->delivery_priority !== null
+                                        && $r->delivery_priority_updated_by
+                                        && (int) $r->delivery_priority_updated_by !== (int) $r->assigned_rider_user_id)
+                        ? ($r->route_set_by_name ?: 'the office') : null,
+                    'route_set_at'  => $r->delivery_priority !== null ? $r->delivery_priority_updated_at : null,
                 ];
 
                 if ((int) $r->assigned_rider_user_id === $vanUserId) {
@@ -1167,6 +1306,12 @@ class VanService
                     'riders_waiting'   => count(array_filter($byRider, fn ($g) => !$g['complete'])),
                     'to_load'          => count($toLoad),
                     'to_load_stale'    => count(array_filter($toLoad, fn ($o) => $o['is_stale'])),
+                    // ⚠ Boxes aboard from an earlier run (see `stranded` on each item). Counted
+                    //   so a board can say so out loud; NEVER removed from mine/carrying.
+                    'stranded'         => count(array_filter($mine, fn ($m) => !empty($m['stranded'])))
+                        + array_sum(array_map(
+                            fn ($g) => count(array_filter($g['orders'], fn ($o) => !empty($o['stranded']))),
+                            $byRider)),
                     'first_loaded_at'  => $firstLoadedAt,
                 ],
             ];
@@ -1326,7 +1471,16 @@ class VanService
         return implode(' · ', $bits);
     }
 
-    /** Riders who still have cargo on this van — the push audience, derived. */
+    /**
+     * Riders who still have cargo on this van — the push audience, derived.
+     *
+     * ⚠⚠ CARRIES THE SAME 20h BOUND AS `ridersAwaitingDetail` (Sep-2026). Without it this was
+     *    the one live van pointer with no freshness limit, and it drives
+     *    `completeStopIfHandoverDone` — so ONE box stranded from a previous run made the
+     *    self-closing meet-up impossible forever, and the board went back to reporting
+     *    "waiting 307 min" after the last rider had actually collected. The two lists must
+     *    agree: the driver's own "Done" already used the bounded one.
+     */
     public function ridersAwaiting(int $vanUserId): array
     {
         if (!$this->available()) return [];
@@ -1335,6 +1489,8 @@ class VanService
                 ->where('van_user_id', $vanUserId)
                 ->where('order_status', self::STATUS_ON_VAN)
                 ->where('assigned_rider_user_id', '!=', $vanUserId)
+                ->whereNotNull('van_loaded_at')
+                ->where('van_loaded_at', '>=', now()->subHours(self::STALE_TAG_HOURS))
                 ->distinct()->pluck('assigned_rider_user_id')
                 ->map(fn ($v) => (int) $v)->filter()->values()->all();
         } catch (\Throwable $e) {
@@ -1842,7 +1998,7 @@ class VanService
         //   where the UI most needs to stay calm.
         return ['mine_total' => 0, 'mine_on_van' => 0, 'mine_dispatched' => 0,
                 'carried_total' => 0, 'carried_handed' => 0, 'riders_waiting' => 0, 'to_load' => 0,
-                'to_load_stale' => 0, 'first_loaded_at' => null];
+                'to_load_stale' => 0, 'stranded' => 0, 'first_loaded_at' => null];
     }
 
     private function fail(string $message): array
