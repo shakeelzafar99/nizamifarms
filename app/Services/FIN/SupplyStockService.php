@@ -13,6 +13,7 @@ use App\Models\FIN\SupplyTakeoutLegModel;
 use App\Models\FIN\SupplyTakeoutModel;
 use App\Models\Request\RequestCategoryModel;
 use App\Models\Request\RequestModel;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -76,6 +77,13 @@ class SupplyStockService
     {
         // A retried Save (phone lost the reply) must return the SAME batch, never book
         // a second one. Checked before the transaction so the common case is one read.
+        //
+        // ⚠ The pre-check alone is not enough. Two Saves landing together both read
+        // "nothing there" and both go on to INSERT; `uq_sup_batch_uuid` then throws on
+        // the loser, which the controller used to surface as "Could not save. Nothing was
+        // recorded." — a lie, because the winner DID save, and a lie that invites a third
+        // attempt. Catching the duplicate key and returning the winning batch makes the
+        // whole call idempotent however the two requests interleave.
         if (!empty($in['client_uuid'])) {
             $existing = SupplyBatchModel::where('client_uuid', $in['client_uuid'])->first();
             if ($existing) {
@@ -83,6 +91,32 @@ class SupplyStockService
             }
         }
 
+        try {
+            return $this->bookBatchTransaction($in, $userId);
+        } catch (QueryException $e) {
+            if (!empty($in['client_uuid']) && $this->isDuplicateKey($e)) {
+                $won = SupplyBatchModel::where('client_uuid', $in['client_uuid'])->first();
+                if ($won) {
+                    Log::info('Storage book-in: duplicate save collapsed onto the first batch', [
+                        'client_uuid' => $in['client_uuid'],
+                        'batch_id' => $won->id,
+                    ]);
+
+                    return $won;
+                }
+            }
+            throw $e;
+        }
+    }
+
+    /** MySQL/MariaDB duplicate-entry, whichever driver code the host reports. */
+    private function isDuplicateKey(QueryException $e): bool
+    {
+        return (int) ($e->errorInfo[1] ?? 0) === 1062 || $e->getCode() === '23000';
+    }
+
+    private function bookBatchTransaction(array $in, int $userId): SupplyBatchModel
+    {
         return DB::transaction(function () use ($in, $userId) {
             /** @var SupplyProductModel $product */
             $product = SupplyProductModel::findOrFail($in['product_id']);
@@ -576,12 +610,20 @@ class SupplyStockService
         }
     }
 
-    /** Put a take-out's stock back on the shelf. */
+    /**
+     * Put a take-out's stock back on the shelf.
+     *
+     * ⚠ Gated on isUndoable(), NOT isPending(): a `no_charge` take-out (opening stock,
+     * already expensed) has no request and never becomes pending, so isPending() left
+     * every free packet permanently consumed. Restoring one adds 0.00 to cost_remaining
+     * by construction — its legs all cost zero — so no money can move here either way.
+     * Still idempotent: the row is re-read under a lock and a settled one returns early.
+     */
     public function restore(SupplyTakeoutModel $takeout, string $status, ?string $reason = null): void
     {
         DB::transaction(function () use ($takeout, $status, $reason) {
             $fresh = SupplyTakeoutModel::where('id', $takeout->id)->lockForUpdate()->first();
-            if (!$fresh || !$fresh->isPending()) {
+            if (!$fresh || !$fresh->isUndoable()) {
                 return;
             }
 
@@ -926,8 +968,12 @@ class SupplyStockService
             $fresh->voided_at = now();
             $fresh->save();
 
-            $this->log(SupplyLogModel::ACTION_VOID, SupplyProductModel::find($fresh->product_id),
-                $fresh, null, null, (float) $fresh->qty_total, 'kg', (float) $fresh->total_cost,
+            // ⚠ The unit is the PRODUCT's, not a hardcoded 'kg' — a voided batch of cups
+            // used to be logged as kilograms in the History tab.
+            $voidProduct = SupplyProductModel::find($fresh->product_id);
+            $this->log(SupplyLogModel::ACTION_VOID, $voidProduct,
+                $fresh, null, null, (float) $fresh->qty_total,
+                $voidProduct ? $voidProduct->takeoutUnit() : 'kg', (float) $fresh->total_cost,
                 null, $userId, 'Batch voided');
         });
     }
@@ -987,11 +1033,17 @@ class SupplyStockService
                 }
             }
 
+            // ⚠ A count is in the unit you COUNT IN — packets on the shelf, not kilograms.
+            // quantityPhrase() renders a weight product in kg, so it used to write
+            // "Counted 3 kg, system had 4 kg" for 3 packets against 4: an audit line about
+            // missing stock that named the wrong unit and a nonsense quantity. onHandPhrase()
+            // is the counting unit; quantityPhrase() stays the take-out unit.
             $this->log(SupplyLogModel::ACTION_COUNT, $product, null, null, null,
-                $counted, $product->takeoutUnit(), $cost, 'manual', $userId,
-                trim('Counted ' . $this->quantityPhrase($counted, $product)
-                    . ', system had ' . $this->quantityPhrase($expected, $product)
-                    . ($gap == 0 ? ' — matched' : ($gap < 0 ? ' — SHORT by ' . abs($gap) : ' — OVER by ' . $gap))
+                $counted, $this->onHandUnit($product), $cost, 'manual', $userId,
+                trim('Counted ' . $this->onHandPhrase($counted, $product)
+                    . ', system had ' . $this->onHandPhrase($expected, $product)
+                    . ($gap == 0 ? ' — matched' : ($gap < 0 ? ' — SHORT by ' . $this->onHandPhrase(abs($gap), $product)
+                                                            : ' — OVER by ' . $this->onHandPhrase($gap, $product)))
                     . ($gap < 0 && $writeOff ? ' — written off' : '')
                     . ($note ? '. ' . $note : '')));
 
@@ -1128,6 +1180,30 @@ class SupplyStockService
         }
 
         return $n . ' pcs';
+    }
+
+    /**
+     * The unit a SHELF COUNT is expressed in — what onHand() actually returns.
+     *
+     * ⚠ Not the same as takeoutUnit(). A weight product is taken out in KILOGRAMS but
+     * counted in PACKETS (you count bags on a shelf, you do not weigh the shelf), and
+     * conflating the two put "3 kg" in the log when someone counted 3 bags.
+     */
+    public function onHandUnit(SupplyProductModel $product): string
+    {
+        return $product->usesPackets() ? 'packet' : 'pcs';
+    }
+
+    /** "3 packets" / "30 pcs" — a counted quantity, in the unit it was counted in. */
+    public function onHandPhrase(float $qty, SupplyProductModel $product): string
+    {
+        if (!$product->usesPackets()) {
+            return ((int) round($qty)) . ' pcs';
+        }
+
+        $n = (int) round($qty);
+
+        return $n . ' packet' . ($n === 1 ? '' : 's');
     }
 
     /**

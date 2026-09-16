@@ -59,14 +59,24 @@ foreach (['Qasim', 'Shabib', 'Taimur', 'Farooq'] as $n) {
 }
 if (in_array(null, $who, true)) { echo "\npersonas missing — stopping.\n"; exit(1); }
 
-// A rider with a registered machine, to act upon.
+/**
+ * A rider with a registered machine, to act upon.
+ *
+ * ⚠⚠ IT MUST BE A COMPANY MACHINE (15-Sep-2026). Tickets may only be raised on machines the
+ *    company owns (owner ruling — VehicleTicketService::ticketableMachineIds), so a rider whose
+ *    current machine is his OWN bike makes §1 fail for a correct reason. Discover a fixture that
+ *    fits the question rather than taking the first row the registry returns.
+ */
 $rider = null; $vid = null;
 $res = new VehicleResolver();
+$vehSvc = new \App\Services\Riders\VehicleService();
 foreach (DB::table('t_ops_rider_profile')->pluck('user_id') as $uid) {
     $v = $res->currentVehicleFor((int) $uid);
-    if ($v) { $rider = User::find((int) $uid); $vid = (int) $v; break; }
+    if (!$v || !$vehSvc->isCompanyMachine((int) $v)) continue;
+    $rider = User::find((int) $uid); $vid = (int) $v; break;
 }
-ok('a rider with a machine exists to act on', (bool) $rider, null, true);
+ok('a rider with a COMPANY machine exists to act on', (bool) $rider, null, true);
+if (!$rider) { echo "\nno rider holds a company machine — stopping.\n"; exit(1); }
 foreach ($who as $n => $u) {
     printf("  · %-7s id=%-4s tickets=%s workshop=%s service=%s wsAlerts(W/M)=%s%s\n", $n, $u->id,
         $vt->canManage($u, true) ? 'Y' : 'n',
@@ -104,10 +114,19 @@ ok('the registry supplied the machine', (int) $vt->find($tid)['vehicle_id'], $vi
 ok('replies to it', $vt->reply($q, $tid, ['kind' => 'text', 'body' => 'Bringing it in.'])['ok'], true);
 // ⏰ Tomorrow, not today: a same-day proposal is only approvable before the rider's cut-off
 //    (an hour before his shift), and this suite runs at any hour of the day.
+/**
+ * ⚠⚠ `confirm_replace` ON A FIXTURE BOOKING (the documented precedent — four suites needed this
+ *    when the 7-Sep ruling landed). If the discovered machine already has an APPROVED live visit
+ *    on prod data, `schedule()` correctly answers 409 `needs_confirmation` instead of booking,
+ *    and every assertion below then dies on a missing `visit_id`. The flag says "yes, replace it"
+ *    — which is exactly what a fixture means, and the transaction rolls it all back anyway.
+ */
 $w = $wv->schedule($q, ['user_id' => (int) $rider->id,
-                        'visit_date' => \Carbon\Carbon::today()->addDay()->format('Y-m-d'), 'ticket_id' => $tid]);
+                        'visit_date' => \Carbon\Carbon::today()->addDay()->format('Y-m-d'),
+                        'ticket_id' => $tid, 'confirm_replace' => 1]);
 ok('schedules a workshop visit off that ticket', $w['ok'], true);
-$wid = (int) $w['visit_id'];
+if (empty($w['visit_id'])) { echo "      ! " . ($w['message'] ?? 'no visit_id') . "\n"; }
+$wid = (int) ($w['visit_id'] ?? 0);
 /**
  * ⏳ CHANGED 6-Sep BY THE APPROVAL RULING. Qasim holds `schedule_workshop` but NOT
  *    `manage_shifts`, so his booking is a REQUEST: the rider is told nothing, his day is not
@@ -122,9 +141,18 @@ ok('  …and a PLANNER approving it is what moves it to "workshop set"',
        && $vt->find($tid)['status'] === 'scheduled', true);
 $types = $rec->scheduledTypes();
 $tp = $rec->resolveType($types[0]['id'] ?? null);
-$done = $rec->record(['rider_id' => (int) $rider->id, 'meter' => 90001,
+/**
+ * ⚠⚠ DERIVE THE READING, NEVER HARD-CODE IT. This was `90001`, which the plausibility guard
+ *    correctly refuses once the discovered machine is one whose odometer sits near 28,000 —
+ *    "a missing digit here would record a service no countdown can use". The suite was asserting
+ *    a number, not a rule. Ask the machine where it is and add a plausible day's riding.
+ *    (Same trap as the hard-coded labels and ids this suite was bitten by in August.)
+ */
+$meterNow = $vehSvc->currentMeterFor($vid);
+$done = $rec->record(['rider_id' => (int) $rider->id, 'meter' => (int) ($meterNow ?? 0) + 5,
                       'date' => \Carbon\Carbon::today()->format('Y-m-d'),
                       'type' => $tp['type'], 'actor_id' => (int) $q->id, 'note' => 'PERSONA']);
+if (!$done['ok']) { echo "      ! " . ($done['message'] ?? '') . "\n"; }
 ok('completes it as a TYPED service record', $done['ok'], true);
 $logId = (int) $done['service_log_id'];
 ok('closes the ticket', $vt->close($q, $tid, 'done')['ok'], true);
@@ -246,10 +274,14 @@ head('§3b QASIM ON HIS PHONE — can see AND correct what he recorded');
  */
 // ⚠ Record one FIRST rather than hoping the discovered bike happens to have a manual row —
 //   the assertion must exercise the path, not the fixture.
-$seed = $rec->record(['rider_id' => (int) $rider->id, 'meter' => 90500,
+// ⚠ Derived, not hard-coded — see the note on the first record() above. It must also sit
+//   ABOVE the reading that call just wrote, or it is a backwards odometer.
+$seed = $rec->record(['rider_id' => (int) $rider->id,
+                      'meter' => (int) ($vehSvc->currentMeterFor($vid) ?? 0) + 5,
                       'date' => \Carbon\Carbon::today()->format('Y-m-d'),
                       'type' => $tp['type'], 'actor_id' => (int) $who['Qasim']->id,
                       'note' => 'PERSONA phone']);
+if (!$seed['ok']) { echo "      ! " . ($seed['message'] ?? '') . "\n"; }
 ok('Qasim records a service (to correct in a moment)', $seed['ok'], true);
 flushAll();
 
@@ -355,6 +387,74 @@ ok('  …and cannot open one on someone else’s',
 $fw = $wv->schedule($f, ['user_id' => (int) $rider->id, 'visit_date' => \Carbon\Carbon::today()->addDay()->format('Y-m-d')]);
 ok('Farooq being TOLD does not let him schedule', $fw['ok'], false);
 ok('  …nor complete one', $wv->markDone($f, 999999, [])['ok'], false);
+
+/**
+ * §5b ⚠⚠ THE PLANNERS' ISSUES PAGE — the door and the room must agree (15-Sep-2026).
+ *
+ *     `/orders/riders-map/fleet/issues-board` exists because Farooq's only role is TYPED `rider`,
+ *     and `ridersMap()` turns away a role-typed rider before a single bike key is consulted — so
+ *     the Bikes tab could never reach him. The page gate is therefore "do you hold one of the
+ *     keys", never a role type.
+ *
+ * ⚠ The gate used to admit `view_bike_costs` and `view_rider_reports` as well, which Adnan, the
+ *   Manager role and the expense-fund role hold. None of those four keys grants a fleet read
+ *   inside `VehicleIssueBoard`, so they came through the door and landed on a board with nothing
+ *   on it. An empty page is not a leak, but it is a worse answer than "you do not have
+ *   permission" — and two lists that must agree are one list too many.
+ */
+head('§5b the issues-board page: the gate matches what the board will actually show');
+
+/**
+ * ⚠⚠ THE GUARD IS SET TOO, NOT JUST THE RESOLVER. §4 logged Qasim in on the web guard and
+ *    `boardPage` reads `$request->user() ?: auth()->user()` — so without this every case below
+ *    would quietly fall through to Qasim and answer "what can Qasim do", including the one that
+ *    is supposed to have nobody at all. That is how a gate test passes while testing nothing.
+ */
+$pageOpens = function ($user) {
+    /**
+     * ⚠⚠ THE DEFAULT GUARD HERE IS `api`, NOT `web`, AND IT ALREADY HOLDS A USER by the time
+     *    this section runs. Clearing the web guard alone left `auth()->user()` answering with
+     *    somebody else entirely — so the "nobody at all" case was really asking "what can user
+     *    91 do", and passed for the wrong reason. Point the default guard at `web` and drive it
+     *    explicitly; the caller restores it.
+     */
+    \Illuminate\Support\Facades\Auth::shouldUse('web');
+    if ($user) \Illuminate\Support\Facades\Auth::guard('web')->setUser($user);
+    else       \Illuminate\Support\Facades\Auth::guard('web')->logout();
+    $req = \Illuminate\Http\Request::create('/orders/riders-map/fleet/issues-board', 'GET');
+    $req->setUserResolver(fn () => $user);
+    $res = app(\App\Http\Controllers\CRM\VehicleTicketController::class)->boardPage($req);
+    return $res instanceof \Illuminate\View\View;     // a redirect means refused
+};
+
+ok('Farooq gets in — this page exists for him', $pageOpens($who['Farooq']), true);
+ok('Taimur gets in', $pageOpens($who['Taimur']), true);
+ok('a plain rider does not', $pageOpens($rd), false);
+ok('nobody at all does not', $pageOpens(null), false);
+
+/**
+ * ⚠ Someone who only reads REPORTS is now refused at the door rather than shown an empty board.
+ *   Searched for rather than named: the point is the shape of the permission, not one person.
+ */
+/**
+ * ⚠ Read-only users are deliberately INCLUDED in this search. The page gate asks `hasPermission`
+ *   and nothing else — it never consulted `isReadOnly` — so skipping them here would skip the
+ *   only person on the replica who actually hits this case (Adnan, the analyst).
+ */
+$reportsOnly = collect(User::where('is_active', '1')->get())->first(function ($u) {
+    foreach (['manage_vehicle_tickets', 'schedule_workshop', 'receive_workshop_alerts', 'manage_shifts'] as $k) {
+        if ($u->hasPermission($k)) return false;
+    }
+    return (bool) ($u->hasPermission('view_rider_reports') || $u->hasPermission('view_bike_costs'));
+});
+if ($reportsOnly) {
+    ok('a reports-only viewer (' . $reportsOnly->fullname . ') is refused, not shown an empty board',
+       $pageOpens($reportsOnly), false);
+} else {
+    echo "  · no reports-only web user on this replica — that half of the gate is unexercised\n";
+}
+// ⚠ Put the default guard back, so nothing after this section is quietly reading a different one.
+\Illuminate\Support\Facades\Auth::shouldUse(config('auth.defaults.guard'));
 
 } finally {
     DB::rollBack();

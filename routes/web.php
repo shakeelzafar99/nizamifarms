@@ -404,6 +404,25 @@ Route::middleware(['auth'])->group(function () {
     // 🛠 BIKE TICKETS (Sep-2026) — the same controller the phone calls. No permission
     // middleware: the audience rule lives in VehicleTicketService so the desk and the
     // phone cannot enforce it differently.
+    /**
+     * 🛠 THE ISSUES BOARD (Sep-15 2026) — the fleet's open problems grouped BY MACHINE.
+     *
+     * ⚠ MUST stay above `fleet/tickets/{id}` — `issues` is not numeric so the `{id}` pattern
+     *   would not swallow it today, but the Sep-15 Daily Closing round lost a whole route to
+     *   exactly this shape and the cost of being explicit is one comment.
+     * ⚠ No permission middleware, deliberately, like the ticket routes beneath it: the audience
+     *   (manager / rider / read-only planner) is decided inside VehicleIssueBoard so the desk
+     *   and the phone cannot enforce it differently.
+     */
+    Route::get('/orders/riders-map/fleet/issues', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'board'])->name('fleet.issues');
+    /**
+     * 🔎 THE PLANNERS' READ-ONLY DOOR (owner ruling, 15-Sep). Its own PAGE, not a Bikes tab:
+     * Farooq's only role is typed `rider`, and `OrderController::ridersMap()` turns away any
+     * role-typed rider before a single bike key is consulted — so the tab could never reach him.
+     * The page gate is "do you hold one of the keys", never a role type; a plain rider holds none.
+     */
+    Route::get('/orders/riders-map/fleet/issues-board', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'boardPage'])->name('fleet.issues.page');
+
     Route::get('/orders/riders-map/fleet/tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'index'])->name('fleet.tickets.index');
     Route::post('/orders/riders-map/fleet/tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'store'])->name('fleet.tickets.store');
     Route::get('/orders/riders-map/fleet/tickets/alerts', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'alerts'])->name('fleet.tickets.alerts');

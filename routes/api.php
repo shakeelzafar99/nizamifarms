@@ -487,6 +487,15 @@ Route::middleware('auth:sanctum')->group(function () {
     // the service-alert routes are not: a RIDER holds no fleet key at all and must be
     // able to report a fault on the machine he is riding. Who may see, reply to and
     // close what is decided inside VehicleTicketService, not by a route gate.
+    /**
+     * 🛠 THE ISSUES BOARD (Sep-15 2026) — the fleet's open problems grouped BY MACHINE, for the
+     * third Bikes tab. Same audience rule as the routes below: decided in VehicleIssueBoard.
+     * ⚠ Its own path, NOT `/vehicle-tickets/board` — that would sit under the `{id}` route just
+     *   below and, being non-numeric, only avoids being swallowed by the `[0-9]+` constraint.
+     *   A separate noun is clearer than a rule someone has to remember.
+     */
+    Route::get('/vehicle-issues', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiBoard']);
+
     Route::get('/vehicle-tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiIndex']);
     Route::post('/vehicle-tickets', [\App\Http\Controllers\CRM\VehicleTicketController::class, 'apiStore']);
     // Drives the floating banner — polled, so it stays a cheap summary.

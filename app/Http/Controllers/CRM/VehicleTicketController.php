@@ -66,6 +66,70 @@ class VehicleTicketController extends Controller
     public function apiReopen(Request $r, $id)      { $this->mobileContext = true; return $this->reopen($r, $id); }
     public function apiMarkRead(Request $r, $id)    { $this->mobileContext = true; return $this->markRead($r, $id); }
     public function apiAlerts(Request $r)           { $this->mobileContext = true; return $this->alerts($r); }
+    public function apiBoard(Request $r)            { $this->mobileContext = true; return $this->board($r); }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    //  🛠 THE ISSUES BOARD (Sep-15 2026)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * The fleet's open problems, grouped by MACHINE — the third Bikes tab, on both surfaces.
+     *
+     * ⚠ A thin door, like every other action here. Every judgement (whose turn it is, how stuck
+     *   a machine is, who may see it) lives in VehicleIssueBoard so the desk and the phone read
+     *   one answer. This method validates three inputs and hands over.
+     */
+    public function board(Request $request)
+    {
+        $data = $request->validate([
+            'mode'       => 'nullable|in:live,history',
+            'vehicle_id' => 'nullable|integer',
+            'limit'      => 'nullable|integer|min:1|max:200',
+        ]);
+
+        $user  = $request->user() ?: auth()->user();
+        $board = app(\App\Services\Riders\VehicleIssueBoard::class);
+
+        return response()->json(array_merge(
+            ['success' => true],
+            $board->forUser($user, $data, $this->mobileContext)
+        ));
+    }
+
+    /**
+     * 🔎 THE PLANNERS' READ-ONLY PAGE (owner ruling, 15-Sep).
+     *
+     * ⚠⚠ Gated on HOLDING A KEY, never on a role type. Farooq's only role is typed `rider` —
+     *    which is what shuts him out of the Bikes tab entirely — and a plain rider holds none of
+     *    these keys, so the key test alone is the whole gate. Adding a role-type test here would
+     *    re-create the exact exclusion this page exists to route around.
+     */
+    public function boardPage(Request $request)
+    {
+        $user = $request->user() ?: auth()->user();
+        /**
+         * ⚠⚠ EXACTLY THE FOUR KEYS THE BOARD ITSELF HONOURS — `canManage` (manage_vehicle_tickets),
+         *    `canSchedule` (schedule_workshop) and the two read-grant keys. It used to also admit
+         *    `view_bike_costs` and `view_rider_reports`, which Adnan, the Manager role and the
+         *    expense-fund role hold: they got through the door and then landed on a board with
+         *    nothing on it, because none of those keys grants a fleet read inside
+         *    `VehicleIssueBoard`. An empty page is not a leak, but it is a worse answer than a
+         *    plain "you do not have permission" — and two lists that must agree are one list too
+         *    many.
+         */
+        $keys = ['manage_vehicle_tickets', 'schedule_workshop',
+                 'receive_workshop_alerts', 'manage_shifts'];
+
+        $allowed = false;
+        foreach ($keys as $k) {
+            if ($user && method_exists($user, 'hasPermission') && $user->hasPermission($k)) { $allowed = true; break; }
+        }
+        if (!$allowed) {
+            return redirect()->route('orders.index')
+                ->with('error', 'You do not have permission to view the bike issues board.');
+        }
+        return view('pages.fleet.issues-board');
+    }
 
     // ─────────────────────────────────────────────────────────────────────────────
 
@@ -88,7 +152,18 @@ class VehicleTicketController extends Controller
             // ⚠ His OWN machines, so the app can ask WHICH when he holds more than one —
             //   a rider driving the van still owns his bike, and without this he could not
             //   report a fault on either. Empty for a manager: he picks a rider instead.
+            // ⚠ COMPANY machines only since 15-Sep — the picker must not offer a bike the
+            //   server would refuse. `myMachines()` carries that rule.
             'my_machines' => $user ? $this->tickets->myMachines((int) $user->id) : [],
+            /**
+             * ⭐ 15-Sep: when the caller asked about ONE RIDER (the Bikes drawer knows the man,
+             *   not the machine), say which machine a ticket for him would land on. The sheet
+             *   can then NAME it before he sends, instead of trusting the server to pick the
+             *   bike he had in mind — and can say so when that machine is not a company one.
+             */
+            'subject_machine' => !empty($data['user_id'])
+                ? $this->tickets->subjectMachineFor((int) $data['user_id'])
+                : null,
         ]);
     }
 
@@ -150,6 +225,10 @@ class VehicleTicketController extends Controller
         return response()->json([
             'success'             => true,
             'ticket_id'           => (int) $res['ticket_id'],
+            // ⭐ 15-Sep: the machine the ticket actually landed on, so a client can CONFIRM it
+            //   rather than assume the one it guessed. Additive — older apps ignore it.
+            'vehicle_id'          => $res['vehicle_id'] ?? null,
+            'vehicle_name'        => $res['vehicle_name'] ?? null,
             'attachments_failed'  => $this->lastFailed,
             'message'             => $res['message'] . ($attached ? ' ' . $attached : ''),
         ]);

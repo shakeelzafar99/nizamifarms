@@ -42,6 +42,19 @@ class SupplyTakeoutModel extends Model
     /** The statuses that mean the stock has gone back onto the shelf. */
     const RESTORED_STATUSES = [self::STATUS_REJECTED, self::STATUS_UNDONE];
 
+    /**
+     * ⭐ The statuses a take-out can still be pulled back from.
+     *
+     * `no_charge` belongs here and `pending` alone is not enough. A no_charge take-out
+     * is one off a `stock_only` batch — which is ALL opening stock, everything that was
+     * already on the shelf when Storage went live — and it raises no request at all. So
+     * none of the request doors can ever reach it, and gating undo on isPending() alone
+     * left a wrongly scanned free packet consumed FOREVER: Count never writes a surplus
+     * back up, and restore() refused it too. Undoing one moves no money by construction
+     * (its cost is zero); it only puts the packet back on the shelf.
+     */
+    const UNDOABLE_STATUSES = [self::STATUS_PENDING, self::STATUS_NO_CHARGE];
+
     protected $fillable = [
         'product_id',
         'qty',
@@ -84,5 +97,17 @@ class SupplyTakeoutModel extends Model
     public function isPending(): bool
     {
         return $this->status === self::STATUS_PENDING;
+    }
+
+    /**
+     * Can the stock still be put back? Pending (nobody has decided it) or no_charge
+     * (nothing to decide — there is no request and no money).
+     *
+     * ⚠ Use this for the UNDO doors only. syncWithRequest() must keep isPending(),
+     * because it reconciles against a request and a no_charge take-out has none.
+     */
+    public function isUndoable(): bool
+    {
+        return in_array($this->status, self::UNDOABLE_STATUSES, true);
     }
 }

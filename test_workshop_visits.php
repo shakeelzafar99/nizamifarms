@@ -471,17 +471,35 @@ ok('  …and that visit’s event instant is its acceptance',
 //   confirmed" is more actionable than "just confirmed" — so wx leads even though wy's
 //   acceptance is the newer event. The watermark (t1) still moved, so the banner FIRES;
 //   priority only decides what it says first.
-ok('  …but the banner LEADS with the still-unconfirmed visit (awaiting outranks confirmed)',
-   (int) $wv->summaryFor($manager)['latest']['id'], $wx);
+/**
+ * ⚠⚠ ASSERTED AS AN ORDERING BETWEEN THE SUITE'S OWN TWO VISITS, not as "wx leads the fleet".
+ *    The old form read `latest.id === $wx`, which is a hidden claim about every OTHER live visit
+ *    in the database — and it broke the day a real ACCEPTED visit dated tomorrow appeared on the
+ *    replica, because `is_tomorrow` (rank 2) legitimately outranks "not yet accepted" (rank 3).
+ *    The RULE under test is "awaiting outranks confirmed", and that is a statement about these
+ *    two rows; anything else in the list is none of this assertion's business.
+ */
+$ordered = array_column($wv->summaryFor($manager)['visits'], 'id');
+$posX = array_search($wx, $ordered, true);
+$posY = array_search($wy, $ordered, true);
+ok('  …both staged visits are in the banner list', $posX !== false && $posY !== false, true);
+ok('  …but the banner RANKS the still-unconfirmed one ABOVE the confirmed one',
+   ($posX !== false && $posY !== false) ? ($posX < $posY) : null, true);
 ok('  …(the aged visit wy replaced is no longer live)',
    in_array($wv->find($w5)['status'], ['rescheduled', 'cancelled', 'done'], true), true);
 
 // Make it "tomorrow" and run the reminder sweep the banner poll triggers.
+// ⚠ The count is asserted as a DELTA. A fleet-wide absolute is a claim about every other row in
+//   the database — the replica now really does have another visit dated tomorrow, and `1` was
+//   only ever true because it happened not to when this was written.
+$beforeTomorrow = $wv->summaryFor($manager)['tomorrow'];
 DB::table(WV::T_VISIT)->where('id', $wy)
     ->update(['visit_date' => \Carbon\Carbon::today()->addDay()->format('Y-m-d')]);
 $sum = $wv->summaryFor($manager);
-ok('a visit dated tomorrow is flagged is_tomorrow', $sum['latest']['is_tomorrow'] ?? null, true);
-ok('  …and counted', $sum['tomorrow'], 1);
+$wyRow = array_values(array_filter($sum['visits'], fn ($v) => $v['id'] === $wy))[0] ?? null;
+// ⚠ THIS visit's own flag, not whichever row happens to lead the banner.
+ok('a visit dated tomorrow is flagged is_tomorrow', $wyRow['is_tomorrow'] ?? null, true);
+ok('  …and counted', $sum['tomorrow'] - $beforeTomorrow, 1);
 sleep(1);
 $fired = $wv->dueReminders();
 ok('the day-before sweep picks it up', count(array_filter($fired, fn ($v) => $v['id'] === $wy)), 1);

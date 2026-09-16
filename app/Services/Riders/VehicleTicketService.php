@@ -121,9 +121,41 @@ class VehicleTicketService
     }
 
     /**
-     * The caller's own machines, LABELLED — so the app can offer a picker when he holds
-     * more than one (a rider on the company van still owns his bike). Empty for a manager:
-     * he chooses a rider, and the registry answers the machine.
+     * ⭐⭐ THE MACHINES A TICKET MAY BE RAISED ON (owner ruling, 15-Sep-2026).
+     *
+     *    *"We should stop the riders from raising a ticket on an own bike or non company bike."*
+     *
+     *    Same reasoning the maintenance schedule already follows (`VehicleService::isTracked`,
+     *    owner 10-Sep: *"own bikes maintenance is not with the company"*). If the firm neither
+     *    services nor pays for a machine, there is nothing for a manager to answer or close on
+     *    it, and a ticket there would sit open forever waiting for a fix nobody will buy.
+     *
+     * ⚠⚠ THIS IS **NOT** `ownMachineIds()` AND MUST NEVER REPLACE IT. That one answers
+     *    *"what may this man SEE"* (`visibilityScope`) and is deliberately unfiltered: if an own
+     *    bike ever carried a ticket — one raised before this rule, or by a future manager path —
+     *    its holder must still be able to open and read the thread. Filtering the read rule
+     *    would make an existing conversation vanish from the phone of the man in it.
+     *    Raising is narrowed; reading is not.
+     *
+     * @return int[] the subset of his machines the company actually owns
+     */
+    public function ticketableMachineIds(int $userId): array
+    {
+        $veh = new VehicleService();
+        return array_values(array_filter(
+            $this->ownMachineIds($userId),
+            fn ($id) => $veh->isCompanyMachine((int) $id)
+        ));
+    }
+
+    /**
+     * The caller's own machines he may RAISE on, LABELLED — so the app can offer a picker when
+     * he holds more than one (a rider on the company van still owns his bike). Empty for a
+     * manager: he chooses a rider, and the registry answers the machine.
+     *
+     * ⚠ Company machines only (15-Sep ruling above), so the phone's picker cannot offer a bike
+     *   the server would then refuse. The gate is still re-checked in `open()` — this list is a
+     *   convenience, never the rule.
      *
      * @return array<int, array{id: int, name: ?string}>
      */
@@ -132,8 +164,33 @@ class VehicleTicketService
         $res = new VehicleResolver();
         return array_map(
             fn ($id) => ['id' => (int) $id, 'name' => $res->labelFor((int) $id)],
-            $this->ownMachineIds($userId)
+            $this->ticketableMachineIds($userId)
         );
+    }
+
+    /**
+     * ⭐ WHICH MACHINE A TICKET RAISED FOR THIS RIDER WOULD LAND ON (15-Sep-2026).
+     *
+     * The Bikes drawer knows the MAN; `open()` resolves the machine from the registry. Without
+     * this the manager's sheet could only say "for Arslan" and he had to trust that the server
+     * would pick the bike he had in mind. Now the sheet can name it before he sends, and say so
+     * when the answer is "nothing he holds is a company machine".
+     *
+     * @return array{id: int, name: ?string, is_company: bool}|null
+     */
+    public function subjectMachineFor(int $riderId): ?array
+    {
+        try {
+            $id = (int) ((new VehicleResolver())->currentVehicleFor($riderId) ?: 0);
+            if (!$id) return null;
+            return [
+                'id'         => $id,
+                'name'       => (new VehicleResolver())->labelFor($id),
+                'is_company' => (new VehicleService())->isCompanyMachine($id),
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /**
@@ -210,8 +267,11 @@ class VehicleTicketService
 
         // A rider need not say which bike — he has one. Resolving it here rather than
         // trusting the client also means he cannot open a ticket against someone else's.
+        // ⚠ `ticketableMachineIds`, not `ownMachineIds` (15-Sep ruling): a rider whose only
+        //   machine is his OWN bike must fall through to the "nothing to report against"
+        //   message below, not be auto-resolved onto it and then refused by the company gate.
         if (!$vehicleId && !$isManager) {
-            $mine = $this->ownMachineIds($uid);
+            $mine = $this->ticketableMachineIds($uid);
             if (count($mine) === 1) $vehicleId = $mine[0];
         }
         // ⭐ A MANAGER opening one FOR a rider need not know the vehicle id either — the
@@ -233,13 +293,23 @@ class VehicleTicketService
              *    flatly untrue, and a dead end: he cannot report a fault on either.
              *    Now it names them, and the app shows a picker (see `my_machines`).
              */
-            $mine = $isManager ? [] : $this->ownMachineIds($uid);
+            $mine = $isManager ? [] : $this->ticketableMachineIds($uid);
             if (count($mine) > 1) {
                 $labels = array_values(array_filter(array_map(
                     fn ($id) => (new VehicleResolver())->labelFor((int) $id), $mine)));
                 return ['ok' => false, 'message' =>
-                    'You have more than one machine (' . implode(', ', $labels)
+                    'You have more than one company machine (' . implode(', ', $labels)
                     . '). Choose which one this is about.'];
+            }
+            /**
+             * ⚠ "You hold something, but nothing the company owns" is a DIFFERENT answer from
+             *   "you hold nothing", and saying the wrong one sends a rider to a manager who
+             *   then cannot help him either. Only an own bike ⇒ say so plainly.
+             */
+            if (!$isManager && $this->ownMachineIds($uid)) {
+                return ['ok' => false, 'message' =>
+                    'Bike tickets are for company machines only. Your own bike is not on the '
+                    . 'company list, so there is nothing to raise here.'];
             }
             return ['ok' => false, 'message' => $isManager
                 ? 'Choose which bike this is about.'
@@ -250,6 +320,24 @@ class VehicleTicketService
         //   raising one for someone else is the other allowed path.
         if (!$isManager && !in_array($vehicleId, $this->ownMachineIds($uid), true)) {
             return ['ok' => false, 'message' => 'That bike is not assigned to you.'];
+        }
+
+        /**
+         * ⭐⭐ COMPANY MACHINES ONLY (owner ruling, 15-Sep-2026) — and the check is HERE, on the
+         *    resolved id, so it covers every path into this function: a rider posting a
+         *    `vehicle_id` by hand, a manager naming an own bike, and the registry resolving one
+         *    from a rider. The picker and the buttons are narrowed too, but a UI that merely
+         *    hides a control is a suggestion; this is the rule.
+         *
+         * ⚠ It applies to MANAGERS as well. The company neither services nor pays for an own
+         *   bike, so there is no answer a manager could give and no close he could justify —
+         *   a ticket there would sit open forever against a repair nobody is buying.
+         */
+        if (!(new VehicleService())->isCompanyMachine($vehicleId)) {
+            $label = (new VehicleResolver())->labelFor($vehicleId);
+            return ['ok' => false, 'message' =>
+                ($label ? $label . ' is not a company machine. ' : 'That is not a company machine. ')
+                . 'Bike tickets cover company bikes and the van only.'];
         }
 
         $title = trim((string) ($in['title'] ?? ''));
@@ -302,7 +390,24 @@ class VehicleTicketService
             // The opener has by definition read his own ticket.
             $this->markRead($uid, (int) $ticketId);
 
-            return ['ok' => true, 'ticket_id' => (int) $ticketId, 'message' => 'Reported. A manager will look at it.'];
+            /**
+             * ⭐ THE ANSWER NAMES THE MACHINE (owner ruling, 15-Sep-2026): *"the flow clearly
+             *   handles what bike they are on and tells the user as well, so they know what
+             *   vehicle they are communicating on."* Composed here, once, so the phone and the
+             *   desk cannot confirm two different bikes — the `checkin_line` rule.
+             * ⚠ Falls back to the plain sentence if the label cannot be resolved; a confirmation
+             *   must never fail because a nickname is missing.
+             */
+            $label = (new VehicleResolver())->labelFor($vehicleId);
+            return [
+                'ok'           => true,
+                'ticket_id'    => (int) $ticketId,
+                'vehicle_id'   => $vehicleId,
+                'vehicle_name' => $label,
+                'message'      => $label
+                    ? 'Reported on ' . $label . '. A manager will look at it.'
+                    : 'Reported. A manager will look at it.',
+            ];
         } catch (\Throwable $e) {
             Log::error('VehicleTicketService::open failed', ['error' => $e->getMessage()]);
             return ['ok' => false, 'message' => 'Could not raise the ticket.'];
@@ -625,10 +730,49 @@ class VehicleTicketService
          *    the old rider's phone an hour after the bike was someone else's.
          */
         if (!$isManager && !$scope) return [];
+        return $this->runList($scope, $uid, $opts);
+    }
+
+    /**
+     * ⭐⭐ THE SUMMARY LIST FOR A READ-ONLY VIEWER (15-Sep-2026) — fleet-wide, by design.
+     *
+     *    The Issues board has a planners' door (owner ruling): a shift planner who holds no
+     *    ticket key sees WHAT is stuck on every machine — titles, ages, whose turn — so he can
+     *    plan around it, but never the threads. `listFor()` cannot serve that, because
+     *    `visibilityScope()` correctly hands a non-manager only the machines he HOLDS, and a
+     *    one-bike "fleet board" is a lie.
+     *
+     * ⚠⚠ THIS METHOD PERFORMS NO VISIBILITY CHECK AT ALL. The caller must already have
+     *    established the right to see the fleet. Exactly ONE caller does — VehicleIssueBoard,
+     *    after its own read-grant test — and it must stay that way:
+     *      • never wire this to an HTTP route;
+     *      • never call it from `show`, `reply`, `close`, `mayRead` or a banner.
+     *    `visibilityScope()` remains the ONE rule for everything that opens a conversation.
+     *
+     * ⚠ `unread` comes back 0 throughout: a viewer who cannot open a thread has no read marks,
+     *   and an unread badge he can never clear is a permanent false alarm.
+     */
+    public function listFleetForReader(array $opts = []): array
+    {
+        if (!$this->available()) return [];
+        return $this->runList(true, 0, $opts);
+    }
+
+    /**
+     * The shared query behind both readers. `$scope` is `true` for "everything", or the list of
+     * machine ids the caller may see — decided by the CALLER, never here.
+     */
+    private function runList($scope, int $uid, array $opts): array
+    {
+        $isManager = ($scope === true);
         try {
             $q = DB::table(self::T_TICKET . ' as t')
                 ->leftJoin('t_sys_user as ob', 'ob.id', '=', 't.opened_by')
-                ->leftJoin('t_sys_user as fo', 'fo.id', '=', 't.opened_for_user_id');
+                ->leftJoin('t_sys_user as fo', 'fo.id', '=', 't.opened_for_user_id')
+                // 💬 15-Sep (later): who closed it and which day it was booked for — both feed the
+                //    ONE context line every reader prints under a conversation (see shape()).
+                ->leftJoin('t_sys_user as cb', 'cb.id', '=', 't.closed_by')
+                ->leftJoin(WorkshopVisitService::T_VISIT . ' as wv', 'wv.id', '=', 't.workshop_visit_id');
 
             // The same predicate as mayRead, expressed in SQL: the machines he holds now.
             if (!$isManager) {
@@ -649,15 +793,22 @@ class VehicleTicketService
 
             $rows = $q->orderByDesc('t.last_message_at')->orderByDesc('t.id')
                 ->limit(min(200, max(1, (int) ($opts['limit'] ?? 60))))
-                ->get(['t.*', 'ob.fullname as opened_by_name', 'fo.fullname as opened_for_name']);
+                ->get(['t.*', 'ob.fullname as opened_by_name', 'fo.fullname as opened_for_name',
+                       'cb.fullname as closed_by_name', 'wv.visit_date as workshop_date']);
 
             if ($rows->isEmpty()) return [];
 
             $ids     = $rows->pluck('id')->all();
-            $unread  = $this->unreadCounts($uid, $ids);
+            /**
+             * ⚠⚠ `$uid = 0` is the read-only reader, who is nobody. Asking `unreadCounts(0, …)`
+             *    would find no read markers and then count EVERY message as unread — a badge he
+             *    can never clear, on threads he cannot even open. Zero is the honest answer.
+             */
+            $unread  = $uid > 0 ? $this->unreadCounts($uid, $ids) : [];
             $labels  = $this->vehicleLabels($rows->pluck('vehicle_id')->unique()->all());
+            $counts  = $this->messageCounts($ids);
 
-            return $rows->map(fn ($r) => $this->shape((array) $r, $labels, $unread))->values()->all();
+            return $rows->map(fn ($r) => $this->shape((array) $r, $labels, $unread, $counts))->values()->all();
         } catch (\Throwable $e) {
             Log::warning('VehicleTicketService::listFor failed', ['error' => $e->getMessage()]);
             return [];
@@ -802,7 +953,58 @@ class VehicleTicketService
     //  helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
-    private function shape(array $r, array $labels, array $unread): array
+    /**
+     * 💬 How much was actually SAID on each ticket — human messages only, one grouped query.
+     *    A "12 messages" figure on a history row is what tells a manager a conversation is worth
+     *    opening; counting system lines ("Workshop set for…") would inflate a silent ticket.
+     *
+     * @return array<int,int> ticket id → count
+     */
+    private function messageCounts(array $ticketIds): array
+    {
+        if (!$ticketIds) return [];
+        try {
+            return DB::table(self::T_MESSAGE)->whereIn('ticket_id', $ticketIds)
+                ->where('kind', '!=', 'system')
+                ->groupBy('ticket_id')->selectRaw('ticket_id, COUNT(*) as n')
+                ->pluck('n', 'ticket_id')->map(fn ($n) => (int) $n)->all();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * 💬 THE CONTEXT LINE (owner, 15-Sep): *"subtly link the ticket details so the user knows,
+     *    when reading the history, that this message and history was for this date and whether
+     *    closed or still open."* Composed HERE, once, so the phone's thread header, the web's
+     *    inline thread and both history lists cannot say three different things about the same
+     *    conversation — the `checkin_line` rule.
+     *
+     *    "Opened 6 Sep by Arslan · Closed 11 Sep by Qasim — “chain replaced”"
+     *    "Opened 6 Sep by Arslan · still open · workshop set for 16 Sep"
+     */
+    private function contextLine(array $r): string
+    {
+        $d = function ($ts) {
+            try { return $ts ? \Carbon\Carbon::parse($ts)->format('j M') : ''; }
+            catch (\Throwable $e) { return ''; }
+        };
+        $who  = $r['opened_for_name'] ?: ($r['opened_by_name'] ?: null);
+        $line = 'Opened ' . $d($r['opened_at']) . ($who ? ' by ' . $who : '');
+        if ((string) $r['status'] === 'closed') {
+            $line .= ' · Closed ' . $d($r['closed_at'])
+                   . (!empty($r['closed_by_name']) ? ' by ' . $r['closed_by_name'] : '')
+                   . (!empty($r['close_note']) ? ' — “' . $r['close_note'] . '”' : '');
+        } else {
+            $line .= ' · still open';
+            if ((string) $r['status'] === 'scheduled' && !empty($r['workshop_date'])) {
+                $line .= ' · workshop set for ' . $d($r['workshop_date']);
+            }
+        }
+        return $line;
+    }
+
+    private function shape(array $r, array $labels, array $unread, array $counts = []): array
     {
         return [
             'id'                 => (int) $r['id'],
@@ -824,6 +1026,11 @@ class VehicleTicketService
             'first_response_at'  => $r['first_response_at'] ? (string) $r['first_response_at'] : null,
             'closed_at'          => $r['closed_at'] ? (string) $r['closed_at'] : null,
             'close_note'         => $r['close_note'] ?? null,
+            // 💬 15-Sep (later): the history readers. Additive — older apps ignore them.
+            'closed_by_name'     => $r['closed_by_name'] ?? null,
+            'workshop_date'      => !empty($r['workshop_date']) ? substr((string) $r['workshop_date'], 0, 10) : null,
+            'message_count'      => (int) ($counts[(int) $r['id']] ?? 0),
+            'context_line'       => $this->contextLine($r),
             'last_message_at'    => $r['last_message_at'] ? (string) $r['last_message_at'] : null,
             'unread'             => (int) ($unread[(int) $r['id']] ?? 0),
             // Lets a client grey out the composer without duplicating the rule.

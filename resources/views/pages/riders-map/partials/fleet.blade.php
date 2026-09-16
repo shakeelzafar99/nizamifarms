@@ -19,6 +19,10 @@
         <div class="fl-modes">
             <button type="button" id="flModeRiders" class="fl-mode on" onclick="flSetMode('riders')">👤 Riders</button>
             <button type="button" id="flModeVehicles" class="fl-mode" onclick="flSetMode('vehicles')">🏍️ Vehicles</button>
+            {{-- 🛠 Sep-15: the THIRD question about the same fleet — "is anything stuck, and
+                 whose turn is it". Riders answers what a man's riding costs, Vehicles what a
+                 machine has done; neither could answer whether a complaint was being handled. --}}
+            <button type="button" id="flModeIssues" class="fl-mode" onclick="flSetMode('issues')">🛠 Issues<span id="flIssBadge" style="display:none;background:#dc2626;color:#fff;border-radius:999px;font-size:10px;font-weight:800;padding:0 5px;margin-left:5px;">0</span></button>
         </div>
         <div class="fl-monthwrap" id="flMonthWrap">
             <button class="fl-nav" onclick="flShiftMonth(-1)" title="Previous month">‹</button>
@@ -98,6 +102,15 @@
         <div id="flVehGrid" class="fl-vgrid"><div class="fl-empty">Loading…</div></div>
         <div id="flVehDetail" class="fl-vdetail" style="display:none;"></div>
     </div>
+
+    {{-- ═══ 🛠 ISSUES (Sep-15 2026) ═══
+         The third question about the same fleet: is anything stuck, and whose turn is it.
+         ⚠ The SAME partial the standalone planners' page includes — one board, two doors.
+         ⚠ The flag below is what tells it that flOpenTicket() exists here, so a ticket row
+           expands its thread in place instead of linking away. The standalone page sets
+           nothing and gets links. --}}
+    <script>window.FL_ISS_INLINE_THREADS = true;</script>
+    @include('pages.riders-map.partials.fleet-issues')
 </div>
 
 <style>
@@ -811,6 +824,14 @@
       <textarea id="flWsDoneNote" rows="3" placeholder="e.g. Chain and sprocket replaced"
                 style="width:100%;border:1px solid #d1d5db;border-radius:8px;padding:7px 9px;font-size:13px;resize:vertical;"></textarea>
 
+      {{-- ⭐⭐ RULING 6 (15-Sep-2026): "and is the complaint fixed?" — asked, never assumed.
+           A visit being done does NOT close a ticket by itself: only a manager closes one, and
+           the RIDER can mark a visit done. So the question is put to the manager at the moment
+           he is already deciding what happened, and it costs one tap.
+           ⚠ Filled in by flWorkshopDone(); EMPTY for anyone who cannot close tickets, and empty
+             when the machine has nothing open. --}}
+      <div id="flWsDoneIssues" style="display:none;"></div>
+
       <div id="flWsDoneErr" style="display:none;font-size:12px;color:#b91c1c;background:#fef2f2;
            border:1px solid #fecaca;border-radius:8px;padding:7px 9px;margin-top:9px;"></div>
 
@@ -1169,6 +1190,12 @@ function flInit() {
         inp.max = m;
         flMonth = m;
         flInitDone = true;
+        /**
+         * 🛠 The Issues tab's red count, asked for ONCE when Bikes first renders (15-Sep, later).
+         *    Without this the badge stayed 0 until the tab had been opened — the one moment it
+         *    could not help. Counts only, so nothing about the costs view waits on it.
+         */
+        if (typeof flIssLoadStripOnly === 'function') flIssLoadStripOnly();
     }
     flLoad(flMonth);
 }
@@ -1203,6 +1230,18 @@ function flLoad(month, fresh) {
             flRenderTable(res);
             flRenderVerdict(res.totals);
             flRenderNotes(res);
+            /**
+             * ⚠ Seen in the browser pane (15-Sep): the month payload can land AFTER the user has
+             *   already switched to Vehicles or Issues, and the two renders above then paint the
+             *   costs verdict and notes OVER the other view. Re-apply the mode's own hiding once
+             *   the late render is done. Cheap, and a no-op on the Riders view.
+             */
+            if (typeof flvMode !== 'undefined' && flvMode !== 'riders') {
+                ['flMonthWrap', 'flHeadline', 'flVerdict', 'flNotes', 'flDetail'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) { el.dataset.flPrevDisplay = el.style.display || ''; el.style.display = 'none'; }
+                });
+            }
         })
         .catch(err => {
             const msg = err.message === '403'
@@ -1991,6 +2030,29 @@ function flForm(spec) {
             inner = '<label style="' + lab + '">' + esc(f.label) + '</label>'
                  + '<textarea id="' + id + '" rows="3" placeholder="' + esc(f.placeholder || '') + '" style="' + inp + 'resize:vertical;">'
                  + esc(f.value || '') + '</textarea>' + hint;
+        } else if (f.type === 'checklist') {
+            /**
+             * ⭐ 15-Sep (Part B): a MULTI-select list of tick-boxes, returning an array of the
+             *   ticked values. Added for "which of this bike's reported issues is this trip
+             *   for?", where every box is ticked by default — the common case is that the bike
+             *   is going in for everything that has been reported on it.
+             * ⚠ Its own `data-flck` group rather than a name, because `flFieldValue` already
+             *   treats `input[name=...]` as a RADIO group and would return only the first.
+             */
+            inner = '<div style="' + lab + '">' + esc(f.label) + '</div>'
+                 + ((f.options || []).length
+                     ? '<div style="display:flex;flex-direction:column;gap:5px;border:1px solid #e5e7eb;'
+                       + 'border-radius:8px;padding:8px 10px;max-height:190px;overflow:auto;">'
+                       + f.options.map(o =>
+                           '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:#111827;cursor:pointer;">'
+                         + '<input type="checkbox" data-flck="' + esc(f.key) + '" value="' + esc(String(o.value)) + '"'
+                         + (o.checked === false ? '' : ' checked') + ' style="margin-top:2px;"> '
+                         + '<span>' + esc(o.label)
+                         + (o.note ? '<br><span style="color:#9ca3af;font-size:11px;">' + esc(o.note) + '</span>' : '')
+                         + '</span></label>').join('')
+                       + '</div>'
+                     : '<div style="font-size:12px;color:#9ca3af;">' + esc(f.empty || 'Nothing to choose.') + '</div>')
+                 + hint;
         } else if (f.type === 'note') {
             // Not an input at all — a line of guidance that belongs inside the flow of the
             // form (e.g. "these are the only workshops that can pin his check-in").
@@ -2043,6 +2105,15 @@ function flFormClose() {
 /** One field's current value, by key — used by flFormValues and by showIf. */
 function flFieldValue(key) {
     const id = 'flF_' + key;
+    /**
+     * ⭐ 15-Sep: a `checklist` returns an ARRAY of the ticked values. Checked first, because a
+     *   group with none ticked must come back as `[]` rather than falling through to the radio
+     *   branch and answering `null`.
+     */
+    const ticks = document.querySelectorAll('input[data-flck="' + key + '"]');
+    if (ticks.length) {
+        return Array.from(ticks).filter(c => c.checked).map(c => c.value);
+    }
     const radio = document.querySelector('input[name="' + id + '"]:checked');
     if (radio) return radio.value;
     if (document.querySelector('input[name="' + id + '"]')) return null;  // radio group, none picked
@@ -2131,6 +2202,24 @@ function flWorkshopsThen(cb) {
 function flScheduleWorkshop(uid, ticketId, vehicleId) {
     const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate() + 1);
         return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    /**
+     * 🔗 PART B (15-Sep-2026) — ask which reported issues this trip is for, BEFORE building the
+     *    form, so the tick-boxes are part of it rather than appearing a beat later.
+     * ⚠ One source: the warnings endpoint, which resolves the machine the same way `schedule()`
+     *   will (so a rider-first booking is answered too) and is already manager-gated.
+     * ⚠ Never fatal — a booking form must still open if this fails; it just offers no boxes.
+     */
+    const q = (vehicleId ? 'vehicle_id=' + encodeURIComponent(vehicleId) : '')
+            + (uid ? (vehicleId ? '&' : '') + 'user_id=' + encodeURIComponent(uid) : '');
+    fetch('/orders/riders-map/fleet/workshop/warnings?' + q + '&visit_date=' + encodeURIComponent(tomorrow),
+          { headers: { 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => flScheduleWorkshopForm(uid, ticketId, vehicleId, tomorrow,
+                                          (j && j.open_tickets) || []))
+        .catch(() => flScheduleWorkshopForm(uid, ticketId, vehicleId, tomorrow, []));
+}
+
+function flScheduleWorkshopForm(uid, ticketId, vehicleId, tomorrow, openTickets) {
     flWorkshopsThen(function (meta) {
         const list = meta.list || [];
         const fields = [
@@ -2194,6 +2283,31 @@ function flScheduleWorkshop(uid, ticketId, vehicleId) {
         fields.push({ key: 'workshop', label: 'Workshop name (not on the list)', type: 'text',
             placeholder: 'e.g. Bilal Auto', showIf: { key: 'location_id', value: '' },
             hint: '⚠ A typed name is only a label — his check-in place will NOT move, so he can be marked remote that morning.' });
+        /**
+         * 🔗 PART B: WHICH REPORTED ISSUES IS THIS TRIP FOR? (owner, 15-Sep)
+         *
+         *   Before this, a visit linked at most the ONE ticket a manager had pressed Schedule
+         *   from — and since managers book from the machine's card, not a thread, that meant
+         *   nothing was ever linked. Every open issue on the bike is now offered, TICKED BY
+         *   DEFAULT, because the bike going in for everything reported on it is the normal case.
+         *
+         * ⚠ Untick one and it simply stays in the queue; the visit covers what is ticked.
+         * ⚠ An issue already covered by another live day is shown and ticked too, flagged —
+         *   moving a bike to a new day must not silently narrow what that day is for.
+         */
+        if ((openTickets || []).length) {
+            fields.push({ key: 'ticket_ids', type: 'checklist',
+                label: 'Which reported issues is this trip for?',
+                options: openTickets.map(t => ({
+                    value: t.id,
+                    label: (t.urgent ? '🔴 ' : '') + t.title,
+                    note: (t.opened_for_name ? 'reported by ' + t.opened_for_name : '')
+                        + (t.already_linked ? (t.opened_for_name ? ' · ' : '')
+                              + 'already on another workshop day' : ''),
+                })),
+                hint: 'Each one ticked is told about this date in its own thread, and shows as '
+                    + '"Workshop set" until the visit is done. Untick anything this trip is not for.' });
+        }
         fields.push({ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'Anything the rider or the mechanic should know' });
 
         /**
@@ -2233,6 +2347,22 @@ function flScheduleWorkshop(uid, ticketId, vehicleId) {
                     else if (v.workshop) payload.workshop = v.workshop;
                     if (v.note) payload.note = v.note;
                     if (ticketId) payload.ticket_id = ticketId;
+                    /**
+                     * 🔗 PART B: the issues this trip covers. ⚠ Sent as ids only — the server
+                     *   re-checks every one against the machine actually going in and against
+                     *   being open (`resolveTicketIds`), so this list is a convenience and
+                     *   never the rule.
+                     *
+                     * ⚠⚠ SENT WHENEVER THE QUESTION WAS ASKED, even when he ticked NOTHING.
+                     *    The key's presence is how the server tells "he unticked them all" from
+                     *    "this client is too old to have been asked" — and those two must not
+                     *    mean the same thing, or a re-booking from a stale APK would unhook
+                     *    every complaint on the machine.
+                     */
+                    if ((openTickets || []).length) {
+                        payload.ticket_ids = (Array.isArray(v.ticket_ids) ? v.ticket_ids : [])
+                            .map(n => parseInt(n, 10)).filter(Boolean);
+                    }
                     if (v.route === 'approval') payload.send_for_approval = 1;
                     flPostWorkshop('', payload, function (res) {
                         done(true, res.message || 'Booked.', res.warnings || []);
@@ -2450,6 +2580,10 @@ function flWorkshopDone(id) {
     document.getElementById('flWsDoneNote').value = '';
     document.getElementById('flWsDonePhoto').value = '';
     document.getElementById('flWsDoneErr').style.display = 'none';
+    // ⚠ Cleared on every open: a stale list from the LAST visit would otherwise sit there
+    //   pre-ticked, and one Save would close another machine's complaints.
+    const issBox = document.getElementById('flWsDoneIssues');
+    if (issBox) { issBox.innerHTML = ''; issBox.style.display = 'none'; }
     const typeSel = document.getElementById('flWsDoneType');
     typeSel.innerHTML = '<option value="">Loading…</option>';
     const srcSel = document.getElementById('flWsDoneSource');
@@ -2475,6 +2609,42 @@ function flWorkshopDone(id) {
                 o.value = s.id; o.textContent = s.label || s.name || ('Account ' + s.id);
                 srcSel.appendChild(o);
             });
+
+            /**
+             * ⭐⭐ RULING 6 — "and is the complaint fixed?"
+             *
+             * ⭐ PRE-TICKED only for what this visit actually went in for (Part B made the visit
+             *   know that). Anything else open on the machine is offered UNTICKED: the trip may
+             *   have happened to fix it, but a manager tapping through must not close a
+             *   complaint the bike never went in for.
+             * ⚠ The whole block is absent for anyone the server says cannot close tickets —
+             *   which is how the rider marking his own visit done is never asked at all.
+             */
+            const iss = document.getElementById('flWsDoneIssues');
+            const list = d.closeable_tickets || [];
+            if (!d.can_close_tickets || !list.length) {
+                iss.style.display = 'none'; iss.innerHTML = '';
+            } else {
+                iss.style.display = '';
+                iss.innerHTML =
+                    '<label style="display:block;font-size:11.5px;font-weight:700;color:#374151;margin:13px 0 4px;">'
+                  + 'Which of these are now fixed?</label>'
+                  + '<div style="display:flex;flex-direction:column;gap:5px;border:1px solid #e5e7eb;'
+                  + 'border-radius:8px;padding:8px 10px;max-height:170px;overflow:auto;">'
+                  + list.map(t =>
+                      '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;color:#111827;cursor:pointer;">'
+                    + '<input type="checkbox" data-wsclose="1" value="' + t.id + '"'
+                    + (t.covered_by_this_visit ? ' checked' : '') + ' style="margin-top:2px;"> '
+                    + '<span>' + (t.urgent ? '🔴 ' : '') + flEsc(t.title)
+                    + '<br><span style="color:#9ca3af;font-size:11px;">'
+                    + (t.covered_by_this_visit ? 'this trip was for it'
+                         : 'not part of this trip — tick only if it is genuinely fixed')
+                    + '</span></span></label>').join('')
+                  + '</div>'
+                  + '<div style="font-size:11px;color:#9ca3af;margin-top:3px;">'
+                  + 'Closing tells the rider. Your outcome note above becomes the close note. '
+                  + 'Leave one unticked and it simply stays open.</div>';
+            }
         })
         .catch(() => { typeSel.innerHTML = '<option value="">(could not load)</option>'; });
 }
@@ -2521,6 +2691,13 @@ function flWsDoneSave() {
     }
     if (note) fd.append('outcome_note', note);
     if (file) fd.append('photo', file);
+    /**
+     * ⭐ RULING 6: the issues he says are fixed, closed in the same request.
+     * ⚠ Ids only — the server re-checks that this caller may close and that each id is really
+     *   open on this machine, so an old or crafted client can close nothing it should not.
+     */
+    document.querySelectorAll('input[data-wsclose="1"]:checked')
+        .forEach(c => fd.append('close_ticket_ids[]', c.value));
 
     const btn = document.getElementById('flWsDoneSubmit');
     btn.disabled = true; btn.textContent = 'Saving…';
@@ -2554,9 +2731,22 @@ function flWsDoneSave() {
  *    ticket on the web at all — riders raise from the phone. Same endpoint the phone posts to;
  *    the registry fills in who holds the bike (`VehicleTicketService::open`).
  */
-function flvReportProblem(vehicleId) {
+/**
+ * 🎫 Open an issue on a machine.
+ *
+ * ⭐ 15-Sep-2026: the form NAMES the machine (owner ruling — "the flow clearly handles what bike
+ *   they are on and tells the user as well"). The caller passes the label it is already showing,
+ *   so the desk cannot open a thread against a bike it never mentioned.
+ * ⚠ Company machines only (same ruling). The button is hidden on an own bike, and the SERVER
+ *   refuses it regardless — this argument only decides what the page offers.
+ */
+function flvReportProblem(vehicleId, vehicleName) {
     flForm({
-        title: '🎫 Open an issue on this bike',
+        title: '🎫 Open an issue on ' + (vehicleName || 'this bike'),
+        intro: vehicleName
+            ? 'This issue will be recorded against ' + vehicleName
+              + ', and whoever holds that machine sees it.'
+            : 'Whoever holds this machine sees it.',
         fields: [
             { key: 'title', label: 'What is wrong (one line)', type: 'text', required: true, placeholder: 'e.g. Front brake is loose' },
             { key: 'urgent', label: 'Not rideable right now (urgent)', type: 'checkbox' },
@@ -2615,6 +2805,8 @@ function flPostWorkshop(suffix, payload, onOk, onErr) {
         if (flSelected) flLoadWorkshop(flSelected);
         // 🔧 The same actions now live on the VEHICLE panel too — refresh its block as well.
         if (typeof flvOpenId !== 'undefined' && flvOpenId && typeof flvLoadVisits === 'function') flvLoadVisits(flvOpenId);
+        // 🛠 …and the Issues board, whose Schedule button may be where this came from (15-Sep, later).
+        if (typeof flIssRefresh === 'function') flIssRefresh();
     })
     .catch(() => { if (onErr) onErr('Could not save. Please try again.'); else alert('Could not save. Please try again.'); });
 }
@@ -2704,8 +2896,16 @@ function flRenderTicketList(list, canManage) {
         + '<div id="flTicketThread"></div>';
 }
 
-function flOpenTicket(id) {
-    const wrap = document.getElementById('flTicketThread');
+/**
+ * Draw one ticket's thread.
+ *
+ * ⚠ 15-Sep-2026: `wrapEl` was added for the ISSUES BOARD, which shows many machines at once and
+ *   therefore needs a per-card target — there is only ever one `#flTicketThread` on the page, so
+ *   a board that used it would open every thread into the same box. Both existing callers pass
+ *   nothing and keep the old behaviour exactly.
+ */
+function flOpenTicket(id, wrapEl) {
+    const wrap = wrapEl || document.getElementById('flTicketThread');
     if (!wrap) return;
     wrap.innerHTML = '<div style="font-size:11.5px;color:#9ca3af;padding:8px 0;">Loading…</div>';
     fetch('/orders/riders-map/fleet/tickets/' + id, { headers: { 'Accept': 'application/json' } })
@@ -2765,6 +2965,12 @@ function flOpenTicket(id) {
                 + (j.can_close ? '<button class="fl-btn" onclick="flCloseTicket(' + id + ')">Close issue</button>' : '')
                 + '</span>'
                 + '</div>'
+                /* 💬 15-Sep (later): the ONE context line the server composes — what this
+                     conversation was for, when, and whether it ended — so anyone reading a
+                     history never has to leave the messages to find out. */
+                + (t.context_line
+                    ? '<div style="font-size:11.5px;color:#6b7280;margin-top:3px;">' + flEsc(t.context_line) + '</div>'
+                    : '')
                 + '<div style="max-height:280px;overflow:auto;margin-top:8px;">' + msgs + '</div>'
                 + composer
                 + (t.can_reply === false
@@ -2812,14 +3018,41 @@ function flReplyTicket(id) {
         }
         flOpenTicket(id);
         if (flSelected) flLoadTickets(flSelected);
+        /**
+         * 🛠 The Issues board (15-Sep, later). Two things were wrong here when the reply came from
+         *    the board's INLINE thread: the turn marker on the card stayed "waiting on us" after
+         *    you had just answered (and the poll skips while a thread is open), and the
+         *    `flOpenTicket(id)` above redraws into the rider DRAWER's box, not the board's — so the
+         *    board's thread never showed the reply. flIssRefresh() redraws the cards and re-opens
+         *    the same thread in its own box.
+         */
+        if (typeof flIssRefresh === 'function') flIssRefresh();
     }).catch(() => alert('Could not send. Please try again.'));
 }
 
-function flCloseTicket(id) {
+/**
+ * ⭐⭐ THE ONE CLOSE ENGINE (owner condition, 15-Sep-2026: "close from the board only if it
+ *    follows the same single engine approach, so whether done from here or from inside the
+ *    vehicles tab it should work seamlessly").
+ *
+ *    Three places press this — the thread, the vehicle panel and the Issues board — and all
+ *    three land on this one dialog, posting to the one endpoint, and its tail refreshes ALL
+ *    THREE surfaces. A second close path would be a second set of refreshes to forget.
+ *
+ * @param unread  how many messages the presser has NOT read on this ticket. Only the BOARD
+ *                passes it: there the button sits away from the conversation, so a manager can
+ *                close an issue whose newest messages he has never seen. It WARNS, never blocks
+ *                — that was the whole objection to closing from a list.
+ */
+function flCloseTicket(id, unread) {
     flForm({
         // ⭐ "issue", to match the phone and the Open-an-issue button (owner, 6-Sep).
         title: '✅ Close this issue',
-        intro: 'The rider holding the bike sees your note.',
+        intro: (unread > 0
+                  ? '⚠ There ' + (unread === 1 ? 'is 1 message' : 'are ' + unread + ' messages')
+                    + ' on this issue you have not read. '
+                  : '')
+               + 'The rider holding the bike sees your note.',
         fields: [{ key: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'e.g. Chain replaced, tension checked' }],
         okLabel: 'Close issue',
         onSubmit: function (v, done) {
@@ -2834,6 +3067,8 @@ function flCloseTicket(id) {
                 flOpenTicket(id);
                 if (flSelected) flLoadTickets(flSelected);
                 if (typeof flvOpenId !== 'undefined' && flvOpenId) flvLoadTickets(flvOpenId);
+                // 🛠 …and the board, if it is the surface he pressed it on.
+                if (typeof flIssData !== 'undefined' && flIssData) { flIssOpenThreadId = null; flIssLoad(); }
             }).catch(() => done(false, 'Could not close. Please try again.'));
         }
     });
@@ -4911,28 +5146,60 @@ let flvLoaded    = false;      // fetched at least once
 let flvPreviewSeq = 0;         // guards against a slow preview landing after a newer one
 
 /** Switch between the costs table and the machines. */
+/**
+ * ⚠ THREE modes since 15-Sep, not two. `isVeh` used to double as "hide the costs view", which
+ *   was true while Vehicles was the only other mode. It no longer is — the Issues board must
+ *   hide exactly the same group — so the costs chrome now keys off `isCosts`, and the two
+ *   non-costs views each own their own wrapper.
+ */
 function flSetMode(mode) {
     flvMode = mode;
-    const isVeh = mode === 'vehicles';
+    const isVeh    = mode === 'vehicles';
+    const isIssues = mode === 'issues';
+    const isCosts  = !isVeh && !isIssues;
 
-    document.getElementById('flModeRiders').classList.toggle('on', !isVeh);
+    document.getElementById('flModeRiders').classList.toggle('on', isCosts);
     document.getElementById('flModeVehicles').classList.toggle('on', isVeh);
+    const mi = document.getElementById('flModeIssues');
+    if (mi) mi.classList.toggle('on', isIssues);
 
     // Everything the COSTS view owns — including the month picker, which means
     // nothing here — is hidden as one group.
     ['flMonthWrap', 'flHeadline', 'flVerdict', 'flNotes', 'flDetail'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
-        if (isVeh) { el.dataset.flPrevDisplay = el.style.display || ''; el.style.display = 'none'; }
+        if (!isCosts) { el.dataset.flPrevDisplay = el.style.display || ''; el.style.display = 'none'; }
         else if (el.dataset.flPrevDisplay !== undefined) { el.style.display = el.dataset.flPrevDisplay; }
     });
     const tw = document.querySelector('#fleetView .fl-tablewrap');
-    if (tw) tw.style.display = isVeh ? 'none' : '';
+    if (tw) tw.style.display = isCosts ? '' : 'none';
     const nr = document.querySelector('#fleetView .fl-newreq');
-    if (nr) nr.style.display = isVeh ? 'none' : '';
+    if (nr) nr.style.display = isCosts ? '' : 'none';
 
     document.getElementById('flVehWrap').style.display = isVeh ? '' : 'none';
+    const iw = document.getElementById('flIssWrap');
+    if (iw) iw.style.display = isIssues ? '' : 'none';
+
     if (isVeh && !flvLoaded) flvLoad();
+    if (isIssues && typeof flIssLoad === 'function') {
+        // Always re-read on entry: this is a NOW view, and a stale board is worse than a slow one.
+        flIssLoad();
+        if (typeof flIssPoll === 'function') flIssPoll();
+    }
+}
+
+/**
+ * 🛠 The red count on the Issues tab — what is waiting on US, so the tab itself says whether it
+ *    is worth opening. Asked once when Bikes first renders and refreshed whenever the board
+ *    reloads; it is the same endpoint, so no extra rule can drift.
+ */
+function flIssBadgeFrom(totals) {
+    const el = document.getElementById('flIssBadge');
+    if (!el || !totals) return;
+    const n = (totals.unanswered || 0) + (totals.waiting_on_us || 0)
+            + (totals.workshop_missed || 0) + (totals.urgent || 0);
+    el.textContent = n;
+    el.style.display = n ? '' : 'none';
 }
 
 function flvLoad() {
@@ -5992,6 +6259,13 @@ function flvRenderDetail(v, canManage, res) {
          tickets/issues/chat button that opens these chats or history?"). The block is there the
          moment the answer arrives, empty or not; history is one click; raising one is a button. */
     const tkCanManage = !!(flvTickets && flvTickets.vehicleId === v.id && flvTickets.canManage);
+    /**
+     * ⭐⭐ COMPANY MACHINES ONLY (owner ruling, 15-Sep-2026). The server refuses a ticket on an
+     *    own bike whoever asks, so offering the button here would be a control that always 422s.
+     *    ⚠ The BLOCK still renders on an own bike — history is history, and any ticket raised
+     *      before this rule must stay readable. Only RAISING is withdrawn.
+     */
+    const tkCompany = v.is_company !== false;
     const tkBlock = tks === null
         ? ''
         : '<div class="fl-vsec">'
@@ -5999,15 +6273,23 @@ function flvRenderDetail(v, canManage, res) {
           +   '<h4 style="margin:0;">Tickets &amp; chat</h4>'
           +   '<button type="button" class="fl-vchipbtn' + (flvTicketsAll ? ' on' : '') + '" onclick="flvToggleTicketHistory()">'
           +     (flvTicketsAll ? 'Hide closed' : 'Show history') + '</button>'
-          +   (tkCanManage
-                 ? '<button type="button" class="fl-vchipbtn" style="margin-left:auto;" onclick="flvReportProblem(' + v.id + ')">🎫 Open an issue</button>'
+          +   (tkCanManage && tkCompany
+                 /* ⚠⚠ flJsArg, NEVER JSON.stringify — its real `"` ends the attribute and the
+                       button silently does nothing (see the note on flJsArg above). */
+                 ? '<button type="button" class="fl-vchipbtn" style="margin-left:auto;" onclick="flvReportProblem('
+                   + v.id + ', ' + flJsArg(v.name || '') + ')">🎫 Open an issue</button>'
                  : '')
           + '</div>'
           + (tks.length
                 ? flTicketRowsHtml(tks, { showWho: true }) + '<div id="flTicketThread"></div>'
                 : '<div style="font-size:12px;color:#9ca3af;">'
                   + (flvTicketsAll ? 'No tickets have ever been raised on this machine.'
-                                   : 'Nothing open on this machine. Faults a rider reports from his phone appear here.')
+                       : !tkCompany
+                           // ⚠ Say WHY it is permanently empty, rather than implying someone
+                           //   might report something here one day.
+                           ? 'This is not a company machine, so bike issues are not raised on it. '
+                             + 'Bike issues cover company bikes and the van.'
+                           : 'Nothing open on this machine. Faults a rider reports from his phone appear here.')
                   + '</div><div id="flTicketThread"></div>')
           + '</div>';
 

@@ -884,9 +884,24 @@ try {
         /**
          * Force a job DUE on this machine: a per-vehicle exception of 100 km on a job last
          * done hundreds of km ago is overdue by construction, so `due()` must list it.
+         *
+         * ⚠⚠ THE JOB MUST HAVE A BASELINE ON **THIS** MACHINE. This used to take whichever
+         *    active type had the smallest `interval_km`, which on the current replica is a job
+         *    that has NEVER been recorded on this bike — so the 100 km override produced
+         *    `state: unknown` / "never recorded", not "overdue", and `due()` correctly listed
+         *    nothing. The suite was asserting against an assumption ("last done hundreds of km
+         *    ago") that the chosen fixture did not satisfy. Discover a job that fits the
+         *    question instead: one with a real `last_meter` behind the current odometer.
          */
-        $job = DB::table('t_fleet_maintenance_types')->where('is_active', 1)
-            ->where('interval_km', '>', 0)->orderBy('interval_km')->value('id');
+        $meterNow = (new \App\Services\Riders\VehicleService())->currentMeterFor($vid);
+        $sched = (new \App\Services\Riders\VehicleService())->serviceScheduleFor($vid, $meterNow);
+        $withBaseline = array_values(array_filter($sched, fn ($s) =>
+            !empty($s['last_meter']) && (int) $s['last_meter'] < (int) $meterNow - 100));
+        ok('  …and a job with a real service baseline exists to make overdue',
+           (bool) $withBaseline, null, true);
+        // The one recorded FURTHEST back, so 100 km is unambiguously overdue.
+        usort($withBaseline, fn ($a, $b) => (int) $a['last_meter'] <=> (int) $b['last_meter']);
+        $job = $withBaseline ? (int) $withBaseline[0]['id'] : null;
         DB::table('t_ops_vehicle_service_schedule')->updateOrInsert(
             ['vehicle_id' => $vid, 'maintenance_type_id' => (int) $job],
             ['interval_km' => 100, 'updated_at' => now(), 'created_at' => now()]);

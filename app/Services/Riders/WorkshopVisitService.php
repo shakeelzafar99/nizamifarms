@@ -364,6 +364,20 @@ class WorkshopVisitService
             $visitId = null;
             $replaced = null;
             /**
+             * ⭐ THE VISIT'S OWN `ticket_id` — "the thread this was raised from" — resolved here
+             *   so the row written below and the link written after it cannot disagree.
+             *
+             * ⚠⚠ Dropped when the booker WAS asked which issues the trip covers and left this
+             *    very one unticked. `linkedTicketIds()` reads this column as well as the
+             *    pointers, so keeping it would resurrect the complaint he just excluded — and
+             *    its thread would later be told the visit was completed for it.
+             */
+            $originatingTicketId = !empty($in['ticket_id']) ? (int) $in['ticket_id'] : null;
+            if ($originatingTicketId && array_key_exists('ticket_ids', $in)) {
+                $ticked = array_map('intval', (array) $in['ticket_ids']);
+                if (!in_array($originatingTicketId, $ticked, true)) $originatingTicketId = null;
+            }
+            /**
              * 📍 WHERE HE CHECKS IN THAT DAY — resolved BEFORE the transaction, because both
              *    halves of this method need the same answer: the row written inside the
              *    closure, and the shift pin written after it.
@@ -386,7 +400,7 @@ class WorkshopVisitService
                     : (in_array($want, ['regular', 'workshop'], true) ? $want : null);
             }
 
-            DB::transaction(function () use (&$visitId, &$replaced, $vehicleId, $riderId, $date, $purpose, $in, $user, $now, $proposed, $attendanceAt) {
+            DB::transaction(function () use (&$visitId, &$replaced, $vehicleId, $riderId, $date, $purpose, $in, $user, $now, $proposed, $attendanceAt, $originatingTicketId) {
                 /**
                  * ⚠ One open visit per machine — two open instructions for one bike is how a
                  *   rider ends up at the workshop on the wrong day.
@@ -438,7 +452,8 @@ class WorkshopVisitService
                     'purpose'             => $purpose,
                     'maintenance_type_id' => $purpose === 'service' && !empty($in['maintenance_type_id'])
                                              ? (int) $in['maintenance_type_id'] : null,
-                    'ticket_id'           => !empty($in['ticket_id']) ? (int) $in['ticket_id'] : null,
+                    // ⚠ Resolved above the transaction, and NULL when he unticked this very issue.
+                    'ticket_id'           => $originatingTicketId,
                     'note'                => isset($in['note']) ? mb_substr(trim((string) $in['note']), 0, 255) : null,
                     'status'              => $proposed ? 'proposed' : 'scheduled',
                     'created_by'          => (int) $user->id,
@@ -453,6 +468,14 @@ class WorkshopVisitService
                         'updated_at'    => $now,
                     ]);
                     $replaced = (int) $existing->id;
+                    /**
+                     * ⭐ PART B: the complaints MOVE with the day. A superseded visit is not a
+                     *   cancellation — the bike is still going in, on a different date — so its
+                     *   tickets follow rather than being dropped back into the queue and having
+                     *   to be ticked again. Without this the replacement would cover nothing and
+                     *   the old visit would keep the links it can no longer honour.
+                     */
+                    $this->carryTicketsOver($replaced, (int) $visitId, (array) $existing, $in, $vehicleId);
                 }
             });
 
@@ -467,7 +490,35 @@ class WorkshopVisitService
              *    moment it becomes true.
              */
             if (!$proposed) {
-                $this->linkTicket((int) $visitId, $in, $user, $date, $in['visit_time'] ?? null);
+                $this->linkTicket((int) $visitId, $in, $user, $date, $in['visit_time'] ?? null,
+                                  'set for', $vehicleId);
+            } else {
+                /**
+                 * ⭐⭐ PART B: A PROPOSAL STAKES THE CHOICE WITHOUT ANNOUNCING IT.
+                 *
+                 *    The booker ticked which issues this visit covers, and that answer has to
+                 *    survive until a planner decides — possibly hours later, from a different
+                 *    screen. The alternative was to re-derive it at approval from "every open
+                 *    ticket on the machine", which would silently ignore a booker who
+                 *    deliberately ticked two of four.
+                 *
+                 * ⚠⚠ THE POINTER ONLY. No status moves and NOT ONE LINE is written into any
+                 *    thread — that is the 6-Sep ruling, and the rider reads those threads.
+                 *    `workshop_visit_id` is an internal FK: `listVisits` refuses a proposal to
+                 *    him, so it resolves to nothing he can see, and no rider surface renders it.
+                 *    `approve()` completes the link; `decline()`, the sweep and a withdrawal
+                 *    all release it (see `releaseTickets`).
+                 */
+                $staked = $this->resolveTicketIds($in, $vehicleId);
+                if ($staked) {
+                    try {
+                        DB::table(VehicleTicketService::T_TICKET)->whereIn('id', $staked)
+                            ->update(['workshop_visit_id' => (int) $visitId, 'updated_at' => $now]);
+                    } catch (\Throwable $e) {
+                        Log::warning('Proposal could not stake its tickets',
+                            ['visit' => $visitId, 'error' => $e->getMessage()]);
+                    }
+                }
             }
 
             /**
@@ -602,6 +653,43 @@ class WorkshopVisitService
              . ($live['workshop'] ? ' · ' . $live['workshop'] : '')
              . ($live['accepted'] ? ' (he has confirmed it)' : '')
              . '. Yeh us din ko badal dega — usko dobara batana parega.';
+    }
+
+    /**
+     * ⭐ PART B: the machine's OPEN issues, for the booking form's tick-boxes.
+     *
+     * ⚠ Includes ones already pointing at another live visit, flagged rather than hidden: a
+     *   manager moving a bike to a new day must be able to see — and re-tick — what the old day
+     *   was covering. Hiding them would make the new visit silently cover less.
+     *
+     * @return array<int, array{id:int,title:string,urgent:bool,status:string,opened_for_name:?string,already_linked:bool}>
+     */
+    public function openTicketsForVehicle(int $vehicleId): array
+    {
+        if (!$vehicleId) return [];
+        try {
+            $tickets = app(VehicleTicketService::class);
+            if (!$tickets->available()) return [];
+            return DB::table(VehicleTicketService::T_TICKET . ' as t')
+                ->leftJoin('t_sys_user as fo', 'fo.id', '=', 't.opened_for_user_id')
+                ->where('t.vehicle_id', $vehicleId)
+                ->whereIn('t.status', VehicleTicketService::OPEN_STATUSES)
+                ->orderByDesc('t.urgent')->orderBy('t.id')
+                ->limit(20)
+                ->get(['t.id', 't.title', 't.urgent', 't.status', 't.workshop_visit_id',
+                       'fo.fullname as opened_for_name'])
+                ->map(fn ($r) => [
+                    'id'              => (int) $r->id,
+                    'title'           => (string) $r->title,
+                    'urgent'          => (int) $r->urgent === 1,
+                    'status'          => (string) $r->status,
+                    'opened_for_name' => $r->opened_for_name,
+                    'already_linked'  => $r->workshop_visit_id !== null,
+                ])->values()->all();
+        } catch (\Throwable $e) {
+            Log::warning('Open tickets for vehicle failed', ['vehicle' => $vehicleId, 'error' => $e->getMessage()]);
+            return [];
+        }
     }
 
     public function warningsFor(int $vehicleId, int $riderId, string $date): array
@@ -830,14 +918,33 @@ class WorkshopVisitService
      *        it should say what actually happened — and it is only ever written at the moment
      *        the date becomes real (never for a proposal, see `schedule()`).
      */
-    private function linkTicket(int $visitId, array $in, $user, string $date, ?string $time, string $verb = 'set for'): void
+    private function linkTicket(int $visitId, array $in, $user, string $date, ?string $time,
+                                string $verb = 'set for', int $vehicleId = 0): void
     {
-        $ticketId = (int) ($in['ticket_id'] ?? 0);
-        if (!$ticketId) return;
+        /**
+         * ⭐⭐ PART B (15-Sep-2026) — A VISIT MAY ANSWER SEVERAL COMPLAINTS AT ONCE.
+         *
+         *    Until now this linked exactly one ticket, the one a manager happened to press
+         *    "🔧 Schedule workshop" from. On the replica that produced **zero** links in six
+         *    visits, because managers book the MACHINE from its own card, not a thread — so
+         *    "is a workshop day assigned for this issue?" was unanswerable per issue, and the
+         *    Issues board had to answer it per machine instead.
+         *
+         *    Now the booking form lists the machine's open issues and the booker ticks which
+         *    ones the visit covers (all ticked by default). Each ticked ticket points at this
+         *    visit, moves to `scheduled`, and gets the line in its own thread.
+         *
+         * ⚠ NO SQL. `t_ops_vehicle_ticket.workshop_visit_id` already existed and is the
+         *   many-side: N tickets → 1 visit. The visit's own `ticket_id` keeps meaning "the
+         *   ticket this was raised from" so every existing reader is untouched.
+         */
+        $ids = $this->resolveTicketIds($in, $vehicleId);
+        if (!$ids) return;
         try {
             $tickets = app(VehicleTicketService::class);
             if (!$tickets->available()) return;
-            DB::table(VehicleTicketService::T_TICKET)->where('id', $ticketId)->update([
+
+            DB::table(VehicleTicketService::T_TICKET)->whereIn('id', $ids)->update([
                 'workshop_visit_id' => $visitId,
                 // ⚠ 'scheduled' outranks 'acknowledged'; VehicleTicketService::reply
                 //   deliberately never knocks it back down when a manager chats.
@@ -845,12 +952,259 @@ class WorkshopVisitService
                 'last_message_at'   => now(),
                 'updated_at'        => now(),
             ]);
-            $tickets->system($ticketId, 'Workshop visit ' . $verb . ' '
+
+            /**
+             * ⚠ The visit remembers ONE originating ticket, because that is what its column
+             *   means and what every older reader expects. Filled only if the caller did not
+             *   name one, so a thread-first booking still records the thread it came from.
+             */
+            if (empty($in['ticket_id'])) {
+                DB::table(self::T_VISIT)->where('id', $visitId)->whereNull('ticket_id')
+                    ->update(['ticket_id' => $ids[0], 'updated_at' => now()]);
+            }
+
+            $line = 'Workshop visit ' . $verb . ' '
                 . \Carbon\Carbon::parse($date)->format('D j M')
                 . ($time ? ' at ' . substr((string) $time, 0, 5) : '')
-                . ' by ' . $this->nameOf((int) $user->id) . '.');
+                . ' by ' . $this->nameOf((int) $user->id) . '.';
+            /**
+             * ⚠ One line per THREAD, and it says when the visit covers more than this issue.
+             *   A rider who reported three faults and sees one date should be able to tell
+             *   whether all three are being looked at or only the one he is reading.
+             */
+            $extra = count($ids) > 1
+                ? ' This visit also covers ' . (count($ids) - 1)
+                  . ' other reported ' . (count($ids) === 2 ? 'issue' : 'issues') . ' on this bike.'
+                : '';
+            foreach ($ids as $tid) $tickets->system((int) $tid, $line . $extra);
         } catch (\Throwable $e) {
-            Log::warning('Ticket not linked to workshop visit', ['visit' => $visitId, 'error' => $e->getMessage()]);
+            Log::warning('Tickets not linked to workshop visit', ['visit' => $visitId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * ⭐⭐ WHICH TICKETS MAY THIS BOOKING LINK — and the security boundary for Part B.
+     *
+     * ⚠⚠ THE CLIENT'S LIST IS NEVER TRUSTED. `ticket_ids` arrives from a form, so every id is
+     *    re-checked here against the MACHINE going in and against being open. Without this a
+     *    crafted payload could drag an unrelated bike's complaint — or a closed one — onto a
+     *    visit, move it to `scheduled`, and write a line into a thread the booker cannot see.
+     *
+     * ⚠ `ticket_id` (the old singular, sent by a thread-first booking and by older clients) is
+     *   folded in, so nothing that works today stops working.
+     *
+     * ⚠⚠ …but ONLY when the booker was never asked. If `ticket_ids` is present the form put the
+     *    question on screen, and its answer is the whole truth — folding the originating thread
+     *    back in would mean a manager who deliberately unticked the very issue he pressed
+     *    "Schedule workshop" from still had the trip booked against it. Ticked is covered; that
+     *    is the one sentence this whole feature rests on.
+     *
+     * @return int[] validated, de-duplicated, in a stable order
+     */
+    private function resolveTicketIds(array $in, int $vehicleId): array
+    {
+        $asked = array_key_exists('ticket_ids', $in);
+        $want  = [];
+        if (!empty($in['ticket_id']) && !$asked) $want[] = (int) $in['ticket_id'];
+        foreach ((array) ($in['ticket_ids'] ?? []) as $t) {
+            if ((int) $t > 0) $want[] = (int) $t;
+        }
+        $want = array_values(array_unique($want));
+        if (!$want) return [];
+
+        try {
+            $tickets = app(VehicleTicketService::class);
+            if (!$tickets->available()) return [];
+            $q = DB::table(VehicleTicketService::T_TICKET)
+                ->whereIn('id', $want)
+                ->whereIn('status', VehicleTicketService::OPEN_STATUSES);
+            // ⚠ Vehicle check only when we know the machine — `approve()` re-links from a row
+            //   that was already validated at booking time, and re-deriving it there would be
+            //   a second place for the rule to live.
+            if ($vehicleId) $q->where('vehicle_id', $vehicleId);
+            return $q->orderBy('id')->pluck('id')->map(fn ($i) => (int) $i)->all();
+        } catch (\Throwable $e) {
+            Log::warning('Ticket ids not resolved for workshop visit', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * Every ticket this visit is answering.
+     *
+     * ⚠ The UNION of the many-side (`workshop_visit_id`) and the visit's own originating
+     *   `ticket_id`. Visits booked before Part B carry only the latter, and a sweep that
+     *   forgot them would leave those threads saying "Workshop set" forever after the visit
+     *   was cancelled.
+     *
+     * @return int[]
+     */
+    public function linkedTicketIds(int $visitId, ?array $visit = null): array
+    {
+        $ids = [];
+        try {
+            $tickets = app(VehicleTicketService::class);
+            if (!$tickets->available()) return [];
+            $ids = DB::table(VehicleTicketService::T_TICKET)
+                ->where('workshop_visit_id', $visitId)->pluck('id')->map(fn ($i) => (int) $i)->all();
+        } catch (\Throwable $e) {
+            $ids = [];
+        }
+        $v = $visit ?? $this->find($visitId);
+        if (!empty($v['ticket_id'])) $ids[] = (int) $v['ticket_id'];
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * The issues each of these visits is answering — ONE query for a whole page of cards.
+     *
+     * @param int[] $visitIds
+     * @param int[] $originatingTicketIds the visits' own `ticket_id` values, so pre-Part-B rows
+     *                                    (which have no many-side pointer) still report theirs
+     * @return array<int, array<int, array{id:int,title:string,status:string,is_open:bool}>>
+     */
+    private function ticketsForVisits(array $visitIds, array $originatingTicketIds = []): array
+    {
+        if (!$visitIds) return [];
+        try {
+            $tickets = app(VehicleTicketService::class);
+            if (!$tickets->available()) return [];
+
+            $rows = DB::table(VehicleTicketService::T_TICKET)
+                ->where(function ($w) use ($visitIds, $originatingTicketIds) {
+                    $w->whereIn('workshop_visit_id', $visitIds);
+                    if ($originatingTicketIds) $w->orWhereIn('id', $originatingTicketIds);
+                })
+                ->orderBy('id')
+                ->get(['id', 'title', 'status', 'workshop_visit_id']);
+
+            // id => the visit it belongs to, for the originating-only rows.
+            $ownerOf = [];
+            foreach ($visitIds as $vid) $ownerOf[$vid] = true;
+            $byOriginating = [];
+            foreach (DB::table(self::T_VISIT)->whereIn('id', $visitIds)
+                        ->whereNotNull('ticket_id')->get(['id', 'ticket_id']) as $v) {
+                $byOriginating[(int) $v->ticket_id] = (int) $v->id;
+            }
+
+            $out = [];
+            foreach ($rows as $r) {
+                $vid = $r->workshop_visit_id !== null && isset($ownerOf[(int) $r->workshop_visit_id])
+                    ? (int) $r->workshop_visit_id
+                    : ($byOriginating[(int) $r->id] ?? null);
+                if (!$vid) continue;
+                $shaped = ['id' => (int) $r->id, 'title' => (string) $r->title,
+                           'status' => (string) $r->status,
+                           'is_open' => in_array((string) $r->status, VehicleTicketService::OPEN_STATUSES, true)];
+                // ⚠ De-duplicate: a ticket can be BOTH the originating one and the many-side.
+                if (!isset($out[$vid]) || !in_array($shaped['id'], array_column($out[$vid], 'id'), true)) {
+                    $out[$vid][] = $shaped;
+                }
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            Log::warning('Visit tickets not resolved', ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * ⭐⭐ A VISIT THAT IS NO LONGER HAPPENING MUST RELEASE ITS COMPLAINTS.
+     *
+     *    Cancel a visit and its tickets would otherwise sit at `scheduled` — "Workshop set" —
+     *    pointing at a day nobody is going on. That is exactly the stuck state the Issues
+     *    board exists to surface, manufactured by the system itself, and the rider reading the
+     *    thread would have no way to know the plan had evaporated.
+     *
+     * @param int|null $movedTo when a newer visit replaces this one, the tickets MOVE to it
+     *                          rather than being released — the complaint is still going in,
+     *                          just on a different day.
+     */
+    private function releaseTickets(int $visitId, ?int $movedTo = null, ?array $visit = null): void
+    {
+        $ids = $this->linkedTicketIds($visitId, $visit);
+        if (!$ids) return;
+        try {
+            if ($movedTo) {
+                DB::table(VehicleTicketService::T_TICKET)->whereIn('id', $ids)
+                    ->update(['workshop_visit_id' => $movedTo, 'updated_at' => now()]);
+                return;
+            }
+            $this->detachTickets($ids, $visitId);
+        } catch (\Throwable $e) {
+            Log::warning('Tickets not released from workshop visit',
+                ['visit' => $visitId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Put these complaints back in the queue, and unhook them from `$visitId`.
+     *
+     * ⚠ Back to `acknowledged`, NEVER to `open`. A manager has already answered these — that is
+     *   what `acknowledged` records, and `first_response_at` is untouched — so resetting them to
+     *   `open` would report them on the board as "nobody has replied" and reset a response time
+     *   that was really met days ago.
+     * ⚠ Only rows still sitting at `scheduled` are moved: one a manager has since closed stays
+     *   closed.
+     * ⚠⚠ …and the POINTER is cleared for ALL of them, whatever their status. A PROPOSAL stakes
+     *    the link without moving any status (see `schedule()`), so a declined or withdrawn
+     *    request would otherwise leave every ticked ticket pointing at a visit that will never
+     *    happen — and the next booking's "which issues?" list would show them as already covered.
+     * ⚠ BOTH writes are scoped to THIS visit, so a ticket already re-linked to a newer one is
+     *   left alone — including the status write, which used to be unscoped.
+     *
+     * @param int[] $ids
+     */
+    private function detachTickets(array $ids, int $visitId): void
+    {
+        if (!$ids) return;
+        DB::table(VehicleTicketService::T_TICKET)->whereIn('id', $ids)
+            ->where('workshop_visit_id', $visitId)
+            ->where('status', 'scheduled')
+            ->update(['status' => 'acknowledged', 'updated_at' => now()]);
+        DB::table(VehicleTicketService::T_TICKET)->whereIn('id', $ids)
+            ->where('workshop_visit_id', $visitId)
+            ->update(['workshop_visit_id' => null, 'updated_at' => now()]);
+    }
+
+    /**
+     * ⭐⭐ WHAT HAPPENS TO THE OLD DAY'S COMPLAINTS WHEN A NEW DAY REPLACES IT (15-Sep-2026).
+     *
+     *    A superseded visit is not a cancellation — the bike is still going in, just on another
+     *    date — so by default its complaints FOLLOW the new day rather than being dropped back
+     *    into the queue and having to be ticked all over again.
+     *
+     * ⚠⚠ …but AN UNTICK MUST MEAN SOMETHING. The booking form promises "untick anything this
+     *    trip is not for — it stays in the queue", and a blanket move made that sentence false:
+     *    a manager who deliberately narrowed the new day still had every old complaint dragged
+     *    onto it, reading "Workshop set" against a trip it was never for.
+     *
+     * ⚠⚠ AN OLD CLIENT IS NOT AN EMPTY ANSWER. A phone built before Part B sends no `ticket_ids`
+     *    key at all — it was never ASKED, so it cannot have unticked anything, and reading its
+     *    silence as "cover nothing" would silently unhook every complaint on every re-booking
+     *    made from a stale APK. The presence of the KEY is the signal, which is why both clients
+     *    now send it — possibly empty — whenever the question was actually put on screen.
+     */
+    private function carryTicketsOver(int $from, int $to, array $fromVisit, array $in, int $vehicleId): void
+    {
+        // Never asked ⇒ cannot have answered. Move everything, exactly as before Part B.
+        if (!array_key_exists('ticket_ids', $in)) {
+            $this->releaseTickets($from, $to, $fromVisit);
+            return;
+        }
+
+        $had = $this->linkedTicketIds($from, $fromVisit);
+        // ⚠ The same validated set the link/stake step will use — never the raw body.
+        $keep = $this->resolveTicketIds($in, $vehicleId);
+
+        // Everything follows first, so the new day owns the pointers…
+        $this->releaseTickets($from, $to, $fromVisit);
+        // …and then the ones he deliberately left behind are let go of, from the NEW visit.
+        try {
+            $this->detachTickets(array_values(array_diff($had, $keep)), $to);
+        } catch (\Throwable $e) {
+            Log::warning('Unticked complaints not released from the replacing visit',
+                ['from' => $from, 'to' => $to, 'error' => $e->getMessage()]);
         }
     }
 
@@ -1066,6 +1420,12 @@ class WorkshopVisitService
                     'updated_at'    => now(),
                 ]);
                 $this->clearShiftLocation((int) $movedFrom['id'], $riderId);
+                /**
+                 * ⭐ PART B: complaints the OLD day was answering move to the new one, unless
+                 *   this proposal staked them for itself already (releaseTickets is scoped to
+                 *   the visit it is releasing, so a ticket both of them named is not stolen back).
+                 */
+                $this->releaseTickets((int) $movedFrom['id'], $visitId, $movedFrom);
             }
 
             // NOW the two things a proposal deliberately did not do.
@@ -1078,7 +1438,18 @@ class WorkshopVisitService
             // A deliberate "check in as usual" is not a failure to pin, so it must not be
             // reported as one — that note is for when the pin was WANTED and did not happen.
             if ($attendanceAt === 'regular') $pinNote = null;
-            $this->linkTicket($visitId, ['ticket_id' => $v['ticket_id'] ?? null], $user, $date, $time, 'approved for');
+            /**
+             * ⭐⭐ PART B: approval COMPLETES the link the proposal staked. The ticked list was
+             *    recorded as pointers at booking time and nothing else; this is the moment the
+             *    tickets move to `scheduled` and their threads are finally written to — which
+             *    is precisely the 6-Sep ruling about when a rider may learn of a date.
+             * ⚠ `linkedTicketIds` also picks up the visit's own originating `ticket_id`, so a
+             *   proposal raised from a thread by an OLD client still links exactly as before.
+             * ⚠ No vehicle filter: these ids were validated against the machine at booking time,
+             *   and re-deriving the rule here would be a second place for it to live.
+             */
+            $this->linkTicket($visitId, ['ticket_ids' => $this->linkedTicketIds($visitId, $v)],
+                              $user, $date, $time, 'approved for');
 
             return [
                 'ok'         => true,
@@ -1154,6 +1525,18 @@ class WorkshopVisitService
                 'decline_reason' => mb_substr(trim($reason), 0, 255),
                 'updated_at'     => now(),
             ]);
+            /**
+             * ⭐⭐ PART B: a dead proposal RELEASES the issues it staked.
+             *
+             * ⚠ The update above is the claim — only the winner releases, so two planners (or a
+             *   planner and the morning sweep) racing cannot have one of them unhook tickets
+             *   that the other has just approved onto a live day.
+             * ⚠ Silent by design: a proposal never wrote a line into any thread, so its death
+             *   must not write one either — that would announce a plan by killing it.
+             *   `releaseTickets` only touches pointers and `scheduled` rows, and a staked
+             *   proposal moved no status, so nothing the rider can see changes at all.
+             */
+            if ($n > 0) $this->releaseTickets($visitId);
             return $n > 0;
         } catch (\Throwable $e) {
             Log::error('WorkshopVisitService::declineRow failed', ['visit' => $visitId, 'error' => $e->getMessage()]);
@@ -1570,11 +1953,23 @@ class WorkshopVisitService
              *    anything into it (see `schedule()`), so "Workshop visit cancelled" would be
              *    the FIRST he ever heard of a visit — announcing a plan by cancelling it.
              */
-            if (!empty($v['ticket_id']) && (string) $v['status'] !== 'proposed') {
-                app(VehicleTicketService::class)->system((int) $v['ticket_id'],
-                    'Workshop visit cancelled by ' . $this->nameOf((int) $user->id)
-                    . ($reason ? ' — ' . $reason : '') . '.');
+            $linked = $this->linkedTicketIds($visitId, $v);
+            if ($linked && (string) $v['status'] !== 'proposed') {
+                // ⭐ PART B: every issue this visit was answering hears it, not just the one
+                //   it happened to be raised from.
+                foreach ($linked as $tid) {
+                    app(VehicleTicketService::class)->system((int) $tid,
+                        'Workshop visit cancelled by ' . $this->nameOf((int) $user->id)
+                        . ($reason ? ' — ' . $reason : '') . '.');
+                }
             }
+            /**
+             * ⭐⭐ PART B: AND THE COMPLAINTS GO BACK IN THE QUEUE. Without this they sit at
+             *    "Workshop set" pointing at a day nobody is going on — the system manufacturing
+             *    exactly the stuck state the Issues board exists to catch. A withdrawn PROPOSAL
+             *    releases its staked pointers the same way, silently, having announced nothing.
+             */
+            $this->releaseTickets($visitId, null, $v);
             return ['ok' => true, 'was_proposal' => (string) $v['status'] === 'proposed',
                     'message' => (string) $v['status'] === 'proposed'
                         ? 'Request withdrawn. Nobody had been told.'
@@ -1649,17 +2044,25 @@ class WorkshopVisitService
                 'updated_at'     => now(),
             ]);
 
-            if (!empty($v['ticket_id'])) {
+            // ⭐ PART B: every issue the visit was answering, not just the originating one.
+            $linked = $this->linkedTicketIds($visitId, $v);
+            if ($linked) {
                 $tickets = app(VehicleTicketService::class);
-                $tickets->system((int) $v['ticket_id'], 'Workshop visit completed by '
-                    . $this->nameOf((int) $user->id)
-                    . (!empty($in['outcome_note']) ? ' — ' . $in['outcome_note'] : '') . '.');
-                // ⚠ Completing the VISIT does not close the TICKET. Only a manager closes
-                //   a ticket (owner ruling), and he may want to hear from the rider that
-                //   the fault is actually gone before he does. Put it back where a reply
-                //   is expected instead of silently finishing the conversation.
+                foreach ($linked as $tid) {
+                    $tickets->system((int) $tid, 'Workshop visit completed by '
+                        . $this->nameOf((int) $user->id)
+                        . (!empty($in['outcome_note']) ? ' — ' . $in['outcome_note'] : '') . '.');
+                }
+                /**
+                 * ⚠⚠ Completing the VISIT does not close the TICKET. Only a manager closes one
+                 *    (owner ruling, 2-Sep, reaffirmed 15-Sep), and the RIDER can mark a visit
+                 *    done — so auto-closing here would let him close his own complaint. Put it
+                 *    back where a reply is expected instead of finishing the conversation.
+                 * ⚠ `workshop_visit_id` is deliberately KEPT: it is the record of which visit
+                 *   dealt with this, and the Issues board's "done but still open" line reads it.
+                 */
                 DB::table(VehicleTicketService::T_TICKET)
-                    ->where('id', $v['ticket_id'])->where('status', 'scheduled')
+                    ->whereIn('id', $linked)->where('status', 'scheduled')
                     ->update(['status' => 'acknowledged', 'updated_at' => now()]);
             }
 
@@ -1710,8 +2113,14 @@ class WorkshopVisitService
                 'outcome_note' => $new,
                 'updated_at'   => now(),
             ]);
-            if (!empty($v['ticket_id'])) {
-                app(VehicleTicketService::class)->system((int) $v['ticket_id'],
+            /**
+             * ⭐ PART B: every issue this visit was answering hears that it did not happen.
+             * ⚠ The links are KEPT and no status moves: the visit stays LIVE and still due, so
+             *   these complaints are still "at the workshop" — releasing them here would put
+             *   them back on the board as waiting on us while the errand is still standing.
+             */
+            foreach ($this->linkedTicketIds($visitId, $v) as $tid) {
+                app(VehicleTicketService::class)->system((int) $tid,
                     'Workshop visit of ' . substr((string) $v['visit_date'], 0, 10) . ' did NOT happen — reported by '
                     . $this->nameOf($uid) . ($note !== null && trim($note) !== '' ? ' — ' . trim($note) : '') . '.');
             }
@@ -1931,7 +2340,17 @@ class WorkshopVisitService
                     ->pluck('fullname', 'id')->all();
             }
 
-            return $rows->map(fn ($r) => $this->shape((array) $r, $labels, $names))->values()->all();
+            /**
+             * ⭐ PART B: the issues each visit is answering, in ONE query for the whole page.
+             * ⚠ The UNION of the many-side and each visit's own originating `ticket_id` — a
+             *   visit booked before Part B carries only the latter, and a card that showed it
+             *   as covering nothing would be saying something untrue about real history.
+             */
+            $ticketsByVisit = $this->ticketsForVisits($rows->pluck('id')->map(fn ($i) => (int) $i)->all(),
+                                                      $rows->pluck('ticket_id')->filter()->map(fn ($i) => (int) $i)->all());
+
+            return $rows->map(fn ($r) => $this->shape((array) $r, $labels, $names, $ticketsByVisit))
+                ->values()->all();
         } catch (\Throwable $e) {
             Log::warning('WorkshopVisitService::listVisits failed', ['error' => $e->getMessage()]);
             return [];
@@ -3538,7 +3957,7 @@ class WorkshopVisitService
     // ─────────────────────────────────────────────────────────────────────────────
 
     /** @param array<int,string> $names user id → full name, resolved once by the caller. */
-    private function shape(array $r, array $labels, array $names = []): array
+    private function shape(array $r, array $labels, array $names = [], array $ticketsByVisit = []): array
     {
         $date   = substr((string) $r['visit_date'], 0, 10);
         $live   = in_array((string) $r['status'], self::LIVE_STATUSES, true);
@@ -3571,6 +3990,15 @@ class WorkshopVisitService
             'purpose'             => (string) $r['purpose'],
             'maintenance_type_id' => $r['maintenance_type_id'] ? (int) $r['maintenance_type_id'] : null,
             'ticket_id'           => $r['ticket_id'] ? (int) $r['ticket_id'] : null,
+            /**
+             * ⭐ PART B (15-Sep-2026): WHICH issues this visit is answering — so a card can say
+             *   "covers 3 reported issues" instead of leaving a manager to guess, and the done
+             *   form can pre-tick exactly those.
+             * ⚠ Passed IN from the bulk lookup in `listVisits`, never queried per row: with a
+             *   few weeks of visits on screen that would be one query per card, the N+1 shape
+             *   this file has already been bitten by twice.
+             */
+            'tickets'             => $ticketsByVisit[(int) $r['id']] ?? [],
             'note'                => $r['note'],
             'status'              => (string) $r['status'],
             'is_live'             => $live,

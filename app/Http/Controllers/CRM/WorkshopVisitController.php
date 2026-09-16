@@ -200,7 +200,13 @@ class WorkshopVisitController extends Controller
     public function warnings(Request $request)
     {
         $data = $request->validate([
-            'vehicle_id' => 'required|integer',
+            /**
+             * ⚠ 15-Sep: `vehicle_id` is now OPTIONAL. A rider-first booking (the Bikes drawer
+             *   knows the man, not the machine) could not ask for warnings at all, and with
+             *   Part B it also needs the machine's open issues — so the registry resolves it
+             *   here exactly as `schedule()` does, rather than the form guessing.
+             */
+            'vehicle_id' => 'nullable|integer|required_without:user_id',
             'user_id'    => 'required|integer',
             'visit_date' => 'required|date_format:Y-m-d',
         ]);
@@ -210,10 +216,43 @@ class WorkshopVisitController extends Controller
         if (!$this->visits->canSchedule($user, $this->mobileContext)) {
             return response()->json(['success' => false, 'message' => 'Not authorised'], 403);
         }
+        // ⚠ Resolved the SAME way schedule() resolves it, so the form is warned about — and
+        //   offered the issues of — the very machine the booking will land on.
+        $vehicleId = (int) ($data['vehicle_id'] ?? 0);
+        if (!$vehicleId) {
+            try {
+                $vehicleId = (int) ((new \App\Services\Riders\VehicleResolver())
+                    ->currentVehicleFor((int) $data['user_id']) ?: 0);
+            } catch (\Throwable $e) {
+                $vehicleId = 0;
+            }
+        }
+        if (!$vehicleId) {
+            return response()->json(['success' => true, 'warnings' => [], 'open_tickets' => [],
+                                     'vehicle_id' => null]);
+        }
+
         return response()->json([
-            'success'  => true,
-            'warnings' => $this->visits->warningsFor(
-                (int) $data['vehicle_id'], (int) $data['user_id'], $data['visit_date']),
+            'success'    => true,
+            'vehicle_id' => $vehicleId,
+            'warnings'   => $this->visits->warningsFor(
+                $vehicleId, (int) $data['user_id'], $data['visit_date']),
+            /**
+             * ⭐⭐ PART B (15-Sep-2026) — WHICH ISSUES THIS VISIT COVERS.
+             *
+             *    The booking form asks "which of this bike's open issues is this trip for?" and
+             *    ticks them all by default. Served HERE rather than from a new endpoint because
+             *    both forms already call warnings the moment a bike and a date are chosen — one
+             *    fetch, one round trip, and no second place that has to agree about which
+             *    tickets belong to a machine.
+             *
+             * ⚠ Manager-only by construction: the `canSchedule` gate above already guards this
+             *   whole response, and these are complaint titles.
+             */
+            // ⚠ `$vehicleId` (resolved above), NOT `$data['vehicle_id']` — which does not exist
+            //   at all on a rider-first call, because `validate()` returns only keys that were
+            //   sent. That 500'd the whole endpoint for the very path this round added.
+            'open_tickets' => $this->visits->openTicketsForVehicle($vehicleId),
         ]);
     }
 
@@ -232,6 +271,17 @@ class WorkshopVisitController extends Controller
             'purpose'             => 'nullable|in:service,repair,inspection,other',
             'maintenance_type_id' => 'nullable|integer',
             'ticket_id'           => 'nullable|integer',
+            /**
+             * ⭐⭐ PART B (15-Sep-2026): WHICH reported issues this visit is for. The form lists
+             *    the machine's open ones and ticks them all by default.
+             * ⚠ Validated as a shape only. WHICH ids are allowed is decided in the service
+             *   (`resolveTicketIds`), against the machine actually going in and against being
+             *   open — a request body is never trusted to name someone else's complaint.
+             * ⚠ Additive: `ticket_id` (the old singular) still works, so a thread-first booking
+             *   and every older client behave exactly as before.
+             */
+            'ticket_ids'          => 'nullable|array|max:20',
+            'ticket_ids.*'        => 'integer',
             'note'                => 'nullable|string|max:255',
             /**
              * ⭐ 6-Sep: a PLANNER booking his own workshop day is asked "assign now, or send
@@ -399,11 +449,41 @@ class WorkshopVisitController extends Controller
             ? (new \App\Services\Riders\VehicleService())->classOf((int) $v['vehicle_id'])
             : null;
 
+        /**
+         * ⭐⭐ "AND IS THE COMPLAINT FIXED?" (owner ruling 6, 15-Sep-2026 — the other half).
+         *
+         *    The ruling was: do NOT auto-close a ticket when a visit is marked done, because
+         *    the RIDER can mark a visit done and only a manager may close a complaint. Instead,
+         *    ask the manager at the one moment he actually knows what happened — and make it
+         *    one tap. Part B is what makes the question honest: the visit now knows WHICH
+         *    issues it went in for, so those arrive PRE-TICKED and the rest do not.
+         *
+         * ⚠⚠ MANAGERS ONLY. `completionGate` lets the RIDER close out his own visit, and this
+         *    list must be empty for him — a rider silently closing his own complaint is the
+         *    exact outcome the ruling exists to prevent. The write side re-checks this; the
+         *    empty list here just means his form never shows the question.
+         */
+        $canManageTickets = app(\App\Services\Riders\VehicleTicketService::class)
+            ->canManage($user, $this->mobileContext);
+        $closeable = [];
+        if ($canManageTickets && !empty($v['vehicle_id'])) {
+            $linked = $this->visits->linkedTicketIds((int) $id, $v);
+            foreach ($this->visits->openTicketsForVehicle((int) $v['vehicle_id']) as $t) {
+                $closeable[] = $t + [
+                    // ⭐ Pre-ticked only for what this visit actually went in for. An issue the
+                    //   trip was never about must not be closed by a manager tapping through.
+                    'covered_by_this_visit' => in_array((int) $t['id'], $linked, true),
+                ];
+            }
+        }
+
         return response()->json([
             'success' => true,
             'booked_type_id' => $v['maintenance_type_id'] ? (int) $v['maintenance_type_id'] : null,
             'vehicle_name'   => $v['vehicle_name'] ?? null,
             'class'          => $class,
+            'can_close_tickets' => $canManageTickets,
+            'closeable_tickets' => $closeable,
             'types'          => app(\App\Services\Riders\ServiceRecordService::class)->typesForClose($class),
             /**
              * The manager may be paying on the spot, so the SAME accounts the Bikes bill form
@@ -630,6 +710,18 @@ class WorkshopVisitController extends Controller
              *    phone built before this change still gets its picture stored.
              */
             'photo'                     => 'nullable|image|max:5120',
+            /**
+             * ⭐⭐ RULING 6 (15-Sep-2026): the issues this visit FIXED, closed in the same breath.
+             *
+             *    Not auto-closed — asked. The manager is already deciding what happened, so it
+             *    costs him one tap per issue at the one moment he knows the answer.
+             *
+             * ⚠ A shape check only. WHO may close and WHICH ids are real is re-decided below
+             *   through `VehicleTicketService::close()` — the same engine the thread, the
+             *   vehicle panel and the Issues board all press.
+             */
+            'close_ticket_ids'          => 'nullable|array|max:20',
+            'close_ticket_ids.*'        => 'integer',
         ]);
 
         $user  = $request->user() ?: auth()->user();
@@ -756,11 +848,49 @@ class WorkshopVisitController extends Controller
         //   bike in, not the manager who booked it. A loop that closes silently is one people
         //   stop trusting is closed.
         $this->notify('done', (int) $id, $user);
+
+        /**
+         * ⭐⭐ RULING 6 — CLOSE THE ISSUES HE SAYS ARE FIXED, in the same breath.
+         *
+         * ⚠⚠ AFTER markDone, never before. `markDone` has just put every linked ticket back to
+         *    `acknowledged`; closing first would have that write undo the close a second later.
+         * ⚠⚠ Through `VehicleTicketService::close()` — the ONE close engine, which re-checks
+         *    that this caller is a manager and that the ticket is open. So a RIDER closing out
+         *    his own visit cannot close his own complaint by posting ids, whatever his client
+         *    sends: the ruling is enforced here, not by the form omitting the question.
+         * ⚠ Restricted to the tickets THIS visit was answering, plus any still open on the same
+         *   machine — never an arbitrary id from the body.
+         * ⚠ Non-fatal. The visit IS done; a close that fails must not turn that into an error
+         *   and make a manager mark it done twice.
+         */
+        $closedNote = '';
+        $wanted = array_values(array_unique(array_map('intval', (array) ($data['close_ticket_ids'] ?? []))));
+        if ($wanted) {
+            $tickets  = app(\App\Services\Riders\VehicleTicketService::class);
+            $allowed  = array_column($this->visits->openTicketsForVehicle((int) ($visit['vehicle_id'] ?? 0)), 'id');
+            $closedOk = 0;
+            foreach (array_intersect($wanted, array_map('intval', $allowed)) as $tid) {
+                try {
+                    // The outcome note IS the close note — he has already typed what happened,
+                    // and asking him to type it twice is how close notes end up empty.
+                    $r = $tickets->close($user, (int) $tid, $data['outcome_note'] ?? null, $this->mobileContext);
+                    if (!empty($r['ok'])) $closedOk++;
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Issue not closed with the visit',
+                        ['visit' => $id, 'ticket' => $tid, 'error' => $e->getMessage()]);
+                }
+            }
+            if ($closedOk) {
+                $closedNote = $closedOk . ' ' . ($closedOk === 1 ? 'issue' : 'issues') . ' closed.';
+            }
+        }
+
         return response()->json([
             'success'        => true,
             'service_log_id' => $recorded['service_log_id'] ?? null,
+            'tickets_closed' => $closedOk ?? 0,
             'message'        => trim($res['message'] . ' ' . ($recorded['message'] ?? '')
-                                     . ' ' . ($billMsg ?? '')),
+                                     . ' ' . ($billMsg ?? '') . ' ' . $closedNote),
         ]);
     }
 

@@ -226,6 +226,20 @@
             <div class="sup-staged" id="supBiStaged" style="margin-top:8px;"></div>
             <div class="sup-total"><span id="supBiCountLabel">0 packets</span><span id="supBiQtyLabel">0</span></div>
             <button class="sup-btn" style="margin-top:8px;" onclick="supBiAddManual()" id="supBiManualBtn">＋ Add without scanning</button>
+
+            {{-- ⭐ The cross-check that catches what the per-packet guard cannot: a packet
+                 missed entirely, or one label counted twice. Both leave every scan looking
+                 perfectly normal, and both mis-cost the WHOLE batch, because the price is
+                 divided across the total. Optional — the bill is not always to hand. --}}
+            <div class="sup-field" style="margin-top:10px;">
+                <label class="sup-label" id="supBiExpectedLabel">Total on the bill (optional)</label>
+                <input type="number" class="sup-input" id="supBiExpected" min="0" step="0.001"
+                       placeholder="e.g. 2 — leave blank to skip the check">
+                <div class="sup-hint" id="supBiExpectedHint">
+                    If you know what the whole lot weighs, type it here and we will tell you
+                    if the scanned packets do not add up to it.
+                </div>
+            </div>
         </div>
 
         {{-- pieces --}}
@@ -375,6 +389,12 @@
             <input type="text" class="sup-input" id="supPrName" maxlength="150" placeholder="e.g. Packaging - Bags">
         </div>
 
+        {{-- ⚠ Shown when the product already has stock: mode / PLU / barcode are frozen,
+             here AND on the server, because the packets on the shelf were recorded under
+             the old ones. --}}
+        <div class="sup-hint sup-none" id="supPrLockedHint"
+             style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;padding:9px 11px;margin-bottom:12px;color:#92400E;"></div>
+
         <div class="sup-field">
             <label class="sup-label">How is one packet counted?</label>
             <select class="sup-select" id="supPrMode" onchange="supPrModeChanged()">
@@ -452,6 +472,46 @@
     var editingProductId = null;
     var takeOut = { productId: null, mode: null, packets: [], chosen: null };
 
+    /* ⭐⭐ ONE uuid per ATTEMPT, minted when the form opens — never per click.
+       It used to be created inside supBookIn(), which defeated the whole point: when a
+       Save times out the page says "nothing was recorded", but the server may well have
+       committed — and the next Save carried a NEW uuid, so the purchase was booked twice
+       and the money left twice. Held here and cleared only on success or Cancel, so every
+       retry of the same intake is the same request as far as the server is concerned. */
+    var bookInUuid = null;
+
+    // ---------- misread guard (mirrors mobile utils/barcodeDecode.js) ----------
+    /* ⚠⚠ A VALID CHECK DIGIT IS NOT PROOF OF A CORRECT READ. Paired digit flips whose
+       weighted deltas cancel mod 10 pass EAN-13 cleanly, and a real 0.505 kg label once
+       decoded as 9.205 kg (Aug-28-2026). The order scanner compares against the line's
+       quantity; intake has no such baseline, so each read is compared against the MEDIAN
+       of the packets already staged in THIS batch.
+
+       It must be a median, not a mean: one wild read drags a mean far enough to then
+       ACCEPT the next bad one, which is the exact failure this is here to stop.
+
+       The band is deliberately wide — a false alarm interrupts a busy manager, a miss
+       mis-costs every packet in the batch permanently. Same two numbers as the phone;
+       change them in both places or the two surfaces start disagreeing. */
+    var OUTLIER_RATIO = 4;
+    var OUTLIER_MIN_GAP_KG = 1;
+
+    function medianOf(weights) {
+        var xs = (weights || []).map(function (n) { return parseFloat(n); })
+            .filter(function (n) { return n > 0; })
+            .sort(function (a, b) { return a - b; });
+        if (!xs.length) { return 0; }               // first packet has no baseline, by design
+        var mid = Math.floor(xs.length / 2);
+        return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+    }
+
+    function isWeightOutlier(nextQty, currentQty) {
+        var next = parseFloat(nextQty), cur = parseFloat(currentQty);
+        if (!(next > 0) || !(cur > 0)) { return false; }
+        if (Math.abs(next - cur) < OUTLIER_MIN_GAP_KG) { return false; }
+        return next >= cur * OUTLIER_RATIO || next <= cur / OUTLIER_RATIO;
+    }
+
     // ---------- helpers ----------
     function post(url, body) {
         return fetch(url, {
@@ -488,6 +548,9 @@
     window.supClose = function (id) {
         var el = document.getElementById(id);
         if (el) { el.classList.remove('sup-modal-on'); }
+        // Walking away from Add stock ends that attempt — the next one is a new purchase
+        // and must carry a new uuid, or it would collapse onto the abandoned one.
+        if (id === 'supBookInModal') { bookInUuid = null; }
     };
     function open(id) {
         var el = document.getElementById(id);
@@ -610,6 +673,8 @@
         if (!CAN_MANAGE) { return; }
         staged = [];
         msg('supBookInMsg', '');
+        // One uuid for this whole intake attempt — see the note where bookInUuid is declared.
+        bookInUuid = 'web-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10);
         loadCatalogue().then(function () {
             var sel = document.getElementById('supBiProduct');
             sel.innerHTML = products.filter(function (p) { return Number(p.is_active) === 1 || p.is_active === true; })
@@ -638,6 +703,7 @@
             document.getElementById('supBiCost').value = '';
             document.getElementById('supBiPieces').value = '';
             document.getElementById('supBiNote').value = '';
+            document.getElementById('supBiExpected').value = '';
             document.getElementById('supBiStockOnly').checked = false;
 
             supBiProductChanged();
@@ -664,14 +730,25 @@
         var label = document.getElementById('supBiScanLabel');
         var hint = document.getElementById('supBiScanHint');
         var manual = document.getElementById('supBiManualBtn');
+        var expLabel = document.getElementById('supBiExpectedLabel');
+        var expHint = document.getElementById('supBiExpectedHint');
+        var expInput = document.getElementById('supBiExpected');
+        expInput.value = '';
+
         if (p.mode === 'weight') {
             label.textContent = 'Scan each packet';
             hint.textContent = 'Every scale label is one packet. Two packets of the same weight print the same label — that is fine, scan both.';
             manual.textContent = '＋ Add without scanning';
+            expLabel.textContent = 'Total weight on the bill, kg (optional)';
+            expInput.step = '0.001';
+            expHint.textContent = 'If you know what the whole lot weighs, type it here and we will check the scanned packets add up to it.';
         } else if (p.mode === 'scan') {
             label.textContent = 'Scan each packet';
             hint.textContent = 'One scan = one packet.';
             manual.textContent = '＋ Add one packet';
+            expLabel.textContent = 'How many packets on the bill (optional)';
+            expInput.step = '1';
+            expHint.textContent = 'If you know how many packets came, type it here and we will check the scans match.';
         }
     };
 
@@ -729,6 +806,33 @@
                 msg('supBookInMsg', 'That label is PLU ' + r.data.plu + ', not ' + p.name + '.');
                 return;
             }
+
+            // ⭐ The guard. Compare against the median of what is already in this batch;
+            // the first packet has nothing to compare with and is never questioned.
+            var baseline = medianOf(staged.map(function (s) { return Number(s.qty) || 0; }));
+            if (baseline > 0 && isWeightOutlier(r.data.weight_kg, baseline)) {
+                // ⚠ With only ONE packet staged the baseline is that single packet, so we
+                // genuinely cannot tell which of the two misread — and if the FIRST scan
+                // was the bad one it becomes the baseline and every good packet after it
+                // gets questioned. Say so plainly and point at the ✕, instead of implying
+                // the new read is the guilty one.
+                var comparison = staged.length === 1
+                    ? 'The only other packet in this batch is ' + trimQty(baseline) + ' kg, so one of the '
+                      + 'two misread — check both labels, and use ✕ to remove whichever is wrong.'
+                    : 'The other packets in this batch are around ' + trimQty(baseline) + ' kg.';
+
+                var keep = window.confirm(
+                    'Unusual weight — ' + trimQty(r.data.weight_kg) + ' kg.\n\n' +
+                    comparison + '\n' +
+                    'A label can misread and still look valid, and a wrong weight here re-prices ' +
+                    'EVERY packet in this batch.\n\n' +
+                    'OK = the weight is correct, add it.\nCancel = scan the label again.');
+                if (!keep) {
+                    msg('supBookInMsg', 'Not added — scan that label again.');
+                    return;
+                }
+            }
+
             msg('supBookInMsg', '');
             staged.push({ qty: r.data.weight_kg, barcode: r.data.barcode, source: 'scan' });
             renderStaged();
@@ -773,18 +877,53 @@
             (p && p.mode === 'weight') ? trimQty(total) + ' kg' : staged.length + ' packet(s)';
     }
 
+    /* Does the scanned batch add up to what the bill says? Returns true to carry on.
+       Blank = skip (the bill is not always to hand). A weight lot is allowed 0.5 % or
+       5 g of slack, whichever is larger — scale rounding, not a missing packet. A packet
+       count must match exactly: you cannot be half a packet out. */
+    function supBiExpectedOk(p) {
+        var raw = (document.getElementById('supBiExpected').value || '').trim();
+        if (raw === '') { return true; }
+        var expected = parseFloat(raw);
+        if (!(expected > 0)) { return true; }
+
+        var byWeight = p.mode === 'weight';
+        var actual = byWeight
+            ? staged.reduce(function (a, s) { return a + (Number(s.qty) || 0); }, 0)
+            : staged.length;
+        var tolerance = byWeight ? Math.max(expected * 0.005, 0.005) : 0;
+
+        if (Math.abs(actual - expected) <= tolerance) { return true; }
+
+        var unit = byWeight ? ' kg' : ' packet(s)';
+        var shown = byWeight ? trimQty(actual) : String(actual);
+        return window.confirm(
+            'That does not add up.\n\n' +
+            'Scanned: ' + shown + unit + ' in ' + staged.length + ' packet(s)\n' +
+            'On the bill: ' + trimQty(expected) + unit + '\n\n' +
+            (actual < expected
+                ? 'A packet may be missing, or one label did not read.'
+                : 'A label may have been scanned twice — two packets of the same weight print the same label.') +
+            '\n\nThe price is divided across the total, so if this is wrong EVERY packet ' +
+            'in this batch is priced wrong.\n\nOK = save it anyway.\nCancel = go back and fix it.');
+    }
+
     window.supBookIn = function () {
         var p = productById(document.getElementById('supBiProduct').value);
         if (!p) { return; }
         var stockOnly = document.getElementById('supBiStockOnly').checked;
+        // ⚠ REUSE the uuid minted when the form opened. Generating one here meant a retry
+        // after a timeout was a brand-new purchase to the server. Never regenerate it on
+        // a failure path — that failure is exactly when it matters.
+        if (!bookInUuid) { bookInUuid = 'web-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10); }
+
         var body = {
             product_id: p.id,
             purchase_date: document.getElementById('supBiDate').value || null,
             total_cost: stockOnly ? 0 : parseFloat(document.getElementById('supBiCost').value || '0'),
             stock_only: stockOnly,
             note: document.getElementById('supBiNote').value || null,
-            // a retried Save must never book the purchase twice
-            client_uuid: 'web-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10)
+            client_uuid: bookInUuid
         };
 
         if (p.mode === 'pieces') {
@@ -793,6 +932,10 @@
         } else {
             if (!staged.length) { msg('supBookInMsg', 'Scan at least one packet.'); return; }
             body.packets = staged;
+
+            // ⭐ The total cross-check. A missed packet and a double-scanned label both
+            // look perfectly normal packet-by-packet, and both re-price the whole batch.
+            if (!supBiExpectedOk(p)) { return; }
         }
 
         if (!stockOnly) {
@@ -814,10 +957,16 @@
                 msg('supBookInMsg', (r.data && r.data.message) || 'Could not save. Nothing was recorded.');
                 return;
             }
+            bookInUuid = null;               // this attempt is finished
             window.location.reload();
         }).catch(function () {
             btn.disabled = false;
-            msg('supBookInMsg', 'Could not reach the server. Nothing was recorded.');
+            // ⚠ Honest copy. The old line claimed "nothing was recorded", which we cannot
+            // know — the request may have committed and the reply been lost. The uuid is
+            // deliberately KEPT, so pressing Save again lands on the same batch instead of
+            // booking a second one.
+            msg('supBookInMsg', 'Could not reach the server. Press Save again — the same '
+                + 'purchase is never booked twice.');
         });
     };
 
@@ -915,9 +1064,23 @@
             document.getElementById('supPrActive').value = (p && !(Number(p.is_active) === 1 || p.is_active === true)) ? '0' : '1';
             if (p && p.expense_config_id) { cat.value = String(p.expense_config_id); }
 
-            // Mode is fixed once stock exists — changing how a packet is counted would
-            // make the packets already on the shelf unreadable.
-            document.getElementById('supPrMode').disabled = false;
+            // ⭐ Mode, PLU and barcode are FROZEN once the product has stock — changing
+            // any of them re-reads the packets already on the shelf in a different unit
+            // or under a code that no longer finds them. The server refuses it too
+            // (SupplyStorageController::saveProduct); this is so the manager sees why
+            // before filling the form instead of bouncing off a 422 afterwards.
+            var locked = !!(p && p.has_stock);
+            var lockHint = document.getElementById('supPrLockedHint');
+            ['supPrMode', 'supPrPlu', 'supPrBarcode'].forEach(function (f) {
+                var el = document.getElementById(f);
+                if (el) { el.disabled = locked; }
+            });
+            show('supPrLockedHint', locked);
+            if (locked) {
+                lockHint.textContent = p.name + ' already has stock booked in, so how it is counted, '
+                    + 'its PLU and its barcode are locked — the packets on the shelf were recorded that way. '
+                    + 'Everything else can still be changed. For different packaging, add it as a new product.';
+            }
 
             supPrModeChanged();
             open('supProductModal');

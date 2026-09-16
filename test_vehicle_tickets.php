@@ -56,9 +56,18 @@ foreach (User::where('is_active', '1')->get() as $u) {
     if (!$manager && $u->hasPermission(VT::PERMISSION)) $manager = $u;
 }
 $res = new VehicleResolver();
+/**
+ * ⚠⚠ COMPANY MACHINES ONLY (15-Sep-2026). A ticket may now only be raised on a machine the
+ *    company owns (owner ruling — see VehicleTicketService::ticketableMachineIds). Picking a
+ *    rider whose current machine is his OWN bike would make §1 fail for a correct reason,
+ *    which is the fixture-drift trap this suite has been caught by before: never assert
+ *    against whatever the registry happens to hold today, DISCOVER a fixture that fits.
+ */
+$vehSvc = new \App\Services\Riders\VehicleService();
 foreach (DB::table('t_ops_rider_profile')->pluck('user_id') as $uid) {
     $v = $res->currentVehicleFor((int) $uid);
     if (!$v) continue;
+    if (!$vehSvc->isCompanyMachine((int) $v)) continue;
     $u = User::find((int) $uid);
     if (!$u) continue;
     if (!$rider)                                  { $rider = $u; continue; }
@@ -478,8 +487,24 @@ if (is_file($screen)) {
     ok('the open/closed filter is English', str_contains($js, "'Open only' : 'Show closed'"), true);
     ok('the generic retry line is English', str_contains($js, "'Please try again.'"), true);
     ok('  …and no Roman-Urdu retry line survives', str_contains($js, 'Dobara koshish karein'), false);
+    /**
+     * ⚠ 15-Sep-2026: the close FLOW moved to `utils/ticketClose.js` so the Issues board presses
+     *   the SAME one (the owner's condition for a Close button there). The rule is unchanged and
+     *   still worth guarding — it just lives somewhere else now, so read both files.
+     */
+    $closeSrc = $js . "\n" . (is_file(__DIR__ . '/../NizamiFarmsMobile/src/utils/ticketClose.js')
+        ? file_get_contents(__DIR__ . '/../NizamiFarmsMobile/src/utils/ticketClose.js') : '');
     ok('closing (managers-only) is English end to end',
-       str_contains($js, "'Close issue'") && str_contains($js, "'Cancel'"), true);
+       str_contains($closeSrc, "'Close issue'") && str_contains($closeSrc, "'Cancel'"), true);
+    /**
+     * ⚠⚠ ONE close flow on the phone, and only one. Two Close buttons exist now (the thread and
+     *    the Issues board), so the day a screen posts `/close` itself is the day the Android
+     *    platform guard, the unread warning and the error copy start to differ between them.
+     *    Narrowed to `/close` on purpose — the screen still owns the REPLY post, which is right.
+     */
+    ok('  …and there is exactly ONE close flow on the phone',
+       is_file(__DIR__ . '/../NizamiFarmsMobile/src/utils/ticketClose.js')
+       && !preg_match('#api\.post\(`/rider/vehicle-tickets/\$\{[^}]+\}/close#', $js), true);
     // ⚠ The other direction: what he must ACT on stays Roman Urdu.
     ok('but the "what is broken?" prompt is still Roman Urdu',
        str_contains($js, 'Kya kharabi hai?'), true);
@@ -531,8 +556,10 @@ if (is_file($screen)) {
     ok('⚠⚠ nothing branches on Alert.prompt EXISTING — it is truthy on Android and does nothing',
        $bad, []);
 
+    // ⚠ Now in utils/ticketClose.js (see the note above). The guard itself is untouched: this
+    //   is THE 6-Sep production bug, and a refactor is exactly when such a fix gets lost.
     ok('  …and the Close button itself guards on the PLATFORM',
-       str_contains($js, "if (Platform.OS === 'ios')"), true);
+       str_contains($closeSrc, "if (Platform.OS === 'ios')"), true);
 
     ok('  …and the category chips fork too', str_contains($js, 'say(c.en, c.t)'), true);
     ok('  …and every category carries both labels',

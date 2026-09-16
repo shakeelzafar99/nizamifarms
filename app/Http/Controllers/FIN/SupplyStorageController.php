@@ -264,7 +264,8 @@ class SupplyStorageController extends Controller
                 'status' => $t->status,
                 'request_number' => $t->request?->request_number,
                 'rejection_reason' => $t->request?->rejection_reason,
-                'can_undo' => $t->isPending(),
+                // no_charge is undoable too — see SupplyTakeoutModel::UNDOABLE_STATUSES.
+                'can_undo' => $t->isUndoable(),
                 'at' => optional($t->taken_at)->format('d-M h:i A'),
             ]),
         ]);
@@ -301,10 +302,28 @@ class SupplyStorageController extends Controller
             ->orderBy('config_value')
             ->get(['id', 'config_value', 'business_unit_id']);
 
+        // ⭐ has_stock / stock_value ride along so the product form can FREEZE the fields
+        // the server refuses to change (mode, PLU, barcode) and explain why, instead of
+        // letting a manager fill the form and then bounce off a 422. One grouped query,
+        // not one per product.
+        $stockByProduct = SupplyBatchModel::where('status', '!=', SupplyBatchModel::STATUS_VOIDED)
+            ->groupBy('product_id')
+            ->selectRaw('product_id, COUNT(*) AS batches, COALESCE(SUM(cost_remaining), 0) AS value_left')
+            ->get()->keyBy('product_id');
+
+        $products = SupplyProductModel::orderBy('name')->get()->map(function (SupplyProductModel $p) use ($stockByProduct) {
+            $row = $stockByProduct->get($p->id);
+
+            return array_merge($p->toArray(), [
+                'has_stock' => (bool) $row,
+                'stock_value' => round((float) ($row->value_left ?? 0), 2),
+            ]);
+        });
+
         return response()->json([
             'success' => true,
             'can_manage' => $this->canManage(),
-            'products' => SupplyProductModel::orderBy('name')->get(),
+            'products' => $products,
             'expense_categories' => $categories->map(fn ($c) => [
                 'id' => $c->id, 'name' => $c->config_value, 'business_unit_id' => $c->business_unit_id,
             ]),
@@ -361,6 +380,63 @@ class SupplyStorageController extends Controller
             ], 422);
         }
 
+        // ─────────────────────────────────────────────────────────────────────────
+        // ⭐⭐ ONCE A PRODUCT HAS STOCK, HOW IT IS COUNTED IS FROZEN.
+        //
+        // Changing `mode` re-reads every existing row in a different unit: a weight
+        // batch's qty_remaining is KILOGRAMS, and after a flip to `pieces` the take-out
+        // path (consumePieces) walks those same numbers as a PIECE COUNT while the
+        // packet rows are orphaned — the shelf figure and the money silently diverge.
+        // Changing `plu` or `barcode` is just as bad and quieter: resolveScan() finds
+        // the product by its code, so every packet already on the shelf becomes
+        // unscannable and only the "pick the packet you have" fallback still works.
+        //
+        // Neither client had a guard (the Blade even carried the comment and then wrote
+        // `disabled = false`), so this is enforced HERE — the one place both surfaces
+        // and any future caller must pass through. Everything else about the product
+        // stays editable: name, expense category, low-stock level, active.
+        // ─────────────────────────────────────────────────────────────────────────
+        if ($id) {
+            $existing = SupplyProductModel::findOrFail($id);
+
+            if ($this->productHasStock($existing)) {
+                $frozen = [];
+                if ($existing->mode !== $mode) {
+                    $frozen[] = 'how it is counted';
+                }
+                if ((int) $existing->plu !== (int) $plu) {
+                    $frozen[] = 'the scale PLU';
+                }
+                if ((string) $existing->barcode !== (string) $barcode) {
+                    $frozen[] = 'the barcode';
+                }
+
+                if ($frozen) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => $existing->name . ' already has stock booked in, so ' . implode(' and ', $frozen)
+                            . ' cannot change — the packets on the shelf were recorded that way. '
+                            . 'Use the new packaging as a NEW product, or void/use up this one first.',
+                    ], 422);
+                }
+            }
+
+            // Switching a product off hides it from every Storage screen (stockSummary
+            // filters is_active) AND blocks take-out — while its rupees stay sitting in
+            // the Storage stock account. That is stranded money nobody can see.
+            if (!$request->boolean('is_active', true) && $existing->is_active) {
+                $value = $this->stockValueOf($existing);
+                if ($value > 0.009) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Rs ' . number_format($value, 0) . ' of ' . $existing->name
+                            . ' is still on the shelf. Take it out, or void the purchase, before switching it off — '
+                            . 'otherwise the stock disappears from Storage but the money stays in the books.',
+                    ], 422);
+                }
+            }
+        }
+
         $config = ConfigModel::find($validated['expense_config_id']);
 
         $payload = [
@@ -378,7 +454,7 @@ class SupplyStorageController extends Controller
         ];
 
         if ($id) {
-            $product = SupplyProductModel::findOrFail($id);
+            $product = $existing;          // already loaded and checked above
             $product->update($payload);
         } else {
             $payload['created_by'] = auth()->id();
@@ -394,6 +470,26 @@ class SupplyStorageController extends Controller
         }
 
         return response()->json(['success' => true, 'product' => $product, 'warning' => $warning]);
+    }
+
+    /**
+     * Has anything ever been booked in against this product? Any non-voided batch counts,
+     * including one already used up: its packets and log rows still carry the old mode and
+     * code, and re-reading those in a different unit is exactly what must not happen.
+     */
+    private function productHasStock(SupplyProductModel $product): bool
+    {
+        return SupplyBatchModel::where('product_id', $product->id)
+            ->where('status', '!=', SupplyBatchModel::STATUS_VOIDED)
+            ->exists();
+    }
+
+    /** Rupees of this product still sitting on the shelf. */
+    private function stockValueOf(SupplyProductModel $product): float
+    {
+        return (float) SupplyBatchModel::where('product_id', $product->id)
+            ->where('status', '!=', SupplyBatchModel::STATUS_VOIDED)
+            ->sum('cost_remaining');
     }
 
     // -----------------------------------------------------------------------------
@@ -696,9 +792,17 @@ class SupplyStorageController extends Controller
 
         $decoded = $this->decoder->decode($raw);
 
-        $product = $decoded
-            ? SupplyProductModel::where('plu', $decoded['plu'])->where('is_active', 1)->first()
-            : SupplyProductModel::where('barcode', $raw)->where('is_active', 1)->first();
+        // ⚠ FIXED CODE FIRST, then the PLU. A scan-mode product's barcode is a printed
+        // manufacturer EAN, and one that happens to start with the in-store flag '2' and
+        // carry a valid check digit DECODES as a scale label — sending the lookup down the
+        // PLU path, where it finds nothing, and telling the user their own product is "not
+        // a Storage item". An exact barcode match is unambiguous by construction (the
+        // column is unique), so it can safely be tried first for every read.
+        $product = SupplyProductModel::where('barcode', $raw)->where('is_active', 1)->first();
+
+        if (!$product && $decoded) {
+            $product = SupplyProductModel::where('plu', $decoded['plu'])->where('is_active', 1)->first();
+        }
 
         if (!$product) {
             return response()->json([
@@ -710,7 +814,12 @@ class SupplyStorageController extends Controller
             ], 404);
         }
 
-        $packet = $product->usesPackets() ? $this->stock->findPacketForBarcode($product, $decoded ? $decoded['raw'] : $raw) : null;
+        // Look the packet up by the code its rows actually carry: a weight product's
+        // packets store the decoder's normalised 13 digits, a scan product's store the
+        // fixed barcode exactly as it was typed or scanned into the product form.
+        $lookup = ($product->mode === SupplyProductModel::MODE_WEIGHT && $decoded) ? $decoded['raw'] : $raw;
+
+        $packet = $product->usesPackets() ? $this->stock->findPacketForBarcode($product, $lookup) : null;
 
         // No exact label match — offer what IS on the shelf (covers typed-in packets
         // and re-printed labels) instead of a dead end.
@@ -839,10 +948,16 @@ class SupplyStorageController extends Controller
         if ((int) $takeout->taken_by !== (int) auth()->id()) {
             return response()->json(['success' => false, 'message' => 'You can only undo your own take-outs.'], 403);
         }
-        if (!$takeout->isPending()) {
+        // ⚠ isUndoable(), not isPending(): a no_charge take-out (opening stock, already
+        // expensed in an earlier month) raises no request, so it is never "pending" and
+        // the old check made a mis-scan on free stock impossible to reverse.
+        if (!$takeout->isUndoable()) {
             return response()->json([
                 'success' => false,
-                'message' => 'That take-out has already been decided — ask a manager to reverse it.',
+                'message' => $takeout->status === SupplyTakeoutModel::STATUS_APPROVED
+                    ? 'That take-out is already approved and booked to expenses — a manager can delete '
+                        . 'the expense from the Expenses page, which puts the packet back.'
+                    : 'That take-out has already been decided.',
             ], 422);
         }
 
