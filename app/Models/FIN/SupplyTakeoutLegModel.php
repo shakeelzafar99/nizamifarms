@@ -8,9 +8,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /**
  * Which batch each part of a take-out came from.
  *
- * Normally one leg. A PIECES take-out may cross a batch boundary (owner ruling:
- * allowed) — 30 cups when the oldest batch has 20 left produces two legs at two
- * different unit costs, still one request.
+ * Normally one leg. A POOLED take-out (weight or pieces) may cross a purchase boundary
+ * (owner ruling: allowed, and silently) — 1.5 kg when the oldest bale has 0.27 kg left,
+ * or 30 cups when the oldest batch has 20, produces two legs at two different rates,
+ * still one request.
+ *
+ * ⭐ Round 3 made these legs the authority on whether a purchase has been drawn on. A
+ * weighed purchase's packet rows stay `in_stock` for ever (they are intake audit), so
+ * "has anything come out of this bale?" can only be answered here.
  */
 class SupplyTakeoutLegModel extends Model
 {
@@ -41,6 +46,11 @@ class SupplyTakeoutLegModel extends Model
     public function batch(): BelongsTo
     {
         return $this->belongsTo(SupplyBatchModel::class, 'batch_id');
+    }
+
+    public function takeout(): BelongsTo
+    {
+        return $this->belongsTo(SupplyTakeoutModel::class, 'takeout_id');
     }
 
     public function packet(): BelongsTo

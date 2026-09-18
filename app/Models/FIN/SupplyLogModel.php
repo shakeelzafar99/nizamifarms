@@ -43,6 +43,7 @@ class SupplyLogModel extends Model
         'unit',
         'cost',
         'source',
+        'barcode',
         'note',
         'created_by',
         'created_at',

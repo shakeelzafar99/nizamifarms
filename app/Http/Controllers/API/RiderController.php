@@ -3680,6 +3680,23 @@ class RiderController extends Controller
             $notes = $request->input('notes', 'Marked as delivered by rider via mobile app');
             $latitude = $request->input('latitude');
             $longitude = $request->input('longitude');
+            /**
+             * ⭐⭐ THE PHANTOM GATE (16-Sep-2026). Two of Rajab's deliveries were stamped in Beijing
+             *    from a stale, mislocated fix. That point is later measured twice ("delivered N m
+             *    from pin", the checkout rule) and OFFERED as the customer's pin — so a fix outside
+             *    Pakistan is dropped here and the delivery is recorded with no coordinates, exactly
+             *    as when the phone had none. The delivery itself is never blocked over it.
+             */
+            if ($latitude !== null && $longitude !== null && !LocationService::isPlausibleFix($latitude, $longitude)) {
+                \Log::warning('📍 DELIVERY: fix outside Pakistan (phantom) — coordinates dropped', [
+                    'order_id' => $id, 'user_id' => $user->id ?? null,
+                    'latitude' => $latitude, 'longitude' => $longitude, 'accuracy' => $request->input('accuracy'),
+                ]);
+                $this->recordLocationFailureRow((int) ($user->id ?? 0), 'phantom_fix', 'delivery',
+                    sprintf('phantom %s,%s acc=%s order=%s', $latitude, $longitude, $request->input('accuracy', '?'), $id),
+                    $latitude, $longitude);
+                $latitude = null; $longitude = null;
+            }
             $actualPackets = $request->input('actual_packets'); // Optional packet count from rider
 
             // ── Phase 3: package-scan gate. DEFAULT OFF — only enforces when the owner has
@@ -6146,6 +6163,45 @@ class RiderController extends Controller
         }
     }
 
+    /** Set by processCheckinLocation when the only fix it was given lay outside Pakistan. */
+    private ?array $lastCheckinPhantom = null;
+
+    /**
+     * ⭐ Strip a phantom fix out of a request in place. Used at the doors that read
+     *   `latitude`/`longitude` in several sub-steps (check-out: the checkout rule, the
+     *   home-journey arming, the stored checkout position) — one strip at the top beats three
+     *   gates that can drift. Returns true when something was stripped.
+     */
+    private function dropPhantomFromRequest(Request $request, int $userId, string $where): bool
+    {
+        $lat = $request->input('latitude'); $lng = $request->input('longitude');
+        if ($lat === null || $lng === null || LocationService::isPlausibleFix($lat, $lng)) return false;
+        \Log::warning('📍 ' . strtoupper($where) . ': fix outside Pakistan (phantom) — dropped', ['user_id' => $userId, 'lat' => $lat, 'lng' => $lng]);
+        $this->recordLocationFailureRow($userId, 'phantom_fix', substr($where, 0, 30), sprintf('phantom %s,%s acc=%s', $lat, $lng, $request->input('accuracy', '?')), $lat, $lng);
+        $request->merge(['latitude' => null, 'longitude' => null, 'accuracy' => null]);
+        return true;
+    }
+
+    /**
+     * One failure row, best effort — diagnosis only, never a reason to fail the caller.
+     * The same table the app's own failure endpoint writes, so every "phone said Beijing"
+     * episode is readable from one place afterwards.
+     */
+    private function recordLocationFailureRow(int $userId, string $reason, string $source, string $detail, $lat, $lng): void
+    {
+        try {
+            \DB::table('t_ops_location_failures')->insert([
+                'user_id' => $userId, 'failure_reason' => substr($reason, 0, 50),
+                'failure_source' => substr($source, 0, 30), 'error_message' => substr($detail, 0, 255),
+                'device_online' => 1, 'last_known_lat' => is_numeric($lat) ? $lat : null,
+                'last_known_lng' => is_numeric($lng) ? $lng : null, 'app_state' => 'active',
+                'captured_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::debug('location failure row not written', ['error' => $e->getMessage()]);
+        }
+    }
+
     private function attnConfig(string $key, $default)
     {
         try {
@@ -6417,6 +6473,16 @@ class RiderController extends Controller
             // path, no GPS) and is the intended override for genuine GPS failures.
             if ($this->attendanceRequiresLocation()) {
                 if (!$locationData) {
+                    // ⭐ 16-Sep: a phone claiming to be abroad is told WHAT is wrong, in the rider's
+                    //   words, rather than "turn on GPS" — his GPS is on and lying.
+                    if ($this->lastCheckinPhantom) {
+                        return response()->json([
+                            'success' => false,
+                            'require_location' => true,
+                            'code' => 'phantom_fix',
+                            'message' => LocationService::phantomFixMessage(),
+                        ], 422);
+                    }
                     return response()->json([
                         'success' => false,
                         'require_location' => true,
@@ -6590,6 +6656,12 @@ class RiderController extends Controller
                 'picture_url' => $picturePath ? $this->getMeterPictureUrl($picturePath) : null,
                 'location_captured' => $locationData ? true : false,
             ];
+            // ⭐ 16-Sep: checked in WITHOUT coordinates because the phone claimed to be abroad
+            //   (mandatory-location OFF). Say so — the current APK already renders gps_warning.
+            if (!$locationData && $this->lastCheckinPhantom) {
+                $responseData['gps_warning'] = LocationService::phantomFixMessage();
+                $responseData['code'] = 'phantom_fix';
+            }
 
             if ($locationData) {
                 $responseData['is_remote'] = $locationData['is_remote'];
@@ -6694,7 +6766,57 @@ class RiderController extends Controller
         $isCoarse = $accM !== null && $accM > $coarseM;
         $slackM   = $accM !== null ? min($accM, $coarseM) : 0.0;
 
+        /**
+         * 📶 OFFICE PRESENCE BY WI-FI (16-Sep-2026). If the phone is connected to an office's own
+         *    access point it is inside that office, whatever the coordinates say. Resolved once
+         *    here; used below wherever the fix alone cannot answer. Dormant until the BSSIDs are
+         *    configured (see LocationService::officeForWifi).
+         */
+        $wifiOffice = LocationService::officeForWifi($request->input('wifi_bssid'));
+
+        /**
+         * ⭐⭐ THE PHANTOM GATE (16-Sep-2026). Farooq's check-in was recorded from Tiananmen Square
+         *    at 32 m "accuracy" and stored as a REMOTE check-in 3,878 km away — a payroll fact
+         *    manufactured by a mislocated Wi-Fi router. A fix outside Pakistan is not a bad fix,
+         *    it is no fix: it never reaches the distance rule and never lands in his row.
+         *    If the office Wi-Fi vouches for him, the check-in proceeds on the office's own
+         *    coordinates; otherwise the caller decides (mandatory-location ON ⇒ refused with the
+         *    Roman-Urdu sentence; OFF ⇒ recorded without coordinates, as any no-fix check-in is).
+         */
+        $this->lastCheckinPhantom = null;
+        if (!LocationService::isPlausibleFix($latitude, $longitude)) {
+            $detail = sprintf('phantom %s,%s acc=%s src=%s at=checkin wifi=%s',
+                $latitude, $longitude, $accuracy ?? '?', $source ?? '?', $wifiOffice->location_name ?? 'none');
+            \Log::warning('📍 ATTENDANCE CHECK-IN: fix outside Pakistan (phantom) — not used', ['user_id' => $userId, 'detail' => $detail]);
+            $this->recordLocationFailureRow($userId, 'phantom_fix', 'checkin_gate', $detail, $latitude, $longitude);
+            if (!$wifiOffice) {
+                $this->lastCheckinPhantom = ['latitude' => $latitude, 'longitude' => $longitude, 'accuracy' => $accuracy];
+                return null;
+            }
+            $latitude  = (float) $wifiOffice->latitude;
+            $longitude = (float) $wifiOffice->longitude;
+            $accuracy  = null; $accM = null; $isCoarse = false; $slackM = 0.0;
+            $source    = 'office_wifi'; $method = 5;
+        }
+
         $distanceInfo = LocationService::calculateDistanceFromBase($latitude, $longitude, $userId, $shiftLocationId, $slackM);
+
+        /**
+         * 📶 The Wi-Fi also settles a fix that is merely VAGUE or reads remote: connected to the
+         *    office router beats a ±700 m cell centroid 1.1 km away (the Sep-5 Orchard Lacarne
+         *    lockout, in exactly these words). A SHARP fix that agrees he is elsewhere is left
+         *    alone — the router's reach is tens of metres, a sharp fix hundreds away wins.
+         */
+        $sharpM  = (float) $this->attnConfig('SHARP_FIX_M', 50);
+        $isSharp = $accM !== null && $accM <= $sharpM;
+        if ($wifiOffice && ($isCoarse || (!empty($distanceInfo['is_remote']) && !$isSharp))) {
+            $distanceInfo['is_remote'] = false;
+            $distanceInfo['distance_meters'] = 0;
+            $distanceInfo['base_location'] = $wifiOffice;
+            $distanceInfo['matched_office_wifi'] = true;
+            $isCoarse = false;
+            $source = 'office_wifi'; $method = 5;
+        }
 
         // R1 — "check in at ANY office" riders: if the resolved (shift/assigned) location reads
         // remote, accept when he's at ANY active company office instead. Widens WHERE, not
@@ -6725,6 +6847,7 @@ class RiderController extends Controller
             2 => 'Recent GPS Cache (Method 2)',
             3 => 'Cached GPS (Method 3)',
             4 => 'Network/Cell (Method 4 - ⚠️ coarse)',
+            5 => 'Office Wi-Fi presence (Method 5)',
         ];
         $methodLabel = $methodLabels[$method] ?? "Unknown (Method {$method})";
 
@@ -7895,6 +8018,10 @@ class RiderController extends Controller
             $user = Auth::user();
             $today = now()->format('Y-m-d');
             $currentTime = now()->format('H:i:s');
+            // ⭐ 16-Sep: a phantom fix (outside Pakistan) is stripped from the request up front, so
+            //   the checkout rule, the home-journey arming and the stored checkout position all see
+            //   "no location" rather than Beijing. See dropPhantomFromRequest().
+            $this->dropPhantomFromRequest($request, (int) $user->id, 'checkout');
 
             // Validate optional meter picture and location data
             $request->validate([
@@ -8514,6 +8641,13 @@ class RiderController extends Controller
      */
     private function processHomeMeterSubmission($user, int $meterHome, $pictureFile, $lat, $lng, $accuracy = null)
     {
+            // ⭐ 16-Sep: the home fence and the home-meter stamp must never be judged against a
+            //   fix outside Pakistan. No fix ⇒ the existing "server falls back to the home pin".
+            if ($lat !== null && $lng !== null && !LocationService::isPlausibleFix($lat, $lng)) {
+                \Log::warning('📍 HOME METER: fix outside Pakistan (phantom) — ignored', ['user_id' => $user->id, 'lat' => $lat, 'lng' => $lng, 'accuracy' => $accuracy]);
+                $this->recordLocationFailureRow((int) $user->id, 'phantom_fix', 'home_meter', sprintf('phantom %s,%s acc=%s', $lat, $lng, $accuracy ?? '?'), $lat, $lng);
+                $lat = null; $lng = null; $accuracy = null;
+            }
             $today = now()->format('Y-m-d');
             $hj = new \App\Services\Riders\HomeJourneyService();
             // Resolve the OPEN journey row first (handles a checkout that crossed midnight — the
@@ -9363,7 +9497,46 @@ class RiderController extends Controller
             
             // Truncate source to 20 chars (DB column limit)
             $sourceStr = is_string($source) ? substr($source, 0, 20) : 'heartbeat';
-            
+
+            /**
+             * ⭐⭐ THE PHANTOM GATE (16-Sep-2026). A fix outside Pakistan never enters the location
+             *    table — it is recorded as a FAILURE instead, with everything the phone told us
+             *    about it, so the map stops painting riders in Beijing and the episode is still
+             *    readable afterwards. Answered 200 + `stored:false`, not 4xx: every installed APK
+             *    treats a non-2xx here as a network fault and retries the same lie, and the native
+             *    tracker counts 400s towards stopping itself.
+             * ⚠ `gps_warning` is already rendered by the current APK in three places, so the rider
+             *   is told in Roman Urdu without an app update.
+             */
+            if (!LocationService::isPlausibleFix($latitude, $longitude)) {
+                $detail = sprintf('phantom %s,%s acc=%s src=%s age=%s prov=%s mock=%s model=%s',
+                    $latitude, $longitude, $accuracy ?? '?', $sourceStr,
+                    $request->input('fix_age_s', '?'), $request->input('provider', '?'),
+                    $request->input('mocked', '?'), $request->input('device_model', '?'));
+                \Log::warning('📍 Heartbeat REFUSED — fix outside Pakistan (phantom)', ['user_id' => $user->id, 'detail' => $detail]);
+                $this->recordLocationFailureRow((int) $user->id, 'phantom_fix', $sourceStr, $detail, $latitude, $longitude);
+                return response()->json([
+                    'success' => true, 'stored' => false, 'code' => 'phantom_fix',
+                    'message' => 'Fix outside Pakistan — not stored.',
+                    'gps_warning' => LocationService::phantomFixMessage(),
+                ]);
+            }
+
+            /**
+             * ⭐ A STALE FIX IS NOT A POSITION (16-Sep-2026). The phone now says how old the fix
+             *   is. One re-sent for three hours from a cached read used to be stored with a fresh
+             *   time, and the map showed it as "now". Older than 15 minutes ⇒ not stored; the map
+             *   then shows the last REAL point with its true age, which is the honest picture.
+             * ⚠ Only when the phone SAYS so — an older APK sends no age and is stored as before.
+             */
+            $fixAgeS = $request->input('fix_age_s');
+            if (is_numeric($fixAgeS) && (int) $fixAgeS > 900) {
+                return response()->json([
+                    'success' => true, 'stored' => false, 'code' => 'stale_fix',
+                    'message' => 'Fix is ' . (int) round($fixAgeS / 60) . ' min old — not stored.',
+                ]);
+            }
+
             \DB::table('t_ops_rider_location')->insert([
                 'user_id' => $user->id,
                 'latitude' => $latitude,

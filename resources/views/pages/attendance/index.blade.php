@@ -5310,9 +5310,9 @@ async function showGpsAudit(userId, userName, date) {
     const worst = judged.length ? Math.min(...judged.map(p => p.coverage)) : null;
     const [vBg, vColor, vText] = worst === null
       ? ['#F3F4F6', '#6B7280', '– Not enough on-duty GPS to judge']
-      : worst >= 90
+      : worst >= 80
       ? ['#E9F7EE', '#15803D', '✓ GPS stayed on while he was on duty']
-      : worst >= 70
+      : worst >= 60
       ? ['#FDF3E3', '#B45309', '⚠ Some GPS gaps while on duty — check below']
       : ['#FDECEC', '#B91C1C', '❌ Poor GPS while on duty'];
 
@@ -5321,7 +5321,7 @@ async function showGpsAudit(userId, userName, date) {
       const gapMin = p.moving_gaps.reduce((a, g) => a + g.min, 0);
       const gapPct = p.minutes > 0 ? Math.min(100, Math.round((gapMin / p.minutes) * 100)) : 0;
       const okPct = Math.max(0, 100 - gapPct);
-      const col = !jd ? '#9CA3AF' : p.coverage >= 90 ? '#15803D' : p.coverage >= 70 ? '#B45309' : '#B91C1C';
+      const col = !jd ? '#9CA3AF' : p.coverage >= 80 ? '#15803D' : p.coverage >= 60 ? '#B45309' : '#B91C1C';
       const movingTxt = p.moving_gaps.length ? p.moving_gaps.map(g => `${g.from}–${g.to} (${g.min}m)`).join(', ') : null;
       const bits = [];
       if (movingTxt) bits.push(`<span style="color:${jd ? '#B91C1C' : '#9CA3AF'};">GPS off while moving: ${movingTxt}</span>`);

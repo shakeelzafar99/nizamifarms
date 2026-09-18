@@ -1470,6 +1470,12 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/resolve-scan', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'resolveScan'])->name('resolve-scan');
         Route::post('/take-out', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'takeOut'])->name('take-out');
         Route::post('/take-out/{takeoutId}/undo', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'undoTakeout'])->name('take-out.undo');
+        // ⭐ Round 3. These three sit BELOW the literal `/take-out` post above and carry a
+        // second path segment, so no wildcard in this group can swallow them.
+        Route::post('/take-out/quote', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'quoteTakeout'])->name('take-out.quote');
+        Route::post('/take-out/{takeoutId}/delete', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'deleteTakeout'])->name('take-out.delete');
+        Route::post('/take-out/{takeoutId}/preview-edit', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'previewTakeoutEdit'])->name('take-out.preview-edit');
+        Route::post('/take-out/{takeoutId}/edit', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'editTakeout'])->name('take-out.edit');
     });
 
     // The approval switch lives OFF the /supplies prefix on purpose.

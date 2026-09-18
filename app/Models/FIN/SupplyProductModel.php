@@ -35,6 +35,8 @@ class SupplyProductModel extends Model
         'mode',
         'plu',
         'barcode',
+        'packet_barcode',
+        'packet_kg',
         'pieces_per_packet',
         'expense_config_id',
         'expense_category_name',
@@ -46,6 +48,7 @@ class SupplyProductModel extends Model
 
     protected $casts = [
         'plu' => 'integer',
+        'packet_kg' => 'decimal:3',
         'pieces_per_packet' => 'integer',
         'expense_config_id' => 'integer',
         'business_unit_id' => 'integer',
@@ -68,10 +71,51 @@ class SupplyProductModel extends Model
         return $this->belongsTo(ConfigModel::class, 'expense_config_id');
     }
 
-    /** Weight and scan products hold discrete packet rows; pieces products do not. */
+    /**
+     * ⭐⭐ ROUND 3 — only a SCAN product holds discrete packet rows as stock.
+     *
+     * Weight used to be in here, and that was the Sep-17 problem. A bale is weighed once on
+     * a tray and booked under ONE label, so "one scanned label = one indivisible packet"
+     * turned a 26.97 kg bale into the smallest thing that could leave the shelf: scanning a
+     * 1.5 kg inner packet could only take the whole bale. Weighed stock is now a POOL in kg
+     * (see isPooled) and packet rows for it are intake audit only — what was weighed in,
+     * never what can be taken out.
+     */
     public function usesPackets(): bool
     {
+        return $this->mode === self::MODE_SCAN;
+    }
+
+    /**
+     * Is this product's stock a POOL — a running quantity drawn down FIFO across purchases,
+     * rather than a set of individually identified packets?
+     *
+     * Weight (kg) and pieces (a count) both are. They share one engine: consumeFromPool().
+     */
+    public function isPooled(): bool
+    {
+        return $this->mode === self::MODE_WEIGHT || $this->mode === self::MODE_PIECES;
+    }
+
+    /**
+     * Does BOOKING IN record individual packet rows? Weight and scan both do — the rows are
+     * what was physically weighed or scanned onto the shelf.
+     *
+     * ⚠ NOT the same question as usesPackets(). For a weight product those rows are intake
+     * AUDIT — they say what came in — while the stock that can leave is the pool. Splitting
+     * the two questions is the whole of round 3: booking in is unchanged, taking out is not.
+     */
+    public function booksPackets(): bool
+    {
         return $this->mode !== self::MODE_PIECES;
+    }
+
+    /** Does an inner packet carry a fixed vendor barcode with a known nominal weight? */
+    public function hasNominalPacket(): bool
+    {
+        return $this->mode === self::MODE_WEIGHT
+            && !empty($this->packet_barcode)
+            && (float) $this->packet_kg > 0;
     }
 
     /** The unit label a take-out of this product is measured in. */

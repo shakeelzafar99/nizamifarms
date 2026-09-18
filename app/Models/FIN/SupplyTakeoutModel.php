@@ -61,6 +61,7 @@ class SupplyTakeoutModel extends Model
         'unit',
         'cost',
         'source',
+        'scanned_barcode',
         'status',
         'request_id',
         'note',
@@ -103,8 +104,9 @@ class SupplyTakeoutModel extends Model
      * Can the stock still be put back? Pending (nobody has decided it) or no_charge
      * (nothing to decide — there is no request and no money).
      *
-     * ⚠ Use this for the UNDO doors only. syncWithRequest() must keep isPending(),
-     * because it reconciles against a request and a no_charge take-out has none.
+     * ⚠ Use this for the UNDO doors only. syncWithRequest() reconciles against a request:
+     * pending follows the request, and an APPROVED take-out comes back only through the
+     * delete door, once its expense ledger row is `reversed` (restore(..., true)).
      */
     public function isUndoable(): bool
     {

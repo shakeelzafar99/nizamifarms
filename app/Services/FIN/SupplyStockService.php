@@ -60,6 +60,34 @@ class SupplyStockService
     /** Below this a packet is not worth billing — the request would be refused anyway. */
     private const MIN_BILLABLE = 0.01;
 
+    /**
+     * ⭐ Tray-vs-packets drift, in kg. A bale weighed 26.97 kg on the tray but the packets
+     * inside it will sum to something slightly different — they were weighed separately,
+     * on the same scale, with the same rounding. A purchase left holding less than this is
+     * swept into the take-out that got it there rather than lingering at the head of the
+     * FIFO queue forever, splitting every later take-out in two for no reason.
+     *
+     * WEIGHT ONLY. Pieces are whole numbers and do not drift, so sweeping them would
+     * silently hand out cups nobody asked for — see residueFor().
+     */
+    private const RESIDUE_KG = 0.3;
+
+    /** How big a sliver may be swept, for this product. Zero for anything counted. */
+    private function residueFor(SupplyProductModel $product): float
+    {
+        return $product->mode === SupplyProductModel::MODE_WEIGHT ? self::RESIDUE_KG : 0.0;
+    }
+
+    /**
+     * How far PAST the pool a last packet may reach before it is refused — the same drift,
+     * measured the other way. The pool says 1.23 kg left, the last packet in the bale
+     * weighs 1.5; refusing it would strand both the packet and the rupees forever.
+     */
+    public function toleranceFor(SupplyProductModel $product): float
+    {
+        return $product->mode === SupplyProductModel::MODE_WEIGHT ? self::RESIDUE_KG : 0.0;
+    }
+
     // -----------------------------------------------------------------------------
     // BOOK IN
     // -----------------------------------------------------------------------------
@@ -124,8 +152,11 @@ class SupplyStockService
             $stockOnly = !empty($in['stock_only']);
             $totalCost = $stockOnly ? 0.0 : round((float) ($in['total_cost'] ?? 0), 2);
 
-            $packets = $product->usesPackets() ? array_values($in['packets'] ?? []) : [];
-            $qtyTotal = $product->usesPackets()
+            // ⚠ BOOKING IN IS UNCHANGED BY ROUND 3 — booksPackets(), not usesPackets().
+            // A weight product still arrives as packet rows (what was weighed onto the
+            // shelf); it is only TAKING OUT that now draws from the pool instead.
+            $packets = $product->booksPackets() ? array_values($in['packets'] ?? []) : [];
+            $qtyTotal = $product->booksPackets()
                 ? round(array_sum(array_map(fn ($p) => (float) $p['qty'], $packets)), 3)
                 : round((float) ($in['pieces_qty'] ?? 0), 3);
 
@@ -136,7 +167,7 @@ class SupplyStockService
             $batch = SupplyBatchModel::create([
                 'product_id' => $product->id,
                 'mode' => $product->mode,
-                'packet_count' => $product->usesPackets() ? count($packets) : null,
+                'packet_count' => $product->booksPackets() ? count($packets) : null,
                 'qty_total' => $qtyTotal,
                 'qty_remaining' => $qtyTotal,
                 'total_cost' => $totalCost,
@@ -152,7 +183,7 @@ class SupplyStockService
                 'client_uuid' => $in['client_uuid'] ?? null,
             ]);
 
-            if ($product->usesPackets()) {
+            if ($product->booksPackets()) {
                 $this->createPackets($batch, $product, $packets, $totalCost, $qtyTotal, $userId);
             } else {
                 // Pieces have no packet rows — the batch counters ARE the stock.
@@ -216,8 +247,11 @@ class SupplyStockService
                 'status' => SupplyPacketModel::STATUS_IN_STOCK,
             ]);
 
+            // The label this packet was weighed in under — so intake is as answerable as
+            // take-out is. `p['barcode']` is the server's own re-decode, not the client's.
             $this->log(SupplyLogModel::ACTION_IN, $product, $batch, $packet, null,
-                $qty, $product->takeoutUnit(), $cost, $p['source'] ?? 'scan', $userId);
+                $qty, $product->takeoutUnit(), $cost, $p['source'] ?? 'scan', $userId,
+                null, $p['barcode'] ?? null);
         }
     }
 
@@ -296,10 +330,18 @@ class SupplyStockService
                 throw new \RuntimeException($product->name . ' is switched off — ask Taimur or Shabib.');
             }
 
+            // ⭐ Round 3: only a SCAN product takes an identified packet. Weight and pieces
+            //    both draw from the pool — the same engine, the same FIFO, the same legs.
             $legs = $product->usesPackets()
                 ? $this->consumePacket($product, (int) ($in['packet_id'] ?? 0), $userId)
-                : $this->consumePieces($product, round((float) ($in['qty'] ?? 0), 3));
+                : $this->consumeFromPool(
+                    $product,
+                    round((float) ($in['qty'] ?? 0), 3),
+                    $this->toleranceFor($product)
+                );
 
+            // The sweep and the last-packet tolerance can both move the quantity off what was
+            // asked for, so the take-out records what ACTUALLY left the shelf: the legs.
             $qty  = round(array_sum(array_column($legs, 'qty')), 3);
             $cost = round(array_sum(array_column($legs, 'cost')), 2);
 
@@ -313,6 +355,10 @@ class SupplyStockService
                 'unit' => $product->takeoutUnit(),
                 'cost' => $cost,
                 'source' => $in['source'] ?? 'scan',
+                // ⚠ The code that was actually read, or NULL when the weight was typed.
+                // Recorded because on Sep-17 nobody could tell which of two very different
+                // things had happened, and it also feeds the "same label twice" guard.
+                'scanned_barcode' => $in['scanned_barcode'] ?? null,
                 'status' => $billable ? SupplyTakeoutModel::STATUS_PENDING : SupplyTakeoutModel::STATUS_NO_CHARGE,
                 'note' => $in['note'] ?? null,
                 'taken_by' => $userId,
@@ -341,7 +387,7 @@ class SupplyStockService
                     SupplyBatchModel::find($leg['batch_id']),
                     !empty($leg['packet_id']) ? SupplyPacketModel::find($leg['packet_id']) : null,
                     $takeout, $leg['qty'], $product->takeoutUnit(), $leg['cost'],
-                    $in['source'] ?? 'scan', $userId);
+                    $in['source'] ?? 'scan', $userId, null, $in['scanned_barcode'] ?? null);
             }
 
             if ($billable) {
@@ -392,14 +438,34 @@ class SupplyStockService
     }
 
     /**
-     * Consume a piece count, oldest batch first. May cross a batch boundary (owner
-     * ruling: allowed) — 30 cups when the oldest batch has 20 left produces two legs
-     * at two different unit costs, still one request.
+     * ⭐⭐ THE POOL ENGINE. Draw `$want` out of a product's running stock, oldest purchase
+     * first, each leg carrying that purchase's own rate.
+     *
+     * Was `consumePieces` (cups, counted). Round 3 routes WEIGHT through it too, which is
+     * what makes the real flow work: a bale is weighed once on a tray and booked as one
+     * label, then the small packets inside it are scanned out one at a time. Before this,
+     * one scanned label was one indivisible packet, so scanning a 1.5 kg inner packet could
+     * only take the whole 26.97 kg bale — which is exactly what happened on Sep-17-2026.
+     *
+     * May cross a purchase boundary (owner ruling: allowed, and silently) — 1.5 kg when the
+     * oldest bale has 0.27 kg left produces two legs at two rates, still ONE request.
+     *
+     * ⚠ THE RESIDUE SWEEP IS NOT AN EDGE CASE HERE. The owner keeps buying before the pool
+     * runs out, so purchases always overlap. A tray weighs 26.97 kg but the packets inside
+     * it sum to 26.9 or 27.05 — real drift, every bale. Without the sweep the older purchase
+     * would sit at the head of the FIFO queue forever holding 70 g that no packet ever
+     * matches, and EVERY take-out after it would split into two legs for no reason. So a
+     * purchase left with a sliver is emptied into the take-out that got it there.
+     *
+     * @param  float      $want       kg (weight) or pieces (pieces)
+     * @param  float|null $tolerance  how far past the pool a last packet may reach; null = strict
      */
-    private function consumePieces(SupplyProductModel $product, float $want): array
+    private function consumeFromPool(SupplyProductModel $product, float $want, ?float $tolerance = null): array
     {
         if ($want <= 0) {
-            throw new \RuntimeException('How many are you taking out?');
+            throw new \RuntimeException($product->mode === SupplyProductModel::MODE_WEIGHT
+                ? 'How much are you taking out?'
+                : 'How many are you taking out?');
         }
 
         $batches = SupplyBatchModel::where('product_id', $product->id)
@@ -411,37 +477,68 @@ class SupplyStockService
             ->get();
 
         $available = round($batches->sum(fn ($b) => (float) $b->qty_remaining), 3);
-        if ($available < $want) {
-            throw new \RuntimeException($available > 0
-                ? 'Only ' . rtrim(rtrim(number_format($available, 3, '.', ''), '0'), '.') . ' left in Storage.'
-                : 'No ' . $product->name . ' left in Storage.');
+        $slack = $tolerance ?? 0.0;
+
+        if ($available <= 0) {
+            throw new \RuntimeException('No ' . $product->name . ' left in Storage — ask Taimur or Shabib to book the new stock.');
+        }
+
+        if ($available < $want - 0.0005) {
+            // ⭐ LAST PACKET SHORT. The same tray-vs-packets drift, the other way round: the
+            //    pool says 1.23 kg but the last packet in the bale weighs 1.5. Refusing it
+            //    would strand the packet AND the remaining rupees forever, so within the
+            //    tolerance the take-out simply takes what is actually there.
+            if ($slack > 0 && ($want - $available) <= $slack) {
+                $want = $available;
+            } else {
+                throw new \RuntimeException(
+                    'Only ' . $this->trimNumber($available) . ' ' . $this->poolUnit($product)
+                    . ' of ' . $product->name . ' left in Storage.'
+                );
+            }
         }
 
         $legs = [];
         $left = $want;
 
         foreach ($batches as $batch) {
-            if ($left <= 0) {
+            if ($left <= 0.0005) {
                 break;
             }
 
-            $take = min($left, (float) $batch->qty_remaining);
-            $emptiesBatch = abs($take - (float) $batch->qty_remaining) < 0.0005;
+            $remaining = (float) $batch->qty_remaining;
+            $take = min($left, $remaining);
 
-            // ⭐ The take-out that empties a batch takes whatever cost is LEFT, so the
-            //    batch lands on exactly zero instead of a few paisa short or over.
+            // ⭐ The sweep: this take-out would leave a sliver behind, so take the sliver
+            //    too. The take-out's recorded quantity is the SUM OF ITS LEGS (see takeOut),
+            //    so it honestly reads 1.6 kg rather than the 1.5 kg that was scanned — which
+            //    is the truth: 1.6 kg physically left the shelf.
+            // ⚠ THE EPSILON IS LOAD-BEARING. 1.5 − 1.2 is 0.29999999999999993 in binary
+            // floating point, so a bare `<= 0.3` made the sweep fire or not fire on noise —
+            // and the preview and the real consumption could then disagree about the same
+            // numbers. Comparing with a gram of slack makes "exactly the residue" always
+            // sweep, in both places. previewPoolConsumption uses the identical line.
+            $residue = $this->residueFor($product);
+            if ($residue > 0 && $remaining - $take > 0.0005 && ($remaining - $take) <= $residue + 0.0005) {
+                $take = $remaining;
+            }
+
+            $emptiesBatch = abs($take - $remaining) < 0.0005;
+
+            // ⭐ The take-out that empties a purchase takes whatever cost is LEFT, so the
+            //    purchase lands on exactly zero instead of a few paisa short or over.
             $cost = $emptiesBatch
                 ? round((float) $batch->cost_remaining, 2)
                 : round(((float) $batch->total_cost) * $take / ((float) $batch->qty_total), 2);
 
-            $batch->qty_remaining = round((float) $batch->qty_remaining - $take, 3);
+            $batch->qty_remaining = round($remaining - $take, 3);
             $batch->cost_remaining = round(max(0, (float) $batch->cost_remaining - $cost), 2);
             $batch->save();
 
             $legs[] = [
                 'batch_id' => $batch->id,
                 'packet_id' => null,
-                'qty' => $take,
+                'qty' => round($take, 3),
                 'cost' => $cost,
             ];
 
@@ -449,6 +546,102 @@ class SupplyStockService
         }
 
         return $legs;
+    }
+
+    /**
+     * What consumeFromPool WOULD do, without writing anything.
+     *
+     * Used by the take-out preview and by the weight-edit dialog, where the figure shown to
+     * the manager must be the figure that lands. `$addBack` lets the edit preview put its
+     * own legs back on the shelf first, so it prices the new weight against the pool as it
+     * will actually be — not against a pool still missing the kg it is about to return.
+     *
+     * @param  array $addBack  [batch_id => ['qty' => kg, 'cost' => Rs], …]
+     */
+    public function previewPoolConsumption(
+        SupplyProductModel $product,
+        float $want,
+        array $addBack = [],
+        ?float $tolerance = null
+    ): array {
+        $batches = SupplyBatchModel::where('product_id', $product->id)
+            ->whereIn('status', [SupplyBatchModel::STATUS_CONFIRMED, SupplyBatchModel::STATUS_STOCK_ONLY])
+            ->orderBy('purchase_date')->orderBy('id')->get();
+
+        $rows = [];
+        foreach ($batches as $b) {
+            $qty = (float) $b->qty_remaining + (float) ($addBack[$b->id]['qty'] ?? 0);
+            $cost = (float) $b->cost_remaining + (float) ($addBack[$b->id]['cost'] ?? 0);
+            if ($qty > 0) {
+                $rows[] = ['batch' => $b, 'qty' => round($qty, 3), 'cost' => round($cost, 2)];
+            }
+        }
+
+        $available = round(array_sum(array_column($rows, 'qty')), 3);
+        $slack = $tolerance ?? 0.0;
+        $capped = false;
+
+        if ($available < $want - 0.0005) {
+            if ($slack > 0 && ($want - $available) <= $slack) {
+                $want = $available;
+                $capped = true;
+            } else {
+                return ['ok' => false, 'available' => $available, 'legs' => [], 'cost' => 0.0];
+            }
+        }
+
+        $legs = [];
+        $left = $want;
+        foreach ($rows as $row) {
+            if ($left <= 0.0005) {
+                break;
+            }
+            $take = min($left, $row['qty']);
+            // identical to consumeFromPool — see the epsilon note there
+            $residue = $this->residueFor($product);
+            if ($residue > 0 && $row['qty'] - $take > 0.0005 && ($row['qty'] - $take) <= $residue + 0.0005) {
+                $take = $row['qty'];
+            }
+            $empties = abs($take - $row['qty']) < 0.0005;
+            $cost = $empties
+                ? round($row['cost'], 2)
+                : round(((float) $row['batch']->total_cost) * $take / ((float) $row['batch']->qty_total), 2);
+
+            $legs[] = [
+                'batch_id' => $row['batch']->id,
+                'purchase_date' => optional($row['batch']->purchase_date)->format('d-M'),
+                'qty' => round($take, 3),
+                'cost' => $cost,
+            ];
+            $left = round($left - $take, 3);
+        }
+
+        // ⚠ The quantity is the SUM OF THE LEGS, never the quantity that was asked for.
+        // The residue sweep can take more than was requested (it retires a sliver rather
+        // than leave it stranded), and takeOut() records the legs — so returning `$want`
+        // here made the preview quote 1.2 kg beside the cost of 1.25 kg. A preview whose
+        // figure is not the figure that lands is worse than no preview.
+        return [
+            'ok' => true,
+            'available' => $available,
+            'capped' => $capped,
+            'qty' => round(array_sum(array_column($legs, 'qty')), 3),
+            'requested' => round($want, 3),
+            'legs' => $legs,
+            'cost' => round(array_sum(array_column($legs, 'cost')), 2),
+        ];
+    }
+
+    /** "kg" or "pcs" — the unit a pooled product's quantity is counted in. */
+    public function poolUnit(SupplyProductModel $product): string
+    {
+        return $product->mode === SupplyProductModel::MODE_WEIGHT ? 'kg' : 'pcs';
+    }
+
+    /** 1.250 -> "1.25", 3.000 -> "3" — a number a person would write. */
+    private function trimNumber(float $n): string
+    {
+        return rtrim(rtrim(number_format($n, 3, '.', ''), '0'), '.');
     }
 
     /**
@@ -588,7 +781,50 @@ class SupplyStockService
         }
 
         $takeout = SupplyTakeoutModel::find($request->supply_takeout_id);
-        if (!$takeout || !$takeout->isPending()) {
+        if (!$takeout) {
+            return;
+        }
+
+        // ⭐⭐ THE DELETE DOOR — an APPROVED take-out whose expense was deleted afterwards.
+        //
+        // Found on Sep-17-2026 with real money: Taimur's first take-out (26.97 kg, Rs 24,750)
+        // was auto-approved, and the only way back from "approved" is to delete the expense.
+        // Every delete door calls this method — but this method gated on isPending(), and a
+        // take-out you can delete the expense of is by definition NOT pending. So the delete
+        // reversed the ledger (Rs 24,750 back into SUPPLIES_STOCK) and then did nothing here:
+        // the packet stayed consumed, the batch stayed empty, and the stock account and the
+        // shelf disagreed by exactly the packet's cost. The comment on every delete door
+        // promised "puts the packet back"; none of them ever could.
+        //
+        // ⚠ Restored ONLY once the money has actually gone back. The delete doors reverse
+        // the ledger BEFORE they call here, so a cancelled request whose ledger row is still
+        // `approved` means somebody cancelled without reversing — and putting the packet
+        // back then would double-count it (on the shelf AND in expenses). A take-out with no
+        // ledger row at all (the post failed and was logged) moved no money, so it restores.
+        if ($takeout->status === SupplyTakeoutModel::STATUS_APPROVED
+            && $request->status === RequestModel::STATUS_CANCELLED) {
+            $ledger = $request->ledger_transaction_id ? LedgerModel::find($request->ledger_transaction_id) : null;
+            if ($ledger && $ledger->approval_status !== LedgerModel::STATUS_REVERSED) {
+                Log::warning('Storage take-out: request cancelled but its expense is still posted — packet NOT restored', [
+                    'request_id' => $request->id,
+                    'takeout_id' => $takeout->id,
+                    'ledger_id' => $ledger->id,
+                ]);
+
+                return;
+            }
+
+            $this->restore(
+                $takeout,
+                SupplyTakeoutModel::STATUS_UNDONE,
+                'Expense deleted' . ($request->rejection_reason ? ' — ' . $request->rejection_reason : ''),
+                true
+            );
+
+            return;
+        }
+
+        if (!$takeout->isPending()) {
             return; // already settled — nothing to do, and nothing to double-restore
         }
 
@@ -618,12 +854,19 @@ class SupplyStockService
      * every free packet permanently consumed. Restoring one adds 0.00 to cost_remaining
      * by construction — its legs all cost zero — so no money can move here either way.
      * Still idempotent: the row is re-read under a lock and a settled one returns early.
+     *
+     * `$expenseDeleted` is the ONE way an APPROVED take-out comes back: its expense has been
+     * deleted and the ledger already reversed, so the cost this adds back to the batch is the
+     * same cost the reversal just returned to SUPPLIES_STOCK. Only syncWithRequest() passes
+     * it, and only after checking the ledger row really is `reversed`.
      */
-    public function restore(SupplyTakeoutModel $takeout, string $status, ?string $reason = null): void
+    public function restore(SupplyTakeoutModel $takeout, string $status, ?string $reason = null, bool $expenseDeleted = false): void
     {
-        DB::transaction(function () use ($takeout, $status, $reason) {
+        DB::transaction(function () use ($takeout, $status, $reason, $expenseDeleted) {
             $fresh = SupplyTakeoutModel::where('id', $takeout->id)->lockForUpdate()->first();
-            if (!$fresh || !$fresh->isUndoable()) {
+            $allowed = $fresh && ($fresh->isUndoable()
+                || ($expenseDeleted && $fresh->status === SupplyTakeoutModel::STATUS_APPROVED));
+            if (!$allowed) {
                 return;
             }
 
@@ -656,6 +899,291 @@ class SupplyStockService
             $fresh->settled_at = now();
             $fresh->save();
         });
+    }
+
+    // -----------------------------------------------------------------------------
+    // DELETE / EDIT A TAKE-OUT  (round 3)
+    // -----------------------------------------------------------------------------
+
+    /**
+     * ⭐ Delete a take-out from the Storage screen — ONE engine, every status.
+     *
+     * Storage needed its own door. The Expenses page's 🗑 only reaches a take-out that
+     * raised an expense and is L2-gated (Taimur alone); a `no_charge` take-out off opening
+     * stock has no expense at all, and the owner asked for Shabib to be able to fix a
+     * mistake too. Gated on `manage_supplies_storage` by the controller.
+     *
+     * @return array what happened, for the message the user sees
+     */
+    public function deleteTakeout(SupplyTakeoutModel $takeout, int $userId, ?string $reason = null): array
+    {
+        return DB::transaction(function () use ($takeout, $userId, $reason) {
+            /** @var SupplyTakeoutModel $fresh */
+            $fresh = SupplyTakeoutModel::where('id', $takeout->id)->lockForUpdate()->firstOrFail();
+
+            if (in_array($fresh->status, SupplyTakeoutModel::RESTORED_STATUSES, true)) {
+                throw new \RuntimeException('That take-out was already reversed — the stock is back in Storage.');
+            }
+
+            $product = SupplyProductModel::find($fresh->product_id);
+            $qtyBack = (float) $fresh->qty;
+            $costBack = (float) $fresh->cost;
+            $note = trim('Deleted from Storage' . ($reason ? ' — ' . $reason : ''));
+            $monthTouched = null;
+
+            $request = $fresh->request_id ? RequestModel::find($fresh->request_id) : null;
+
+            if ($request) {
+                // ⚠ The money comes back FIRST. restore() then puts the kilograms back, and
+                // the two must move together or the stock account and the shelf disagree —
+                // which is exactly the round-2 bug this feature already shipped once.
+                if ($request->ledger_transaction_id) {
+                    $ledger = LedgerModel::find($request->ledger_transaction_id);
+                    if ($ledger && $ledger->approval_status === LedgerModel::STATUS_APPROVED) {
+                        (new BalancePostingService())->reverse($ledger);
+                        $ledger->approval_status = LedgerModel::STATUS_REVERSED;
+                        $ledger->comments = trim(($ledger->comments ? $ledger->comments . "\n" : '') . $note);
+                        $ledger->save();
+                        $monthTouched = substr((string) $ledger->transaction_date, 0, 7);
+                    }
+                }
+
+                if ($request->status !== RequestModel::STATUS_CANCELLED) {
+                    $request->setAttribute('status', RequestModel::STATUS_CANCELLED);
+                    $request->rejection_reason = $note;
+                    $request->updated_by = $userId;
+                    $request->save();
+                }
+            }
+
+            $this->restore($fresh, SupplyTakeoutModel::STATUS_UNDONE, $note, true);
+
+            return [
+                'qty' => $qtyBack,
+                'cost' => $costBack,
+                'unit' => $product ? $this->poolUnit($product) : $fresh->unit,
+                'request_number' => $request?->request_number,
+                'month_touched' => $monthTouched,
+            ];
+        });
+    }
+
+    /**
+     * ⭐⭐ Change the WEIGHT of a take-out that was already recorded — an atomic
+     * undo-and-redo, never a patch.
+     *
+     * Patching `qty` alone would be the worst kind of bug: the take-out would read right
+     * while the purchases it came out of stayed drawn down by the old amount, for ever.
+     * So the legs are given back, the new weight is drawn from the pool exactly as a fresh
+     * scan would draw it (same FIFO, same sweep, same tolerance), and only then is the
+     * money settled.
+     *
+     * The money reuses `recostTakeout()`, built for price corrections: it reverses the
+     * expense, amends the amount and re-applies it ON ITS ORIGINAL DATE, so a correction
+     * never silently moves a cost into a different month.
+     */
+    public function editTakeoutWeight(
+        SupplyTakeoutModel $takeout,
+        float $newQty,
+        int $userId,
+        ?string $reason = null
+    ): array {
+        return DB::transaction(function () use ($takeout, $newQty, $userId, $reason) {
+            /** @var SupplyTakeoutModel $fresh */
+            $fresh = SupplyTakeoutModel::where('id', $takeout->id)->lockForUpdate()->firstOrFail();
+
+            if (in_array($fresh->status, SupplyTakeoutModel::RESTORED_STATUSES, true)) {
+                throw new \RuntimeException('That take-out was already reversed — there is nothing to edit.');
+            }
+
+            $product = SupplyProductModel::findOrFail($fresh->product_id);
+            if (!$product->isPooled()) {
+                throw new \RuntimeException('Only a weighed or counted take-out can have its quantity edited.');
+            }
+
+            $newQty = round($newQty, 3);
+            if ($newQty <= 0) {
+                throw new \RuntimeException('Enter a quantity above zero — use Delete to reverse it entirely.');
+            }
+
+            $wasQty = (float) $fresh->qty;
+            $wasCost = (float) $fresh->cost;
+
+            // 1. give every leg back to the purchase it came from
+            foreach (SupplyTakeoutLegModel::where('takeout_id', $fresh->id)->get() as $leg) {
+                $batch = SupplyBatchModel::where('id', $leg->batch_id)->lockForUpdate()->first();
+                if ($batch) {
+                    $batch->qty_remaining = round((float) $batch->qty_remaining + (float) $leg->qty, 3);
+                    $batch->cost_remaining = round((float) $batch->cost_remaining + (float) $leg->cost, 2);
+                    $batch->save();
+                }
+                $leg->delete();
+            }
+
+            // 2. draw the new quantity exactly as a fresh scan would.
+            //    If it does not fit, this throws and the whole transaction rolls back —
+            //    the legs above are restored, nothing has moved.
+            $legs = $this->consumeFromPool($product, $newQty, $this->toleranceFor($product));
+
+            $qty = round(array_sum(array_column($legs, 'qty')), 3);
+            $cost = round(array_sum(array_column($legs, 'cost')), 2);
+
+            foreach ($legs as $leg) {
+                SupplyTakeoutLegModel::create([
+                    'takeout_id' => $fresh->id,
+                    'batch_id' => $leg['batch_id'],
+                    'packet_id' => null,
+                    'qty' => $leg['qty'],
+                    'cost' => $leg['cost'],
+                    'created_at' => now(),
+                ]);
+            }
+
+            $fresh->qty = $qty;
+            $fresh->save();
+
+            // 3. the money, by what the take-out already is
+            $billable = $cost >= self::MIN_BILLABLE;
+            $note = trim('Weight corrected ' . $this->trimNumber($wasQty) . ' → ' . $this->trimNumber($qty)
+                . ' ' . $this->poolUnit($product) . ($reason ? ' — ' . $reason : ''));
+            $monthTouched = null;
+            $crossed = null;
+
+            if ($fresh->status === SupplyTakeoutModel::STATUS_NO_CHARGE && $billable) {
+                // ⚠ The edit crossed FREE → PAID: the new kilograms reach into a purchase
+                // that was actually bought, so this take-out now owes an expense it never had.
+                $fresh->cost = $cost;
+                $fresh->status = SupplyTakeoutModel::STATUS_PENDING;
+                $fresh->settled_at = null;
+                $fresh->save();
+                $this->raiseExpenseRequest($fresh->fresh(), $product, $legs, $userId);
+                $fresh = $fresh->fresh();
+                $crossed = 'now_billable';
+            } elseif ($fresh->status !== SupplyTakeoutModel::STATUS_NO_CHARGE && !$billable) {
+                // ⚠ PAID → FREE: everything it now draws on is opening stock. The expense
+                // has to come off, or we would bill for stock that was already expensed.
+                $request = $fresh->request_id ? RequestModel::find($fresh->request_id) : null;
+                if ($request) {
+                    if ($request->ledger_transaction_id) {
+                        $ledger = LedgerModel::find($request->ledger_transaction_id);
+                        if ($ledger && $ledger->approval_status === LedgerModel::STATUS_APPROVED) {
+                            (new BalancePostingService())->reverse($ledger);
+                            $ledger->approval_status = LedgerModel::STATUS_REVERSED;
+                            $ledger->comments = trim(($ledger->comments ? $ledger->comments . "\n" : '') . $note);
+                            $ledger->save();
+                            $monthTouched = substr((string) $ledger->transaction_date, 0, 7);
+                        }
+                    }
+                    $request->setAttribute('status', RequestModel::STATUS_CANCELLED);
+                    $request->rejection_reason = $note;
+                    $request->updated_by = $userId;
+                    $request->save();
+                }
+                $fresh->cost = $cost;
+                $fresh->status = SupplyTakeoutModel::STATUS_NO_CHARGE;
+                $fresh->settled_at = now();
+                $fresh->save();
+                $crossed = 'now_free';
+            } else {
+                // The ordinary case: same side of the free/paid line, just a different figure.
+                $moved = $this->recostTakeout($fresh->id, $cost, $userId, $note, 'Storage take-out weight corrected');
+                $monthTouched = $moved['month'] ?? null;
+                if (!$moved) {
+                    $fresh->cost = $cost;
+                    $fresh->save();
+                }
+                $fresh = $fresh->fresh();
+            }
+
+            // 4. the audit row — ACTION_CORRECT, the same action a price fix writes
+            $this->log(SupplyLogModel::ACTION_CORRECT, $product, null, null, $fresh,
+                $qty, $this->poolUnit($product), $cost, $fresh->source, $userId, $note,
+                $fresh->scanned_barcode);
+
+            return [
+                'was_qty' => $wasQty,
+                'qty' => $qty,
+                'was_cost' => $wasCost,
+                'cost' => $cost,
+                'unit' => $this->poolUnit($product),
+                'legs' => $legs,
+                'status' => $fresh->status,
+                'crossed' => $crossed,
+                'month_touched' => $monthTouched,
+            ];
+        });
+    }
+
+    /**
+     * What editTakeoutWeight() WOULD do. Writes nothing.
+     *
+     * Its figure must equal what the edit then produces to the paisa, so it prices against
+     * the pool WITH this take-out's own kilograms handed back first — otherwise it would
+     * quote against a shelf that is still missing the stock it is about to return.
+     */
+    public function previewTakeoutEdit(SupplyTakeoutModel $takeout, float $newQty): array
+    {
+        $product = SupplyProductModel::findOrFail($takeout->product_id);
+
+        $addBack = [];
+        foreach (SupplyTakeoutLegModel::where('takeout_id', $takeout->id)->get() as $leg) {
+            $addBack[$leg->batch_id]['qty'] = ($addBack[$leg->batch_id]['qty'] ?? 0) + (float) $leg->qty;
+            $addBack[$leg->batch_id]['cost'] = ($addBack[$leg->batch_id]['cost'] ?? 0) + (float) $leg->cost;
+        }
+
+        $preview = $this->previewPoolConsumption(
+            $product, round($newQty, 3), $addBack, $this->toleranceFor($product)
+        );
+
+        $request = $takeout->request_id ? RequestModel::find($takeout->request_id) : null;
+        $expenseMonth = $request && $request->expense_date ? substr((string) $request->expense_date, 0, 7) : null;
+
+        return array_merge($preview, [
+            'was_qty' => (float) $takeout->qty,
+            'was_cost' => (float) $takeout->cost,
+            'unit' => $this->poolUnit($product),
+            'expense_month' => $expenseMonth,
+            // A month already read by the owner must never be restated behind his back.
+            'restates_earlier_month' => $expenseMonth !== null && $expenseMonth < now()->format('Y-m'),
+        ]);
+    }
+
+    /**
+     * The median weight of this product's recent take-outs — the baseline the "unusual
+     * weight" guard compares a new one against.
+     *
+     * A median, not a mean, for the same reason intake uses one: a single wild reading
+     * drags a mean far enough to then accept the NEXT bad one.
+     */
+    public function recentTakeoutMedian(SupplyProductModel $product, int $sample = 10): float
+    {
+        $qtys = SupplyTakeoutModel::where('product_id', $product->id)
+            ->whereNotIn('status', SupplyTakeoutModel::RESTORED_STATUSES)
+            ->orderByDesc('id')->limit($sample)->pluck('qty')
+            ->map(fn ($q) => (float) $q)->filter(fn ($q) => $q > 0)->values()->sort()->values()->all();
+
+        $n = count($qtys);
+        if ($n === 0) {
+            return 0.0;   // no baseline yet — the first take-outs are never questioned
+        }
+
+        $mid = intdiv($n, 2);
+
+        return $n % 2 ? $qtys[$mid] : ($qtys[$mid - 1] + $qtys[$mid]) / 2;
+    }
+
+    /** The same label, out of the same product, within the last few minutes. */
+    public function sameLabelRecently(SupplyProductModel $product, ?string $barcode, int $minutes = 10): ?SupplyTakeoutModel
+    {
+        if (!$barcode) {
+            return null;
+        }
+
+        return SupplyTakeoutModel::where('product_id', $product->id)
+            ->where('scanned_barcode', $barcode)
+            ->whereNotIn('status', SupplyTakeoutModel::RESTORED_STATUSES)
+            ->where('taken_at', '>=', now()->subMinutes($minutes))
+            ->orderByDesc('id')->first();
     }
 
     /**
@@ -745,9 +1273,26 @@ class SupplyStockService
                 $b->cost_remaining = round($packets->where('status', SupplyPacketModel::STATUS_IN_STOCK)
                     ->sum(fn ($p) => (float) $p->cost), 2);
             } else {
-                // Pieces: re-cost each leg at the new rate; the shelf absorbs the rounding.
+                // POOLED (weight or pieces): re-cost each leg at the new rate; the shelf
+                // absorbs the rounding.
                 $unit = $newTotal / max((float) $b->qty_total, 0.0001);
                 $legTotal = 0.0;
+
+                // ⭐ A weighed purchase also has packet rows — intake audit, not stock. They
+                //    carry no money, but leaving them at the OLD price would make the "what
+                //    was weighed in" record disagree with what the purchase actually cost.
+                if ($product && $product->booksPackets()) {
+                    $auditRows = SupplyPacketModel::where('batch_id', $b->id)
+                        ->where('status', '!=', SupplyPacketModel::STATUS_VOIDED)
+                        ->orderBy('seq')->get();
+                    if ($auditRows->isNotEmpty()) {
+                        $auditCosts = $this->allocateByWeight($auditRows, $newTotal);
+                        foreach ($auditRows as $row) {
+                            $row->cost = $auditCosts[$row->id];
+                            $row->save();
+                        }
+                    }
+                }
                 $legs = SupplyTakeoutLegModel::where('batch_id', $b->id)->orderBy('id')->lockForUpdate()->get();
 
                 foreach ($legs as $leg) {
@@ -818,8 +1363,13 @@ class SupplyStockService
      *
      * @return array|null what moved, for the confirmation message
      */
-    private function recostTakeout(?int $takeoutId, float $newCost, int $userId, ?string $reason): ?array
-    {
+    private function recostTakeout(
+        ?int $takeoutId,
+        float $newCost,
+        int $userId,
+        ?string $reason,
+        string $what = 'Storage purchase price corrected'
+    ): ?array {
         if (!$takeoutId) {
             return null;
         }
@@ -848,7 +1398,7 @@ class SupplyStockService
                 $ledger->amount = $newCost;
                 $ledger->comments = trim(($ledger->comments ? $ledger->comments . "\n" : '')
                     . 'Amount corrected ' . number_format($was, 2) . ' → ' . number_format($newCost, 2)
-                    . ' (Storage purchase price corrected)' . ($reason ? ' — ' . $reason : ''));
+                    . ' (' . $what . ')' . ($reason ? ' — ' . $reason : ''));
                 $ledger->save();
                 $poster->apply($ledger);
                 $month = substr((string) $ledger->transaction_date, 0, 7);
@@ -891,12 +1441,24 @@ class SupplyStockService
             $newByPacket = $this->allocateByWeight($packets, $newTotal);
         }
 
+        // ⭐ A POOLED purchase re-costs each leg at the NEW RATE — `unit × kg`, which is
+        //    exactly what correctBatchPrice() then applies. Previewing with a ratio of the
+        //    old cost instead would drift a paisa off the figure that actually lands, and
+        //    the whole point of the preview is that what it shows is what happens.
+        $poolUnit = ($product && $product->isPooled() && (float) $batch->qty_total > 0)
+            ? $newTotal / (float) $batch->qty_total
+            : null;
+
         foreach ($takeouts as $t) {
             $legs = SupplyTakeoutLegModel::where('takeout_id', $t->id)->where('batch_id', $batch->id)->get();
             $legCost = (float) $legs->sum('cost');
-            $newLegCost = $newByPacket !== null
-                ? (float) $legs->sum(fn ($l) => $newByPacket[$l->packet_id] ?? (float) $l->cost)
-                : round($legCost * $ratio, 2);
+            if ($newByPacket !== null) {
+                $newLegCost = (float) $legs->sum(fn ($l) => $newByPacket[$l->packet_id] ?? (float) $l->cost);
+            } elseif ($poolUnit !== null) {
+                $newLegCost = (float) $legs->sum(fn ($l) => round($poolUnit * (float) $l->qty, 2));
+            } else {
+                $newLegCost = round($legCost * $ratio, 2);
+            }
             $now = round((float) $t->cost - $legCost + $newLegCost, 2);
             if (abs($now - (float) $t->cost) < 0.005) {
                 continue;
@@ -938,13 +1500,24 @@ class SupplyStockService
                 return;
             }
 
+            // ⚠ ASK THE LEGS, not the packet rows. A weighed purchase is drawn down as a
+            // pool now, so its packet rows stay `in_stock` forever while kilograms leave —
+            // the old packet check would have happily voided a bale that was half used and
+            // reversed money that had already been expensed.
+            $legCount = SupplyTakeoutLegModel::where('batch_id', $fresh->id)
+                ->whereHas('takeout', fn ($q) => $q->whereNotIn('status', SupplyTakeoutModel::RESTORED_STATUSES))
+                ->count();
             $consumed = SupplyPacketModel::where('batch_id', $fresh->id)
                 ->where('status', SupplyPacketModel::STATUS_CONSUMED)->count();
-            $piecesUsed = $fresh->mode === SupplyProductModel::MODE_PIECES
-                && (float) $fresh->qty_remaining < (float) $fresh->qty_total;
+            $qtyUsed = (float) $fresh->qty_remaining < (float) $fresh->qty_total - 0.0005;
 
-            if ($consumed > 0 || $piecesUsed) {
-                throw new \RuntimeException('Some of this batch has already been used — it can no longer be voided.');
+            if ($legCount > 0 || $consumed > 0 || $qtyUsed) {
+                throw new \RuntimeException(
+                    $legCount > 0
+                        ? $legCount . ' take-out(s) have already come out of this purchase. Delete those first, '
+                            . 'or use Fix price if only the amount was wrong.'
+                        : 'Some of this purchase has already been used — it can no longer be voided.'
+                );
             }
 
             if ($fresh->ledger_id) {
@@ -1033,11 +1606,11 @@ class SupplyStockService
                 }
             }
 
-            // ⚠ A count is in the unit you COUNT IN — packets on the shelf, not kilograms.
-            // quantityPhrase() renders a weight product in kg, so it used to write
-            // "Counted 3 kg, system had 4 kg" for 3 packets against 4: an audit line about
-            // missing stock that named the wrong unit and a nonsense quantity. onHandPhrase()
-            // is the counting unit; quantityPhrase() stays the take-out unit.
+            // ⚠ A count is in the unit you COUNT IN, which is not always the unit a take-out
+            // is measured in: a SCAN product is counted in packets while its take-outs read
+            // "1 packet", and a weighed shelf is now WEIGHED (round 3) rather than counted in
+            // bags. onHandPhrase() is the counting unit; quantityPhrase() is the take-out
+            // unit. Conflating them once wrote "Counted 3 kg" when someone had counted 3 bags.
             $this->log(SupplyLogModel::ACTION_COUNT, $product, null, null, null,
                 $counted, $this->onHandUnit($product), $cost, 'manual', $userId,
                 trim('Counted ' . $this->onHandPhrase($counted, $product)
@@ -1144,6 +1717,10 @@ class SupplyStockService
                 'qty_remaining' => $qty,
                 'value_remaining' => $value,
                 'packets_in_stock' => $packets,
+                // ⭐ How many purchases the pool is currently made of. The owner keeps
+                // buying before it runs out, so "one line, tap to see what it is made of"
+                // needs this number on the card itself.
+                'open_purchases' => $batches->filter(fn ($b) => (float) $b->qty_remaining > 0.0005)->count(),
                 'low_stock' => $product->low_stock_qty !== null
                     && $qty <= (float) $product->low_stock_qty,
             ];
@@ -1191,12 +1768,21 @@ class SupplyStockService
      */
     public function onHandUnit(SupplyProductModel $product): string
     {
-        return $product->usesPackets() ? 'packet' : 'pcs';
+        return match ($product->mode) {
+            // ⭐ Round 3: a weighed shelf is COUNTED IN KG. You weigh what is left, you do
+            //    not count bags — the bags on the shelf are no longer what the stock is.
+            SupplyProductModel::MODE_WEIGHT => 'kg',
+            SupplyProductModel::MODE_SCAN   => 'packet',
+            default                         => 'pcs',
+        };
     }
 
     /** "3 packets" / "30 pcs" — a counted quantity, in the unit it was counted in. */
     public function onHandPhrase(float $qty, SupplyProductModel $product): string
     {
+        if ($product->mode === SupplyProductModel::MODE_WEIGHT) {
+            return $this->trimNumber($qty) . ' kg';
+        }
         if (!$product->usesPackets()) {
             return ((int) round($qty)) . ' pcs';
         }
@@ -1245,7 +1831,8 @@ class SupplyStockService
         float $cost,
         ?string $source,
         ?int $userId,
-        ?string $note = null
+        ?string $note = null,
+        ?string $barcode = null
     ): void {
         SupplyLogModel::create([
             'action' => $action,
@@ -1258,6 +1845,8 @@ class SupplyStockService
             'unit' => $unit,
             'cost' => $cost,
             'source' => $source,
+            // The code read for this movement, in or out. Null for a typed quantity.
+            'barcode' => $barcode,
             'note' => $note,
             'created_by' => $userId,
             'created_at' => now(),

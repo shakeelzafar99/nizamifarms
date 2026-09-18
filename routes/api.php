@@ -1124,6 +1124,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/resolve-scan', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'resolveScan']);
         Route::post('/take-out', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'takeOut']);
         Route::post('/take-out/{takeoutId}/undo', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'undoTakeout']);
+        // ⭐ Round 3 — the same four the web mount carries, so the phone can do everything.
+        Route::post('/take-out/quote', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'quoteTakeout']);
+        Route::post('/take-out/{takeoutId}/delete', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'deleteTakeout']);
+        Route::post('/take-out/{takeoutId}/preview-edit', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'previewTakeoutEdit']);
+        Route::post('/take-out/{takeoutId}/edit', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'editTakeout']);
         Route::post('/approval-switch', [\App\Http\Controllers\FIN\SupplyStorageController::class, 'setApprovalSwitch']);
     });
 

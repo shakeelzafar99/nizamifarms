@@ -9,6 +9,7 @@ use App\Models\FIN\SupplyBatchModel;
 use App\Models\FIN\SupplyLogModel;
 use App\Models\FIN\SupplyPacketModel;
 use App\Models\FIN\SupplyProductModel;
+use App\Models\FIN\SupplyTakeoutLegModel;
 use App\Models\FIN\SupplyTakeoutModel;
 use App\Services\CRM\WeightBarcodeDecoder;
 use App\Services\FIN\PaymentSourceService;
@@ -118,9 +119,17 @@ class SupplyStorageController extends Controller
                 'expense_category' => $p->expense_category_name,
                 'qty_remaining' => (float) $row['qty_remaining'],
                 'value_remaining' => (float) $row['value_remaining'],
+                // ⭐ Null for a weighed product from round 3 on: its stock is kilograms in a
+                // pool, not a number of bags, so a packet count would be a lie.
                 'packets_in_stock' => $row['packets_in_stock'],
                 'low_stock' => $row['low_stock'],
                 'qty_label' => $this->stock->quantityPhrase((float) $row['qty_remaining'], $p),
+                // Drives the take-out UI: pooled products ask for a QUANTITY (scanned or
+                // typed); a scan product still picks an identified packet.
+                'pooled' => $p->isPooled(),
+                'packet_barcode' => $p->packet_barcode,
+                'packet_kg' => $p->packet_kg !== null ? (float) $p->packet_kg : null,
+                'open_purchases' => $row['open_purchases'] ?? null,
             ];
         }
 
@@ -154,6 +163,13 @@ class SupplyStorageController extends Controller
                 $consumed = SupplyPacketModel::where('batch_id', $b->id)
                     ->where('status', SupplyPacketModel::STATUS_CONSUMED)->count();
 
+                // ⭐ Round 3: a POOLED purchase is drawn down in kilograms, so its packet
+                // rows stay `in_stock` for ever. Whether anything has come out of it can
+                // only be answered by the legs — and the void guard depends on this.
+                $liveLegs = SupplyTakeoutLegModel::where('batch_id', $b->id)
+                    ->whereHas('takeout', fn ($q) => $q->whereNotIn('status', SupplyTakeoutModel::RESTORED_STATUSES))
+                    ->count();
+
                 return [
                     'id' => $b->id,
                     'purchase_date' => optional($b->purchase_date)->toDateString(),
@@ -175,14 +191,21 @@ class SupplyStorageController extends Controller
                     'ledger_id' => $b->ledger_id,
                     'note' => $b->note,
                     'consumed_packets' => $consumed,
+                    'takeouts_from_it' => $liveLegs,
+                    // ⭐ The owner keeps buying before the pool runs out, so purchases pile
+                    // up. The sheet leads with the ones that still hold stock and hides the
+                    // rest behind "show earlier purchases".
+                    'is_active' => $b->status !== SupplyBatchModel::STATUS_VOIDED
+                        && (float) $b->qty_remaining > 0.0005,
                     // A price can be corrected even after some of it has been used — that
                     // is the whole point, since a typo is usually spotted after a packet
-                    // or two has gone out. Voiding stays restricted to untouched batches.
+                    // or two has gone out. Voiding stays restricted to untouched purchases.
                     'can_correct' => $this->canManage() && $b->status === SupplyBatchModel::STATUS_CONFIRMED,
                     'can_void' => $this->canManage()
                         && $b->status !== SupplyBatchModel::STATUS_VOIDED
                         && $consumed === 0
-                        && (float) $b->qty_remaining === (float) $b->qty_total,
+                        && $liveLegs === 0
+                        && abs((float) $b->qty_remaining - (float) $b->qty_total) < 0.0005,
                 ];
             }),
         ]);
@@ -235,6 +258,13 @@ class SupplyStorageController extends Controller
                 'unit' => $r->unit,
                 'cost' => (float) $r->cost,
                 'batch_id' => $r->batch_id,
+                'takeout_id' => $r->takeout_id,
+                // ⭐ The code actually read, in or out. Recorded from round 3 onward: on
+                // Sep-17 nobody could tell whether a bale's own label or a small packet's
+                // had been scanned, because it was stored nowhere.
+                'barcode' => $r->barcode,
+                'source' => $r->source,
+                'typed' => $r->source === 'manual',
                 'by' => $names[$r->created_by] ?? null,
                 'at' => optional($r->created_at)->format('d-M h:i A'),
                 'note' => $r->note,
@@ -249,23 +279,47 @@ class SupplyStorageController extends Controller
             return $this->deny();
         }
 
+        // ⭐ A manager sees EVERYONE's take-outs, because a manager is the one who fixes a
+        // mistake and cannot fix what he cannot see. A store user still sees only his own.
+        $canManage = $this->canManage();
         $rows = SupplyTakeoutModel::with(['product', 'request'])
-            ->where('taken_by', auth()->id())
+            ->when(!$canManage, fn ($q) => $q->where('taken_by', auth()->id()))
             ->orderByDesc('id')->limit(50)->get();
+
+        $userNames = $canManage
+            ? DB::table('t_sys_user')->whereIn('id', $rows->pluck('taken_by')->filter()->unique())
+                ->pluck('fullname', 'id')
+            : collect();
 
         return response()->json([
             'success' => true,
+            'shows_everyone' => $canManage,
             'takeouts' => $rows->map(fn (SupplyTakeoutModel $t) => [
                 'id' => $t->id,
                 'product_name' => $t->product?->name,
                 'qty' => (float) $t->qty,
                 'unit' => $t->unit,
+                'qty_label' => $t->product ? $this->stock->quantityPhrase((float) $t->qty, $t->product) : null,
                 'cost' => (float) $t->cost,
                 'status' => $t->status,
                 'request_number' => $t->request?->request_number,
                 'rejection_reason' => $t->request?->rejection_reason,
+                'source' => $t->source,
+                // Typed, not scanned — visible on every row, because with the approval
+                // switch off this is the only thing that marks a hand-entered quantity.
+                'typed' => $t->source === 'manual',
+                'scanned_barcode' => $t->scanned_barcode,
+                'taken_by_name' => $userNames[$t->taken_by] ?? null,
+                'mine' => (int) $t->taken_by === (int) auth()->id(),
                 // no_charge is undoable too — see SupplyTakeoutModel::UNDOABLE_STATUSES.
-                'can_undo' => $t->isUndoable(),
+                'can_undo' => $t->isUndoable() && (int) $t->taken_by === (int) auth()->id(),
+                // Managers can delete any take-out that has not already been reversed, and
+                // edit the weight of a pooled one.
+                'can_delete' => $canManage
+                    && !in_array($t->status, SupplyTakeoutModel::RESTORED_STATUSES, true),
+                'can_edit' => $canManage
+                    && !in_array($t->status, SupplyTakeoutModel::RESTORED_STATUSES, true)
+                    && (bool) $t->product?->isPooled(),
                 'at' => optional($t->taken_at)->format('d-M h:i A'),
             ]),
         ]);
@@ -349,6 +403,9 @@ class SupplyStorageController extends Controller
             'mode' => 'required|in:weight,scan,pieces',
             'plu' => 'nullable|integer|min:1|max:999999',
             'barcode' => 'nullable|string|max:40',
+            // ⭐ Round 3 — the INNER packet, when it carries a vendor code with no weight.
+            'packet_barcode' => 'nullable|string|max:40',
+            'packet_kg' => 'nullable|numeric|min:0.001|max:9999',
             'pieces_per_packet' => 'nullable|integer|min:1',
             'expense_config_id' => 'required|integer|exists:t_fin_config,id',
             'business_unit_id' => 'nullable|integer',
@@ -360,20 +417,38 @@ class SupplyStorageController extends Controller
         $plu = $mode === 'weight' ? ($validated['plu'] ?? null) : null;
         $barcode = $mode === 'scan' ? trim((string) ($validated['barcode'] ?? '')) : null;
 
+        // The inner packet's own code only means anything on a weighed product, and only
+        // together with what one of them weighs — a code with no weight could not be
+        // turned into a quantity, and a weight with no code could never be triggered.
+        $packetBarcode = $mode === 'weight' ? (trim((string) ($validated['packet_barcode'] ?? '')) ?: null) : null;
+        $packetKg = $mode === 'weight' ? ($validated['packet_kg'] ?? null) : null;
+
         if ($mode === 'weight' && !$plu) {
             return response()->json(['success' => false, 'message' => 'A weighed product needs its scale PLU.'], 422);
         }
         if ($mode === 'scan' && $barcode === '') {
             return response()->json(['success' => false, 'message' => 'Scan the product barcode, or type it in.'], 422);
         }
+        if (($packetBarcode === null) !== ($packetKg === null)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An inner-packet barcode needs the weight of one packet, and the weight needs the barcode. '
+                    . 'Leave both blank if the packets carry their own scale labels.',
+            ], 422);
+        }
 
         // One code = one product, so a scan can never be ambiguous.
         $clash = SupplyProductModel::when($id, fn ($q) => $q->where('id', '!=', $id))
-            ->where(function ($q) use ($plu, $barcode) {
+            ->where(function ($q) use ($plu, $barcode, $packetBarcode) {
                 if ($plu) { $q->orWhere('plu', $plu); }
                 if ($barcode) { $q->orWhere('barcode', $barcode); }
+                // The inner-packet code has to be unique too, and against BOTH columns:
+                // a scan that matched two products could take stock out of the wrong one.
+                if ($packetBarcode) {
+                    $q->orWhere('packet_barcode', $packetBarcode)->orWhere('barcode', $packetBarcode);
+                }
             })->first();
-        if (($plu || $barcode) && $clash) {
+        if (($plu || $barcode || $packetBarcode) && $clash) {
             return response()->json([
                 'success' => false,
                 'message' => 'That code is already used by "' . $clash->name . '".',
@@ -444,6 +519,8 @@ class SupplyStorageController extends Controller
             'mode' => $mode,
             'plu' => $plu,
             'barcode' => $barcode ?: null,
+            'packet_barcode' => $packetBarcode,
+            'packet_kg' => $packetKg,
             'pieces_per_packet' => $validated['pieces_per_packet'] ?? null,
             'expense_config_id' => $config->id,
             // Snapshot, so a renamed or deleted config row can never break a take-out.
@@ -561,7 +638,9 @@ class SupplyStorageController extends Controller
         // ── Barcodes: decode and match BEFORE the transaction, so a bad scan fails
         //    the whole batch fast instead of half-writing it. ────────────────────
         $packets = [];
-        if ($product->usesPackets()) {
+        // ⚠ booksPackets(), not usesPackets(). Round 3 changed what a weighed product's
+        // packet rows MEAN (intake audit, not stock) but not that intake records them.
+        if ($product->booksPackets()) {
             $incoming = $validated['packets'] ?? [];
             if (empty($incoming)) {
                 return response()->json(['success' => false, 'message' => 'Scan at least one packet.'], 422);
@@ -800,6 +879,18 @@ class SupplyStorageController extends Controller
         // column is unique), so it can safely be tried first for every read.
         $product = SupplyProductModel::where('barcode', $raw)->where('is_active', 1)->first();
 
+        // ⭐ Round 3: the INNER packet of a weighed product may carry a vendor barcode that
+        //    holds no weight at all (unlike a Czerlop scale label). The product then names
+        //    that code and what one packet of it weighs.
+        $nominal = false;
+        if (!$product) {
+            $byPacketCode = SupplyProductModel::where('packet_barcode', $raw)->where('is_active', 1)->first();
+            if ($byPacketCode && $byPacketCode->hasNominalPacket()) {
+                $product = $byPacketCode;
+                $nominal = true;
+            }
+        }
+
         if (!$product && $decoded) {
             $product = SupplyProductModel::where('plu', $decoded['plu'])->where('is_active', 1)->first();
         }
@@ -814,10 +905,21 @@ class SupplyStorageController extends Controller
             ], 404);
         }
 
-        // Look the packet up by the code its rows actually carry: a weight product's
-        // packets store the decoder's normalised 13 digits, a scan product's store the
-        // fixed barcode exactly as it was typed or scanned into the product form.
-        $lookup = ($product->mode === SupplyProductModel::MODE_WEIGHT && $decoded) ? $decoded['raw'] : $raw;
+        // ─────────────────────────────────────────────────────────────────────────────
+        // ⭐⭐ POOLED PRODUCTS (weight): the scan says HOW MUCH, not WHICH PACKET.
+        //
+        // This is the whole of round 3. A bale is weighed once on a tray and booked under
+        // one label; the small packets inside are then scanned out one at a time. Looking
+        // for "the packet with this barcode" was what turned a 1.5 kg scan into a 26.97 kg
+        // take-out on Sep-17 — the only row that matched was the bale itself.
+        // ─────────────────────────────────────────────────────────────────────────────
+        if ($product->isPooled()) {
+            return $this->resolvePooledScan($product, $raw, $decoded, $nominal);
+        }
+
+        // Look the packet up by the code its rows actually carry: a scan product's packets
+        // store the fixed barcode exactly as it was typed or scanned into the product form.
+        $lookup = $raw;
 
         $packet = $product->usesPackets() ? $this->stock->findPacketForBarcode($product, $lookup) : null;
 
@@ -864,6 +966,154 @@ class SupplyStorageController extends Controller
     }
 
     /**
+     * A scan against a POOLED product: how much is leaving, what it costs, and anything
+     * the person should look at twice before it does.
+     *
+     * Returns the same shape whether the weight came from a Czerlop label or from a vendor
+     * barcode with a known packet weight, so the client has one path.
+     */
+    private function resolvePooledScan(SupplyProductModel $product, string $raw, ?array $decoded, bool $nominal)
+    {
+        if ($nominal) {
+            $qty = (float) $product->packet_kg;
+        } elseif ($decoded) {
+            if ((int) $product->plu !== (int) $decoded['plu']) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'wrong_product',
+                    'message' => 'That label is PLU ' . $decoded['plu'] . ', not ' . $product->name . '.',
+                ], 404);
+            }
+            $qty = (float) $decoded['weight_kg'];
+        } else {
+            return response()->json([
+                'success' => false,
+                'code' => 'no_weight',
+                'message' => 'That code does not carry a weight. Type the weight instead.',
+            ], 422);
+        }
+
+        \Log::info('Storage scan resolved', [
+            'product_id' => $product->id,
+            'barcode' => $raw,
+            'qty' => $qty,
+            'nominal' => $nominal,
+            'user_id' => auth()->id(),
+        ]);
+
+        return $this->poolQuote($product, $qty, $raw);
+    }
+
+    /**
+     * Price a quantity against the pool and collect the warnings, for a scan OR a typed
+     * weight. The client shows the figure and any warning; `takeOut` re-checks everything
+     * server-side, so a client that ignores a warning cannot get past it silently.
+     */
+    private function poolQuote(SupplyProductModel $product, float $qty, ?string $barcode)
+    {
+        $preview = $this->stock->previewPoolConsumption(
+            $product, $qty, [], $this->stock->toleranceFor($product)
+        );
+
+        if (!$preview['ok']) {
+            return response()->json([
+                'success' => false,
+                'code' => $preview['available'] <= 0 ? 'empty' : 'not_enough',
+                'message' => $preview['available'] <= 0
+                    ? 'No ' . $product->name . ' left in Storage — ask Taimur or Shabib to book the new stock.'
+                    : 'Only ' . $this->stock->quantityPhrase($preview['available'], $product)
+                        . ' of ' . $product->name . ' is left in Storage.',
+                'pool_remaining' => $preview['available'],
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => true,
+            'product' => [
+                'id' => $product->id,
+                'name' => $product->name,
+                'mode' => $product->mode,
+                'expense_category' => $product->expense_category_name,
+            ],
+            'pooled' => true,
+            'qty' => $preview['qty'],
+            'qty_label' => $this->stock->quantityPhrase($preview['qty'], $product),
+            'cost' => $preview['cost'],
+            'free' => $preview['cost'] < 0.01,
+            'capped' => $preview['capped'] ?? false,
+            'pool_remaining' => $preview['available'],
+            'pool_label' => $this->stock->quantityPhrase($preview['available'], $product),
+            'legs' => $preview['legs'],
+            'scanned_barcode' => $barcode,
+            'warnings' => $this->poolWarnings($product, $preview['qty'], $preview['available'], $barcode),
+        ]);
+    }
+
+    /**
+     * ⚠⚠ THE GUARDS. A valid check digit is not proof of a correct read, and a typed
+     * number is not proof of anything at all — and with the approval switch off a take-out
+     * posts to expenses immediately, so this is where a wrong quantity is caught.
+     *
+     * Each is a WARNING, not a refusal: the person at the shelf can see the packet and we
+     * cannot. Confirming one is a deliberate act, and `takeOut` demands the confirmation
+     * back before it will write.
+     */
+    private function poolWarnings(SupplyProductModel $product, float $qty, float $available, ?string $barcode): array
+    {
+        $out = [];
+
+        // 1. Wildly unlike what this product's packets normally weigh. Median, not mean —
+        //    one wild reading must not drag the baseline far enough to accept the next.
+        $median = $this->stock->recentTakeoutMedian($product);
+        if ($median > 0 && abs($qty - $median) >= 1 && ($qty >= $median * 4 || $qty <= $median / 4)) {
+            $out[] = [
+                'code' => 'unusual_qty',
+                'title' => 'Unusual weight',
+                'message' => $this->stock->quantityPhrase($qty, $product) . ' — the packets taken out recently '
+                    . 'were around ' . $this->stock->quantityPhrase($median, $product)
+                    . '. A label can misread and still look valid.',
+            ];
+        }
+
+        // 2. Most of the shelf in one go — the tray label scanned by mistake, the exact
+        //    Sep-17 shape where one scan took a whole 26.97 kg bale.
+        //
+        //    ⚠ A FRACTION ALONE IS A BAD SIGNAL, and a test caught it: with two packets
+        //    left, taking one is exactly 50 % and perfectly normal, and the last packet of
+        //    a pool is 100 %. So the quantity must ALSO be bale-sized in absolute terms
+        //    (the owner's bales are 10-28 kg, his packets about 1.5) and unlike what this
+        //    product normally gives up. Otherwise the guard cries wolf every time a pool
+        //    runs low, and a guard people learn to click through protects nothing.
+        $baleLike = $qty >= 5.0;
+        $unlikeUsual = $median <= 0 || $qty > $median * 2;
+
+        if ($available > 0 && $qty >= $available * 0.5 && $baleLike && $unlikeUsual) {
+            $out[] = [
+                'code' => 'most_of_shelf',
+                'title' => 'That is most of the shelf',
+                'message' => $this->stock->quantityPhrase($qty, $product) . ' out of '
+                    . $this->stock->quantityPhrase($available, $product)
+                    . '. Is this one packet, or did you scan the whole bale by mistake?',
+            ];
+        }
+
+        // 3. The same label, a moment ago. Two packets of the same weight print IDENTICAL
+        //    labels, so this is legitimate as often as it is a double read — ask, never block.
+        $twin = $this->stock->sameLabelRecently($product, $barcode);
+        if ($twin) {
+            $mins = max(1, (int) round($twin->taken_at->diffInMinutes(now())));
+            $out[] = [
+                'code' => 'same_label',
+                'title' => 'This label went out already',
+                'message' => 'The same label was taken out ' . $mins . ' minute(s) ago. Another packet of the '
+                    . 'same weight, or the same one again?',
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
      * Decode a scale label for the INTAKE form, so the web page can show the weight of
      * each packet as it is scanned without re-implementing the EAN maths in JavaScript.
      * (The mobile app decodes locally with its own unit-tested `barcodeDecode.js`; both
@@ -905,8 +1155,40 @@ class SupplyStorageController extends Controller
             'packet_id' => 'nullable|integer',
             'qty' => 'nullable|numeric|min:0.001',
             'source' => 'nullable|in:scan,manual',
+            'scanned_barcode' => 'nullable|string|max:40',
+            'confirmed_warnings' => 'nullable|array|max:10',
+            'confirmed_warnings.*' => 'string|max:40',
             'note' => 'nullable|string|max:255',
         ]);
+
+        // ⚠⚠ THE GUARDS ARE RE-RUN HERE, not trusted from the client.
+        // The client shows them and asks; the server decides. A stale APK, a page with the
+        // JavaScript disabled, or a hand-made request must not be able to post a quantity
+        // that nobody looked at — and with the approval switch off this lands in expenses
+        // immediately, so this is the last check there is.
+        $product = SupplyProductModel::findOrFail($validated['product_id']);
+        if ($product->isPooled()) {
+            $qty = round((float) ($validated['qty'] ?? 0), 3);
+            $confirmed = $validated['confirmed_warnings'] ?? [];
+            $warnings = $this->poolWarnings(
+                $product, $qty,
+                $this->stock->onHand($product),
+                $validated['scanned_barcode'] ?? null
+            );
+            $unconfirmed = array_values(array_filter(
+                $warnings,
+                fn ($w) => !in_array($w['code'], $confirmed, true)
+            ));
+
+            if ($unconfirmed) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'needs_confirmation',
+                    'message' => $unconfirmed[0]['message'],
+                    'warnings' => $unconfirmed,
+                ], 409);
+            }
+        }
 
         try {
             $takeout = $this->stock->takeOut($validated, auth()->id());
@@ -975,6 +1257,143 @@ class SupplyStorageController extends Controller
         });
 
         return response()->json(['success' => true, 'message' => 'Undone — it is back in Storage.']);
+    }
+
+    /**
+     * Price a TYPED quantity before it is taken out — the manual twin of resolveScan.
+     *
+     * A label tears, smudges, or the vendor's packet never carried one. Without this the
+     * store simply stops, so typing is open to everyone who can take out; the guards and
+     * the "(typed)" marking on every row are what carry the risk (see the round-3 plan).
+     */
+    public function quoteTakeout(Request $request)
+    {
+        if (!$this->hasAccess()) {
+            return $this->deny();
+        }
+
+        $validated = $request->validate([
+            'product_id' => 'required|integer|exists:t_fin_supply_product,id',
+            'qty' => 'required|numeric|min:0.001',
+        ]);
+
+        $product = SupplyProductModel::findOrFail($validated['product_id']);
+        if (!$product->isPooled()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That product is taken out by scanning a packet, not by typing a quantity.',
+            ], 422);
+        }
+
+        return $this->poolQuote($product, round((float) $validated['qty'], 3), null);
+    }
+
+    /**
+     * ⭐ Delete a take-out from the Storage screen itself.
+     *
+     * `manage_supplies_storage` — Taimur and Shabib — which is deliberately WIDER than the
+     * general expense-delete rule (L2, Taimur alone). Owner ruling: this money is the stock
+     * account, not a till, and a mis-scan at the shelf should not wait for one person.
+     */
+    public function deleteTakeout(Request $request, $takeoutId)
+    {
+        if (!$this->canManage()) {
+            return $this->deny('Storage stock');
+        }
+
+        $takeout = SupplyTakeoutModel::findOrFail($takeoutId);
+        $reason = trim((string) $request->input('reason')) ?: null;
+
+        try {
+            $result = $this->stock->deleteTakeout($takeout, auth()->id(), $reason);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        $product = SupplyProductModel::find($takeout->product_id);
+        $qtyLabel = $product ? $this->stock->quantityPhrase((float) $result['qty'], $product) : $result['qty'];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Deleted — ' . $qtyLabel . ' is back in Storage'
+                . ($result['cost'] > 0 ? ' and Rs ' . number_format($result['cost'], 0) . ' came off expenses' : '')
+                . '.',
+            'month_touched' => $result['month_touched'],
+        ]);
+    }
+
+    /** What changing a take-out's weight would do. Writes nothing. */
+    public function previewTakeoutEdit(Request $request, $takeoutId)
+    {
+        if (!$this->canManage()) {
+            return $this->deny('Storage stock');
+        }
+
+        $validated = $request->validate(['qty' => 'required|numeric|min:0.001']);
+        $takeout = SupplyTakeoutModel::findOrFail($takeoutId);
+        $product = SupplyProductModel::findOrFail($takeout->product_id);
+
+        $preview = $this->stock->previewTakeoutEdit($takeout, round((float) $validated['qty'], 3));
+
+        if (!$preview['ok']) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only ' . $this->stock->quantityPhrase($preview['available'], $product)
+                    . ' would be available for this take-out.',
+            ], 409);
+        }
+
+        return response()->json([
+            'success' => true,
+            'was_qty_label' => $this->stock->quantityPhrase($preview['was_qty'], $product),
+            'qty_label' => $this->stock->quantityPhrase($preview['qty'], $product),
+            'was_cost' => $preview['was_cost'],
+            'cost' => $preview['cost'],
+            'legs' => $preview['legs'],
+            'restates_earlier_month' => $preview['restates_earlier_month'],
+            'expense_month' => $preview['expense_month'],
+        ]);
+    }
+
+    /** Change a take-out's weight — see SupplyStockService::editTakeoutWeight. */
+    public function editTakeout(Request $request, $takeoutId)
+    {
+        if (!$this->canManage()) {
+            return $this->deny('Storage stock');
+        }
+
+        $validated = $request->validate([
+            'qty' => 'required|numeric|min:0.001',
+            'reason' => 'nullable|string|max:255',
+        ]);
+
+        $takeout = SupplyTakeoutModel::findOrFail($takeoutId);
+        $product = SupplyProductModel::findOrFail($takeout->product_id);
+
+        try {
+            $result = $this->stock->editTakeoutWeight(
+                $takeout,
+                round((float) $validated['qty'], 3),
+                auth()->id(),
+                $validated['reason'] ?? null
+            );
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Corrected to ' . $this->stock->quantityPhrase($result['qty'], $product)
+                . ' — Rs ' . number_format($result['cost'], 0)
+                . match ($result['crossed']) {
+                    'now_billable' => '. It now comes out of bought stock, so an expense was raised.',
+                    'now_free'     => '. It now comes out of opening stock, so the expense was removed.',
+                    default        => '.',
+                },
+            'qty' => $result['qty'],
+            'cost' => $result['cost'],
+            'month_touched' => $result['month_touched'],
+        ]);
     }
 
     /** The owner's switch: do take-outs queue for approval, or post immediately? */

@@ -423,12 +423,88 @@ class LocationService
      */
     public static function isValidCoordinates($latitude, $longitude): bool
     {
-        return is_numeric($latitude) && 
+        return is_numeric($latitude) &&
                is_numeric($longitude) &&
-               $latitude >= -90 && 
+               $latitude >= -90 &&
                $latitude <= 90 &&
-               $longitude >= -180 && 
+               $longitude >= -180 &&
                $longitude <= 180;
+    }
+
+    /**
+     * ⭐⭐ IS THIS FIX EVEN IN THE COUNTRY? (16-Sep-2026)
+     *
+     *    Three riders' phones reported Tiananmen Square, Beijing, at 4–32 m "accuracy" on the
+     *    same day: a mislocated Wi-Fi access point at the office, repeated for hours by a
+     *    background tracker that never switched the GPS on. A phantom fix reports EXCELLENT
+     *    accuracy, so every accuracy-based filter actively prefers it; only an absolute
+     *    geographic test catches the class. Pakistan spans roughly lat 23.6–37.1, lng 60.9–77.8;
+     *    the box is deliberately generous (Gwadar, Karachi and Gilgit are well inside) because
+     *    a false "abroad" would cost a real rider his check-in, while Beijing (39.9, 116.4),
+     *    Riyadh (24.7, 46.7) and Ottawa (45.4, −75.7) — the places phones have actually claimed —
+     *    are all far outside.
+     *
+     * ⚠ Valid coordinates and plausible coordinates are two different questions. `isValidCoordinates`
+     *   is "is this a point on Earth"; this is "could a Nizami Farms rider be standing there".
+     */
+    public const PK_LAT_MIN = 23.0;
+    public const PK_LAT_MAX = 37.5;
+    public const PK_LNG_MIN = 60.5;
+    public const PK_LNG_MAX = 78.5;
+
+    public static function isPlausibleFix($latitude, $longitude): bool
+    {
+        if (!self::isValidCoordinates($latitude, $longitude)) return false;
+        $lat = (float) $latitude; $lng = (float) $longitude;
+        return $lat >= self::PK_LAT_MIN && $lat <= self::PK_LAT_MAX
+            && $lng >= self::PK_LNG_MIN && $lng <= self::PK_LNG_MAX;
+    }
+
+    /** The one sentence every surface prints when a phone claims to be abroad. Roman Urdu: it is for the rider. */
+    public static function phantomFixMessage(): string
+    {
+        return 'Phone apni jagah Pakistan se BAHAR bata raha hai — yeh GPS ki ghalti hai. '
+             . 'Wi-Fi band karein, khule mein aa kar 20 second rukein, phir dobara koshish karein.';
+    }
+
+    /**
+     * 📶 OFFICE PRESENCE BY WI-FI (16-Sep-2026, item 5 of the GPS round).
+     *
+     *    Indoors the GPS cannot lock and the network fix is the very thing that lies — but a
+     *    phone CONNECTED to the office's own access point is, physically, within a few dozen
+     *    metres of it. That is presence, and it needs no coordinates at all.
+     *
+     *    Configured as ONE row in `t_fin_config`, key `OFFICE_WIFI_BSSIDS`, value a JSON map of
+     *    company-location id → list of BSSIDs (router MAC addresses, lower-case, colon-separated):
+     *        {"9": ["aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:00"], "10": ["11:22:33:44:55:66"]}
+     *    Absent or empty ⇒ this feature is dormant and nothing changes. ⚠ BSSID, not SSID: a
+     *    network NAME can be typed into any phone's hotspot; the router's hardware address cannot.
+     *
+     * @return object|null the matching row of t_ops_company_locations, or null
+     */
+    public static function officeForWifi(?string $bssid): ?object
+    {
+        $bssid = strtolower(trim((string) $bssid));
+        // Android hands back this placeholder when it has no permission to reveal the real one.
+        if ($bssid === '' || $bssid === '02:00:00:00:00:00') return null;
+        try {
+            $raw = DB::table('t_fin_config')->where('config_key', 'OFFICE_WIFI_BSSIDS')->value('config_value');
+            if (!$raw) return null;
+            $map = json_decode($raw, true);
+            if (!is_array($map)) return null;
+            foreach ($map as $locationId => $list) {
+                foreach ((array) $list as $known) {
+                    if (strtolower(trim((string) $known)) === $bssid) {
+                        return DB::table('t_ops_company_locations')
+                            ->where('id', (int) $locationId)->where('is_active', 1)
+                            ->first(['id', 'location_name', 'latitude', 'longitude', 'radius_meters']);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('officeForWifi failed', ['error' => $e->getMessage()]);
+        }
+        return null;
     }
 
     /**

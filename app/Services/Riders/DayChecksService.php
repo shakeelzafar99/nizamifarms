@@ -412,7 +412,7 @@ class DayChecksService
             $pa = $this->computeGpsPhases($readings, $attObj, $date);
             $gpsWorst = $pa['worst_coverage'];
             if ($gpsWorst !== null) {
-                $gpsOk = $gpsWorst >= 90;
+                $gpsOk = $gpsWorst >= 80; // one band with the modals (web + phone): ✓ ≥80, ⚠ 60–79, ❌ <60
                 if (!$gpsOk) { $gpsNote = 'GPS off ' . $pa['moving_gap_min'] . ' min while moving on duty'; }
             }
         } catch (\Throwable $e) { $gpsOk = null; }

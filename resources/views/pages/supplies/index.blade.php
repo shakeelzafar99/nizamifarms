@@ -42,6 +42,12 @@
 .sup-pmeta { font-size:11px; color:#6B7280; margin-top:2px; }
 .sup-qty { font-size:26px; font-weight:700; color:#0F172A; margin:10px 0 2px; }
 .sup-val { font-size:13px; color:#6B7280; }
+.sup-pool-toggle { margin-top:6px; padding:0; background:none; border:0; font-size:12px; font-weight:600;
+                   color:#0EA5E9; cursor:pointer; }
+.sup-pool-toggle:hover { text-decoration:underline; }
+.sup-pool-detail { margin-top:6px; border-top:1px dashed #E5E7EB; padding-top:6px; font-size:12px; color:#4B5563; }
+.sup-pool-row { display:flex; justify-content:space-between; gap:8px; padding:3px 0; }
+.sup-pool-next { color:#065F46; font-weight:600; }
 .sup-chip { display:inline-block; padding:2px 8px; font-size:11px; font-weight:600; border-radius:999px; }
 .sup-chip-low { background:#FEF3C7; color:#92400E; }
 .sup-chip-mode { background:#F1F5F9; color:#475569; }
@@ -123,6 +129,7 @@
     <div class="sup-tabs">
         <button class="sup-tab sup-tab-on" id="supTabStock" onclick="supShowTab('stock')">Stock</button>
         <button class="sup-tab" id="supTabBatches" onclick="supShowTab('batches')">Purchases</button>
+        <button class="sup-tab" id="supTabTakeouts" onclick="supShowTab('takeouts')">Take-outs</button>
         <button class="sup-tab" id="supTabHistory" onclick="supShowTab('history')">History</button>
     </div>
 
@@ -162,6 +169,18 @@
                                 · {{ $row['packets_in_stock'] }} packet(s)
                             @endif
                         </div>
+                        {{-- ⭐ One line per product, and tapping it shows what the pool is made
+                             of. The owner keeps buying before the shelf runs out, so a weighed
+                             product is normally several purchases at once — he asked to be able
+                             to see which ones without leaving the card. --}}
+                        @if(($row['open_purchases'] ?? 0) > 1)
+                            <button type="button" class="sup-pool-toggle" onclick="supTogglePool({{ $p->id }}, this)">
+                                {{ $row['open_purchases'] }} purchases in this pool ▾
+                            </button>
+                            <div class="sup-pool-detail sup-none" id="supPool{{ $p->id }}"></div>
+                        @elseif(($row['open_purchases'] ?? 0) === 1)
+                            <div class="sup-pmeta" style="margin-top:4px;">from one purchase</div>
+                        @endif
                         @if($row['low_stock'])
                             <div style="margin-top:8px;"><span class="sup-chip sup-chip-low">Running low</span></div>
                         @endif
@@ -193,6 +212,11 @@
         <div id="supBatchList"></div>
     </div>
 
+    {{-- TAKE-OUTS — where a mistake gets fixed. Managers see everyone's. --}}
+    <div id="supPaneTakeouts" class="sup-none">
+        <div id="supTakeoutList"></div>
+    </div>
+
     {{-- HISTORY --}}
     <div id="supPaneHistory" class="sup-none">
         <div id="supHistoryList"></div>
@@ -205,6 +229,37 @@
      server (403) — a staff user should not carry a form in their DOM that they could open
      from the console only to be refused. Take-out below is for everyone. --}}
 @if($canManage)
+{{-- ⭐ CORRECT A TAKE-OUT'S WEIGHT. Money moves, so nothing happens until the preview has
+     been seen — and a month already reported is named before it is restated. --}}
+<div class="sup-modal" id="supEditModal">
+    <div class="sup-box">
+        <div class="sup-box-title" id="supEdTitle">Correct the weight</div>
+        <div class="sup-msg sup-msg-err" id="supEdMsg"></div>
+
+        <div class="sup-field">
+            <label class="sup-label">What it should be</label>
+            <input type="number" class="sup-input" id="supEdQty" min="0.001" step="0.001" oninput="document.getElementById('supEdApply').classList.add('sup-none')">
+            <div class="sup-hint">
+                The stock goes back and the right amount comes out again, priced from the same
+                purchases. The expense keeps its original date.
+            </div>
+        </div>
+
+        <div class="sup-field">
+            <label class="sup-label">Why (optional)</label>
+            <input type="text" class="sup-input" id="supEdReason" maxlength="255" placeholder="e.g. label misread">
+        </div>
+
+        <button class="sup-btn" onclick="supPreviewEditTakeout()">Show me what changes</button>
+        <div class="sup-staged" id="supEdPreview" style="margin-top:10px;"></div>
+
+        <div class="sup-modal-btns">
+            <button class="sup-btn" onclick="supClose('supEditModal')">Cancel</button>
+            <button class="sup-btn sup-btn-main sup-none" id="supEdApply" onclick="supApplyEditTakeout()">Apply the correction</button>
+        </div>
+    </div>
+</div>
+
 {{-- BOOK IN --}}
 <div class="sup-modal" id="supBookInModal">
     <div class="sup-box">
@@ -415,6 +470,24 @@
             <input type="text" class="sup-input" id="supPrBarcode" maxlength="40" placeholder="Scan it, or type it">
         </div>
 
+        {{-- ⭐ Only needed when the INNER packets carry a vendor barcode with no weight in
+             it. If they are weighed on the Czerlop like everything else, leave both blank. --}}
+        <div class="sup-two sup-none" id="supPrPacketField">
+            <div class="sup-field">
+                <label class="sup-label">Inner packet barcode (optional)</label>
+                <input type="text" class="sup-input" id="supPrPacketBarcode" maxlength="40" placeholder="Scan one packet">
+            </div>
+            <div class="sup-field">
+                <label class="sup-label">One packet weighs (kg)</label>
+                <input type="number" class="sup-input" id="supPrPacketKg" min="0.001" step="0.001" placeholder="e.g. 1.5">
+            </div>
+            <div class="sup-hint" style="grid-column:1/-1;">
+                Fill these in only if the small packets have the vendor's own barcode, which carries no
+                weight. One scan of it then takes this many kg off the shelf. If each packet is weighed
+                on the scale instead, leave both blank.
+            </div>
+        </div>
+
         <div class="sup-field sup-none" id="supPrPiecesField">
             <label class="sup-label">Pieces per packet (optional)</label>
             <input type="number" class="sup-input" id="supPrPiecesPer" min="1" step="1" placeholder="e.g. 50">
@@ -565,13 +638,106 @@
 
     // ---------- tabs ----------
     window.supShowTab = function (tab) {
-        ['stock', 'batches', 'history'].forEach(function (t) {
+        ['stock', 'batches', 'takeouts', 'history'].forEach(function (t) {
             show('supPane' + t.charAt(0).toUpperCase() + t.slice(1), t === tab);
             var btn = document.getElementById('supTab' + t.charAt(0).toUpperCase() + t.slice(1));
             if (btn) { btn.classList.toggle('sup-tab-on', t === tab); }
         });
         if (tab === 'batches') { supLoadBatches(); }
+        if (tab === 'takeouts') { supLoadTakeouts(); }
         if (tab === 'history') { supLoadHistory(); }
+    };
+
+    /* ⭐ The take-outs list — the screen where a mistake gets fixed without anyone going
+       near the Expenses page. A manager sees everyone's; a store user sees his own. */
+    window.supLoadTakeouts = function () {
+        var box = document.getElementById('supTakeoutList');
+        box.innerHTML = '<div class="sup-empty">Loading…</div>';
+        get('/supplies/my-takeouts').then(function (r) {
+            var rows = (r.data && r.data.takeouts) || [];
+            if (!rows.length) { box.innerHTML = '<div class="sup-empty">No take-outs yet.</div>'; return; }
+            box.innerHTML =
+                (r.data.shows_everyone ? '<div class="sup-hint" style="margin-bottom:8px;">Showing everyone\'s take-outs.</div>' : '') +
+                '<div class="sup-tablewrap"><table class="sup-table"><thead><tr>' +
+                '<th>When</th><th>Item</th><th>Out</th><th>Cost</th><th>Who</th><th>Status</th><th></th>' +
+                '</tr></thead><tbody>' +
+                rows.map(function (t) {
+                    var gone = t.status === 'undone' || t.status === 'rejected';
+                    return '<tr' + (gone ? ' style="opacity:.55;"' : '') + '>' +
+                        '<td>' + esc(t.at || '') + '</td>' +
+                        '<td>' + esc(t.product_name || '') +
+                            (t.typed ? ' <span class="sup-pmeta">(typed)</span>' : '') + '</td>' +
+                        '<td>' + esc(t.qty_label || (trimQty(t.qty) + ' ' + (t.unit || ''))) + '</td>' +
+                        '<td>' + (t.cost > 0 ? 'Rs ' + money(t.cost) : '—') + '</td>' +
+                        '<td>' + esc(t.taken_by_name || (t.mine ? 'you' : '')) + '</td>' +
+                        '<td>' + esc(t.status) + (t.request_number ? '<div class="sup-pmeta">' + esc(t.request_number) + '</div>' : '') + '</td>' +
+                        '<td style="white-space:nowrap;">' +
+                          (t.can_edit ? '<button class="sup-btn" onclick="supOpenEditTakeout(' + t.id + ',' + Number(t.qty) + ',\'' + esc(t.product_name) + '\')">Edit weight</button> ' : '') +
+                          (t.can_delete ? '<button class="sup-btn sup-btn-danger" onclick="supDeleteTakeout(' + t.id + ',\'' + esc(t.qty_label || '') + '\')">Delete</button>' : '') +
+                        '</td></tr>';
+                }).join('') + '</tbody></table></div>';
+        });
+    };
+
+    window.supDeleteTakeout = function (id, label) {
+        if (!window.confirm('Delete this take-out?\n\n' + label + ' goes back into Storage, and if it was ' +
+                            'already booked to expenses that entry is reversed.\n\nThis is recorded with your name.')) { return; }
+        post('/supplies/take-out/' + id + '/delete', { reason: 'Deleted from the Storage page' }).then(function (r) {
+            if (!r.ok || !r.data.success) { window.alert((r.data && r.data.message) || 'Could not delete it.'); return; }
+            window.alert(r.data.message);
+            window.location.reload();
+        }).catch(function () { window.alert('Could not reach the server. Nothing was changed.'); });
+    };
+
+    /* ⭐ Editing a weight moves money, so the figure is previewed BEFORE anything happens —
+       and if it would restate a month already reported, it says so. */
+    var editingTakeout = null;
+    window.supOpenEditTakeout = function (id, qty, name) {
+        editingTakeout = id;
+        msg('supEdMsg', '');
+        document.getElementById('supEdTitle').textContent = 'Correct the weight — ' + name;
+        document.getElementById('supEdQty').value = qty;
+        document.getElementById('supEdReason').value = '';
+        document.getElementById('supEdPreview').innerHTML = 'Change the figure and press <b>Show me what changes</b>.';
+        document.getElementById('supEdApply').classList.add('sup-none');
+        open('supEditModal');
+    };
+
+    window.supPreviewEditTakeout = function () {
+        var qty = parseFloat(document.getElementById('supEdQty').value || '0');
+        if (!(qty > 0)) { msg('supEdMsg', 'Enter a quantity above zero — use Delete to reverse it entirely.'); return; }
+        msg('supEdMsg', '');
+        post('/supplies/take-out/' + editingTakeout + '/preview-edit', { qty: qty }).then(function (r) {
+            var d = r.data || {};
+            if (!r.ok || !d.success) { msg('supEdMsg', d.message || 'Could not work that out.'); return; }
+            document.getElementById('supEdPreview').innerHTML =
+                '<div><b>' + esc(d.was_qty_label) + '</b> · Rs ' + money(d.was_cost) +
+                '  →  <b>' + esc(d.qty_label) + '</b> · Rs ' + money(d.cost) + '</div>' +
+                '<div class="sup-pmeta" style="margin-top:6px;">' +
+                  (d.legs || []).map(function (l) {
+                      return 'from the purchase of ' + esc(l.purchase_date) + ': ' + trimQty(l.qty) + ' · Rs ' + money(l.cost);
+                  }).join('<br>') + '</div>' +
+                (d.restates_earlier_month
+                    ? '<div style="margin-top:8px;color:#B45309;"><b>Careful:</b> this expense is dated ' +
+                      esc(d.expense_month) + ', a month that has already been reported. Correcting it changes ' +
+                      'that month\'s packaging cost — which is the honest figure, but it will move.</div>'
+                    : '');
+            document.getElementById('supEdApply').classList.remove('sup-none');
+        });
+    };
+
+    window.supApplyEditTakeout = function () {
+        var qty = parseFloat(document.getElementById('supEdQty').value || '0');
+        var btn = document.getElementById('supEdApply');
+        btn.disabled = true;
+        post('/supplies/take-out/' + editingTakeout + '/edit', {
+            qty: qty, reason: document.getElementById('supEdReason').value || null
+        }).then(function (r) {
+            btn.disabled = false;
+            if (!r.ok || !r.data.success) { msg('supEdMsg', (r.data && r.data.message) || 'Could not save.'); return; }
+            window.alert(r.data.message);
+            window.location.reload();
+        }).catch(function () { btn.disabled = false; msg('supEdMsg', 'Could not reach the server. Nothing was changed.'); });
     };
 
     // ---------- catalogue ----------
@@ -623,7 +789,15 @@
                     '<td>' + esc(status) + '</td>' +
                     '<td style="white-space:nowrap;">' +
                         (b.can_correct ? '<button class="sup-btn" onclick="supOpenCorrect(' + Number(b.id) + ',' + Number(b.total_cost) + ')">Fix price</button> ' : '') +
-                        (b.can_void ? '<button class="sup-btn sup-btn-danger" onclick="supVoidBatch(' + Number(b.id) + ')">Void</button>' : '') +
+                        (b.can_void
+                            ? '<button class="sup-btn sup-btn-danger" onclick="supVoidBatch(' + Number(b.id) + ')">Void</button>'
+                            // ⭐ Not a dead button — say WHY it cannot be voided and what to do
+                            // instead. A purchase that has been drawn on has to have its
+                            // take-outs deleted first (Take-outs tab), or its price fixed.
+                            : (Number(b.takeouts_from_it) > 0
+                                ? '<span class="sup-pmeta">' + Number(b.takeouts_from_it) +
+                                  ' take-out(s) came out of this — delete those first, or use Fix price</span>'
+                                : '')) +
                     '</td>' +
                     '</tr>';
             });
@@ -971,6 +1145,40 @@
     };
 
     // ---------- take out ----------
+    /* ⭐ What the pool is made of. The owner keeps buying before the shelf runs out, so a
+       weighed product is normally two or three purchases at once — and FIFO means the
+       OLDEST is what the next packet will be priced from. Showing which one, and at what
+       rate, is the difference between "trust it" and "see it". */
+    window.supTogglePool = function (productId, btn) {
+        var box = document.getElementById('supPool' + productId);
+        if (!box) { return; }
+        var open = !box.classList.contains('sup-none');
+        if (open) {
+            box.classList.add('sup-none');
+            btn.textContent = btn.textContent.replace('▴', '▾');
+            return;
+        }
+        box.classList.remove('sup-none');
+        btn.textContent = btn.textContent.replace('▾', '▴');
+        box.innerHTML = '<div class="sup-pool-row">Loading…</div>';
+
+        get('/supplies/' + encodeURIComponent(productId) + '/batches').then(function (r) {
+            var open = ((r.data && r.data.batches) || []).filter(function (b) { return b.is_active; });
+            if (!open.length) { box.innerHTML = '<div class="sup-pool-row">Nothing on the shelf.</div>'; return; }
+            // oldest first — that is the order they will be drawn down in
+            open.sort(function (a, b) { return String(a.purchase_date).localeCompare(String(b.purchase_date)) || a.id - b.id; });
+            box.innerHTML = open.map(function (b, i) {
+                var rate = b.qty_total > 0 ? (b.total_cost / b.qty_total) : 0;
+                return '<div class="sup-pool-row' + (i === 0 ? ' sup-pool-next' : '') + '">' +
+                    '<span>' + (i === 0 ? '→ ' : '') + esc(b.qty_label) + ' left of ' + trimQty(b.qty_total) +
+                    ' · bought ' + esc(String(b.purchase_date || '').slice(0, 10)) +
+                    (b.paid_from ? ' · ' + esc(b.paid_from) : '') + '</span>' +
+                    '<span>Rs ' + money(b.cost_remaining) + ' @ Rs ' + money(rate) + '/unit</span></div>';
+            }).join('') +
+            '<div class="sup-pool-row" style="color:#9CA3AF;">The next take-out comes off the one marked →.</div>';
+        });
+    };
+
     window.supOpenTakeOut = function (productId) {
         msg('supToMsg', '');
         takeOut = { productId: productId, mode: null, packets: [], chosen: null };
@@ -982,13 +1190,36 @@
             var p = productById(productId);
             if (!p) { body.innerHTML = '<div class="sup-empty">Product not found.</div>'; return; }
             takeOut.mode = p.mode;
+            takeOut.pooled = (p.mode === 'weight' || p.mode === 'pieces');
             document.getElementById('supToTitle').textContent = 'Take out — ' + p.name;
 
-            if (p.mode === 'pieces') {
+            // ⭐⭐ A POOLED product is taken out by QUANTITY, not by choosing a packet.
+            // The bale was booked under one tray label; what leaves is the small packet in
+            // your hand. Scan it (the server reads the weight off the label) or type it —
+            // a torn label must never stop the store.
+            if (takeOut.pooled) {
+                var isWeight = p.mode === 'weight';
                 body.innerHTML =
-                    '<div class="sup-field"><label class="sup-label">How many?</label>' +
-                    '<input type="number" class="sup-input" id="supToQty" min="1" step="1" value="1"></div>' +
-                    '<div class="sup-hint">It comes off the oldest purchase first, so the cost is what was actually paid for it.</div>';
+                    '<div class="sup-field">' +
+                      '<label class="sup-label">Scan the packet</label>' +
+                      '<input type="text" class="sup-input" id="supToScan" autocomplete="off"' +
+                        ' placeholder="Scan the label, or type the ' + (isWeight ? 'weight' : 'count') + ' below"' +
+                        ' onkeydown="supToScanKey(event)">' +
+                    '</div>' +
+                    '<div class="sup-field">' +
+                      '<label class="sup-label">' + (isWeight ? 'Weight (kg)' : 'How many?') + '</label>' +
+                      '<input type="number" class="sup-input" id="supToQty" min="0.001" step="' +
+                        (isWeight ? '0.001' : '1') + '" oninput="supToQuoteSoon()">' +
+                      '<div class="sup-hint" id="supToQuote">It comes off the oldest purchase first, so the cost is what was actually paid for it.</div>' +
+                    '</div>' +
+                    '<div class="sup-msg sup-msg-err sup-none" id="supToWarn"></div>';
+                document.getElementById('supToConfirm').disabled = false;
+                takeOut.confirmed = [];
+                takeOut.scanned = null;
+                setTimeout(function () {
+                    var i = document.getElementById('supToScan');
+                    if (i) { i.focus(); }
+                }, 120);
                 return;
             }
 
@@ -1015,11 +1246,82 @@
         });
     };
 
+    /* The scan box on a pooled take-out. The SERVER reads the weight off the label — the
+       page never re-implements the EAN maths, exactly as the intake box already works. */
+    window.supToScanKey = function (ev) {
+        if (ev.key !== 'Enter') { return; }
+        ev.preventDefault();
+        var input = ev.target;
+        var raw = (input.value || '').trim();
+        input.value = '';
+        if (!raw) { return; }
+
+        post('/supplies/resolve-scan', { barcode: raw }).then(function (r) {
+            var d = r.data || {};
+            if (!r.ok || !d.success) {
+                msg('supToMsg', d.message || 'Could not read that label.');
+                return;
+            }
+            if (Number(d.product && d.product.id) !== Number(takeOut.productId)) {
+                msg('supToMsg', 'That label is ' + esc((d.product || {}).name || 'another item') + '.');
+                return;
+            }
+            msg('supToMsg', '');
+            takeOut.scanned = d.scanned_barcode || raw;
+            document.getElementById('supToQty').value = d.qty;
+            supToShowQuote(d);
+        });
+    };
+
+    /* Price what has been typed, so the figure is on screen BEFORE the button is pressed.
+       Debounced — a person typing "1.25" would otherwise fire three requests. */
+    var quoteTimer = null;
+    window.supToQuoteSoon = function () {
+        takeOut.scanned = null;                       // typed now, not scanned
+        takeOut.confirmed = [];
+        if (quoteTimer) { clearTimeout(quoteTimer); }
+        quoteTimer = setTimeout(function () {
+            var qty = parseFloat((document.getElementById('supToQty') || {}).value || '0');
+            if (!(qty > 0)) { return; }
+            post('/supplies/take-out/quote', { product_id: takeOut.productId, qty: qty }).then(function (r) {
+                if (r.ok && r.data && r.data.success) { supToShowQuote(r.data); }
+                else { msg('supToMsg', (r.data && r.data.message) || ''); }
+            });
+        }, 350);
+    };
+
+    function supToShowQuote(d) {
+        var hint = document.getElementById('supToQuote');
+        if (hint) {
+            hint.innerHTML = '<b>' + esc(d.qty_label) + '</b> — ' +
+                (d.free ? 'no charge (already expensed)' : 'Rs ' + money(d.cost)) +
+                ' · of ' + esc(d.pool_label) + ' on the shelf' +
+                (d.capped ? ' <span style="color:#B45309;">(that is all that is left)</span>' : '');
+        }
+        var warn = document.getElementById('supToWarn');
+        takeOut.warnings = d.warnings || [];
+        if (warn) {
+            if (takeOut.warnings.length) {
+                warn.classList.remove('sup-none');
+                warn.innerHTML = takeOut.warnings.map(function (w) {
+                    return '<div><b>' + esc(w.title) + ':</b> ' + esc(w.message) + '</div>';
+                }).join('') + '<div style="margin-top:4px;">Press <b>Take out</b> again to confirm.</div>';
+            } else {
+                warn.classList.add('sup-none');
+                warn.innerHTML = '';
+            }
+        }
+    }
+
     window.supTakeOut = function () {
         var body = { product_id: takeOut.productId, source: 'manual' };
-        if (takeOut.mode === 'pieces') {
+        if (takeOut.pooled) {
             body.qty = parseFloat((document.getElementById('supToQty') || {}).value || '0');
-            if (!(body.qty > 0)) { msg('supToMsg', 'How many are you taking out?'); return; }
+            if (!(body.qty > 0)) { msg('supToMsg', 'How much are you taking out?'); return; }
+            if (takeOut.scanned) { body.scanned_barcode = takeOut.scanned; body.source = 'scan'; }
+            // ⚠ Confirmations are sent back BY CODE, and the server re-runs every guard
+            // against them. Pressing the button a second time is the deliberate act.
+            body.confirmed_warnings = (takeOut.warnings || []).map(function (w) { return w.code; });
         } else {
             var sel = document.getElementById('supToPacket');
             if (!sel || !sel.value) { msg('supToMsg', 'Nothing to take out.'); return; }
@@ -1031,6 +1333,17 @@
         post('/supplies/take-out', body).then(function (r) {
             btn.disabled = false;
             if (!r.ok || !r.data.success) {
+                // The server raised a guard the page had not shown yet (it re-checks
+                // everything, and a stale quote can miss one). Show it and let the next
+                // press confirm — never write behind a warning nobody has seen.
+                if (r.data && r.data.code === 'needs_confirmation') {
+                    supToShowQuote({
+                        qty_label: document.getElementById('supToQty').value,
+                        cost: 0, free: false, pool_label: '', warnings: r.data.warnings || []
+                    });
+                    msg('supToMsg', '');
+                    return;
+                }
                 msg('supToMsg', (r.data && r.data.message) || 'Could not take it out.');
                 return;
             }
@@ -1059,6 +1372,8 @@
             document.getElementById('supPrMode').value = p ? p.mode : 'weight';
             document.getElementById('supPrPlu').value = p && p.plu ? p.plu : '';
             document.getElementById('supPrBarcode').value = p && p.barcode ? p.barcode : '';
+            document.getElementById('supPrPacketBarcode').value = p && p.packet_barcode ? p.packet_barcode : '';
+            document.getElementById('supPrPacketKg').value = p && p.packet_kg ? p.packet_kg : '';
             document.getElementById('supPrPiecesPer').value = p && p.pieces_per_packet ? p.pieces_per_packet : '';
             document.getElementById('supPrLow').value = p && p.low_stock_qty ? p.low_stock_qty : '';
             document.getElementById('supPrActive').value = (p && !(Number(p.is_active) === 1 || p.is_active === true)) ? '0' : '1';
@@ -1091,6 +1406,7 @@
         var m = document.getElementById('supPrMode').value;
         show('supPrPluField', m === 'weight');
         show('supPrBarcodeField', m === 'scan');
+        show('supPrPacketField', m === 'weight');
         show('supPrPiecesField', m === 'pieces');
     };
 
@@ -1100,6 +1416,10 @@
             mode: document.getElementById('supPrMode').value,
             plu: parseInt(document.getElementById('supPrPlu').value, 10) || null,
             barcode: document.getElementById('supPrBarcode').value.trim() || null,
+            // Additive, so the round-2 "frozen once it has stock" lock deliberately allows
+            // these two to be filled in later — nothing already on the shelf is re-read.
+            packet_barcode: document.getElementById('supPrPacketBarcode').value.trim() || null,
+            packet_kg: parseFloat(document.getElementById('supPrPacketKg').value) || null,
             pieces_per_packet: parseInt(document.getElementById('supPrPiecesPer').value, 10) || null,
             expense_config_id: parseInt(document.getElementById('supPrCategory').value, 10) || null,
             low_stock_qty: parseFloat(document.getElementById('supPrLow').value) || null,
