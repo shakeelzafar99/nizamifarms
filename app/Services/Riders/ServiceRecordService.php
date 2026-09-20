@@ -653,6 +653,15 @@ class ServiceRecordService
             }
         }
 
+        // ⭐⭐ THE SAME ODOMETER RULE EVERY CLAIM ANSWERS (Sep-20 2026). Magnitude alone let a
+        //    service typed on 19-Sep, dated 15-Sep, carry the 19th's 52,766 in — and from then
+        //    on every honest claim from the 16th was refused against it. Judged against the
+        //    SERVICE date, exactly as a claim is judged against its own date, and it refuses
+        //    only on positive evidence: a bike with no readings around that date passes.
+        if ($bad = $this->odometerObjection($riderId, $meter, $date, $vehicleId)) {
+            return ['ok' => false, 'service_log_id' => null, 'moved_clock' => false, 'message' => $bad];
+        }
+
         try {
             $logId = null;
 
@@ -802,6 +811,21 @@ class ServiceRecordService
                 $update['service_date'] = $in['date'];
             }
             if (count($update) === 1) return ['ok' => false, 'message' => 'Nothing to change.'];
+
+            // ⭐⭐ A CORRECTION IS JUDGED LIKE A NEW ENTRY (Sep-20 2026) — on the pair it
+            //    will LEAVE BEHIND (new meter or old, new date or old), with this row itself
+            //    left out of the window so it cannot bound its own correction. Without this
+            //    the Edit door could "fix" log #28 into another impossible pair in silence.
+            if (isset($update['meter']) || isset($update['service_date'])) {
+                $bad = $this->odometerObjection(
+                    (int) $row->user_id,
+                    (int) ($update['meter'] ?? $row->meter),
+                    (string) ($update['service_date'] ?? substr((string) $row->service_date, 0, 10)),
+                    self::logVehicleOf($row),
+                    $logId
+                );
+                if ($bad) return ['ok' => false, 'message' => $bad];
+            }
 
             // ⭐ The correction is part of the record. Without this an audit cannot tell a
             //   figure someone chose from one someone later fixed.
@@ -1027,6 +1051,26 @@ class ServiceRecordService
      *    right for none of those. The stamp is only a fallback seed anyway (the real countdown
      *    is derived), but a stale one shows up on riders with no registered machine.
      */
+    /**
+     * The one odometer rule, asked of a service reading — `FuelClaimRules::odometerObjection`,
+     * the same window every petrol and maintenance claim is judged by on every surface.
+     *
+     * ⚠ FAILS OPEN on an error, exactly like the magnitude test above it: a guard must never be
+     *   the reason a real service cannot be recorded. It refuses only on positive evidence.
+     */
+    private function odometerObjection(int $riderId, int $meter, string $date, ?int $vehicleId,
+                                       ?int $ignoreLogId = null): ?string
+    {
+        try {
+            return (new FuelClaimRules())->odometerObjection($riderId, $meter, $date, $vehicleId, $ignoreLogId);
+        } catch (\Throwable $e) {
+            Log::warning('ServiceRecordService: odometer guard failed open', [
+                'rider' => $riderId, 'meter' => $meter, 'date' => $date, 'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
     private function rebuildProfileStamp(int $riderId): void
     {
         try {

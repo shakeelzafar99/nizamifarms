@@ -4378,7 +4378,13 @@ class VehicleService
         return $on;
     }
 
-    public function meterWindowFor(int $vehicleId, string $date): ?array
+    /**
+     * @param  ?int $ignoreServiceLogId  ⭐ A service record being CORRECTED must not bound
+     *         itself (Sep-20 2026). Re-dating log #28 from 15-Sep to 19-Sep would otherwise be
+     *         judged against a floor that log #28's own old row had set. Only the service-log
+     *         source honours it — nothing else in this window is a service record.
+     */
+    public function meterWindowFor(int $vehicleId, string $date, ?int $ignoreServiceLogId = null): ?array
     {
         if (!$this->available()) return null;
 
@@ -4390,7 +4396,9 @@ class VehicleService
         //    (rider 95 / August): 10 calls, only 6 distinct.
         // ⚠ Flushed by `flushServiceMemo()` — unlike the schema memo, this IS
         //   evidence-derived, so a reading saved mid-request must invalidate it.
-        $memoKey = $vehicleId . '|' . substr($date, 0, 10);
+        // ⚠ The ignored row is part of the key: the same (machine, date) with and
+        //   without it are two different answers.
+        $memoKey = $vehicleId . '|' . substr($date, 0, 10) . ($ignoreServiceLogId ? '|!' . $ignoreServiceLogId : '');
         if (array_key_exists($memoKey, self::$windowMemo)) {
             return self::$windowMemo[$memoKey];
         }
@@ -4547,8 +4555,9 @@ class VehicleService
                     $svcBefore = 0; $svcAfter = null;
                     foreach (DB::table('t_fleet_service_log')
                                 ->whereNotNull('meter')->where('meter', '>', self::MIN_METER)
+                                ->when($ignoreServiceLogId, fn ($q) => $q->where('id', '<>', $ignoreServiceLogId))
                                 ->orderByDesc('meter')->limit(120)
-                                ->get(array_merge(['user_id', 'meter', 'service_date'],
+                                ->get(array_merge(['id', 'user_id', 'meter', 'service_date'],
                                                   ServiceRecordService::logVehicleCols())) as $sl) {
                         $d = substr((string) $sl->service_date, 0, 10);
                         // ⭐ Stamp first — same rule as every other per-machine reader.

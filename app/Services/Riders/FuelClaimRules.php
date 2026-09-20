@@ -424,9 +424,21 @@ class FuelClaimRules
      * "latest known" — a service filed for yesterday is legitimately lower than
      * today's odometer, and comparing to the latest rejected exactly those.
      */
-    private function checkOdometer(int $userId, int $meter, string $date, ?int $vehicleId = null): ?string
+    private function checkOdometer(int $userId, int $meter, string $date, ?int $vehicleId = null,
+                                   ?int $ignoreServiceLogId = null): ?string
     {
-        $win = $this->odometerWindow($userId, $date, $vehicleId);
+        $win = $this->odometerWindow($userId, $date, $vehicleId, $ignoreServiceLogId);
+
+        // ⭐⭐ NAME THE RECORD THAT SET THE BOUND (Sep-20 2026). Kanan's honest 52,702 on
+        //    18-Sep was refused against "52,766 recorded before 2026-09-18", and nobody could
+        //    find which record said that — it was a service log typed on the 19th and dated
+        //    the 15th. A bound with no pointer is a dead end, and the docblock below already
+        //    knows what a dead end gets: a fake higher reading. Fails soft: no pointer, no
+        //    suffix, the message stands as it always did.
+        $whence = fn (string $side) => $this->describeReading(
+            $userId, $vehicleId, (int) $win[$side === 'floor' ? 'floor' : 'ceil'],
+            $side, $date, $ignoreServiceLogId
+        );
 
         if ($win['floor'] !== null && $meter < $win['floor'] - self::METER_SLACK_KM) {
             // ⭐ Teach the remedy, don't just refuse. The most common legitimate hit
@@ -441,18 +453,172 @@ class FuelClaimRules
                 . number_format($win['floor']) . ' km recorded before ' . $date . '. '
                 . 'If the fill or service actually happened on an earlier day, change the '
                 . 'request\'s date to that day — the reading is checked against the date it is filed for. '
-                . 'Otherwise please check the number.';
+                . 'Otherwise please check the number.'
+                . $whence('floor');
         }
         if ($win['ceil'] !== null && $meter > $win['ceil'] + self::METER_SLACK_KM) {
             return 'That reading (' . number_format($meter) . ' km) is higher than this bike\'s '
-                . number_format($win['ceil']) . ' km recorded after ' . $date . '. Please check the number.';
+                . number_format($win['ceil']) . ' km recorded after ' . $date . '. Please check the number.'
+                . $whence('ceil');
         }
         if ($win['ceil'] === null && $win['floor'] !== null
             && $meter > $win['floor'] + self::MAX_FORWARD_JUMP_KM) {
             return 'That reading (' . number_format($meter) . ' km) is far above this bike\'s last '
-                . number_format($win['floor']) . ' km. Please check the number.';
+                . number_format($win['floor']) . ' km. Please check the number.'
+                . $whence('floor');
         }
         return null;
+    }
+
+    /**
+     * ⭐ THE SAME ODOMETER RULE, FOR A SERVICE RECORD (Sep-20 2026).
+     *
+     * `checkOdometer` judged every petrol and maintenance CLAIM, on every surface — but the
+     * "Record service" door and its Edit door judged only magnitude (`readingPlausibleFor`,
+     * "could this be this bike's odometer at all"). So a service typed on 19-Sep, dated
+     * 15-Sep, carrying the 19th's 52,766 sailed in, and then bounded every honest claim from
+     * the 16th onward. One rule, one definition: the service door now asks this.
+     *
+     * @param  ?int $ignoreServiceLogId  the row being EDITED — it must not bound itself
+     * @return ?string  the refusal, or null when the reading sits inside the window
+     */
+    public function odometerObjection(int $userId, int $meter, string $date, ?int $vehicleId = null,
+                                      ?int $ignoreServiceLogId = null): ?string
+    {
+        return $this->checkOdometer($userId, $meter, $this->dateOf($date), $vehicleId, $ignoreServiceLogId);
+    }
+
+    /**
+     * Which record carries the reading that set the floor / ceiling — so the refusal can
+     * point at it instead of quoting a number nobody can locate.
+     *
+     * Looked up by EXACT value on the same sources `odometerWindow` / `meterWindowFor` read,
+     * on the same side of the same date. Ordered by how likely each is to be the typo the
+     * manager is hunting: a service record (typed by hand, editable on the Bikes page), a
+     * claim (editable there too), the vehicle meter log, an attendance meter, a handover
+     * reading. Only ever called while a refusal is being built, so its queries cost nothing
+     * on the happy path.
+     *
+     * ⚠ FAILS SOFT, always. A missing table, an absent column, a value that matches nothing
+     *   (the window applies slack and drops implausible candidates, so the bound may not be
+     *   a raw row value) — every one of those returns '' and the message stands as before.
+     *
+     * @param  string $side  'floor' (rows dated BEFORE $date) or 'ceil' (AFTER)
+     */
+    private function describeReading(int $userId, ?int $vehicleId, int $value, string $side,
+                                     string $date, ?int $ignoreServiceLogId = null): string
+    {
+        if ($value <= 0) return '';
+        $op = $side === 'floor' ? '<' : '>';
+        try {
+            // The machine the window was built for — the same resolution `odometerWindow` uses.
+            if ($vehicleId === null) {
+                try {
+                    $res = new VehicleResolver();
+                    if ($res->rulesEnabled()) $vehicleId = $res->vehicleForDay($userId, $date) ?: null;
+                } catch (\Throwable $e) { /* rider-keyed lookup below */ }
+            }
+            $forMachine = function ($q, string $userCol = 'user_id', string $vehCol = 'vehicle_id')
+                          use ($userId, $vehicleId) {
+                return $q->where(function ($w) use ($userId, $vehicleId, $userCol, $vehCol) {
+                    $w->where($userCol, $userId);
+                    if ($vehicleId) $w->orWhere($vehCol, $vehicleId);
+                });
+            };
+            $schema = \Illuminate\Support\Facades\Schema::class;
+            $hasTbl = fn (string $t) => $schema::hasTable($t);
+            $hasCol = fn (string $t, string $c) => $schema::hasColumn($t, $c);
+            $fix = ' Edit or remove it on the Bikes page if that record is wrong.';
+
+            // 1. A service record — the one source that was never judged on entry until now.
+            if ($hasTbl('t_fleet_service_log')) {
+                $q = DB::table('t_fleet_service_log as l')
+                    ->leftJoin('t_fleet_maintenance_types as t', 't.id', '=', 'l.maintenance_type_id')
+                    ->where('l.meter', $value)
+                    ->where('l.service_date', $op, $date)
+                    ->when($ignoreServiceLogId, fn ($q) => $q->where('l.id', '<>', $ignoreServiceLogId));
+                $q = $hasCol('t_fleet_service_log', 'vehicle_id')
+                    ? $forMachine($q, 'l.user_id', 'l.vehicle_id')
+                    : $q->where('l.user_id', $userId);
+                $r = $q->orderByDesc('l.id')->first(['l.id', 'l.service_date', 't.type_name']);
+                if ($r) {
+                    return ' It comes from service record #' . $r->id
+                        . ($r->type_name ? ' (' . $r->type_name . ')' : '')
+                        . ' dated ' . substr((string) $r->service_date, 0, 10) . '.' . $fix;
+                }
+            }
+
+            // 2. A claim carrying an odometer.
+            $q = DB::table('t_req_master')
+                ->where('meter_at_fill', $value)
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->whereRaw('COALESCE(expense_date, DATE(created_at)) ' . $op . ' ?', [$date]);
+            $q = $hasCol('t_req_master', 'vehicle_id')
+                ? $forMachine($q, 'requester_user_id', 'vehicle_id')
+                : $q->where('requester_user_id', $userId);
+            $r = $q->orderByDesc('id')->first(['id', 'request_number', 'expense_category', 'expense_date', 'created_at']);
+            if ($r) {
+                return ' It comes from claim ' . ($r->request_number ?: ('#' . $r->id))
+                    . ($r->expense_category ? ' (' . $r->expense_category . ')' : '')
+                    . ' dated ' . substr((string) ($r->expense_date ?: $r->created_at), 0, 10) . '.' . $fix;
+            }
+
+            // 3. The vehicle meter log (typed on the Vehicles page or the rider's My Vehicle).
+            if ($vehicleId && $hasTbl(VehicleService::T_METER_LOG)) {
+                $r = DB::table(VehicleService::T_METER_LOG)
+                    ->where('vehicle_id', $vehicleId)
+                    ->where('log_date', $op, $date)
+                    ->where(fn ($w) => $w->where('meter_start', $value)->orWhere('meter_end', $value))
+                    ->orderByDesc('id')->first(['log_date']);
+                if ($r) {
+                    return ' It comes from the vehicle meter log for '
+                        . substr((string) $r->log_date, 0, 10) . '.' . $fix;
+                }
+            }
+
+            // 4. An attendance meter — his own row, or one pointed at this machine.
+            $q = DB::table('t_ops_attendance')
+                ->where('attendance_date', $op, $date)
+                ->where(fn ($w) => $w->where('meter_start', $value)
+                                     ->orWhere('meter_end', $value)
+                                     ->orWhere('meter_home', $value));
+            $stamps = $vehicleId && $hasCol('t_ops_attendance', 'meter_start_vehicle_id');
+            $q->where(function ($w) use ($userId, $vehicleId, $stamps, $hasCol) {
+                $w->where('user_id', $userId);
+                if ($vehicleId && $hasCol('t_ops_attendance', 'vehicle_id')) $w->orWhere('vehicle_id', $vehicleId);
+                if ($stamps) {
+                    $w->orWhere('meter_start_vehicle_id', $vehicleId)
+                      ->orWhere('meter_end_vehicle_id', $vehicleId)
+                      ->orWhere('meter_home_vehicle_id', $vehicleId);
+                }
+            });
+            $r = $q->orderByDesc('attendance_date')
+                   ->first(['user_id', 'attendance_date', 'meter_start', 'meter_end', 'meter_home']);
+            if ($r) {
+                $which = (int) $r->meter_start === $value ? 'start'
+                       : ((int) $r->meter_end === $value ? 'closing' : 'home');
+                $whose = (int) $r->user_id === $userId ? 'his' : 'another rider\'s';
+                return ' It comes from ' . $whose . ' attendance ' . $which . ' meter on '
+                    . substr((string) $r->attendance_date, 0, 10)
+                    . '. Correct that day\'s meter on the Attendance page if it is wrong.';
+            }
+
+            // 5. The odometer written down when the machine changed hands.
+            if ($vehicleId && $hasCol(VehicleService::T_ASSIGN, 'handover_meter')) {
+                $r = DB::table(VehicleService::T_ASSIGN)
+                    ->where('vehicle_id', $vehicleId)
+                    ->where('handover_meter', $value)
+                    ->where('assigned_on', $op, $date)
+                    ->orderByDesc('id')->first(['assigned_on']);
+                if ($r) {
+                    return ' It comes from the handover reading of '
+                        . substr((string) $r->assigned_on, 0, 10) . '.';
+                }
+            }
+        } catch (\Throwable $e) {
+            // a pointer is a courtesy; the refusal itself never depends on it
+        }
+        return '';
     }
 
     /**
@@ -526,7 +692,8 @@ class FuelClaimRules
      * 26,261 → 56,403 in a day). A raw MAX lets one such row become the floor
      * forever, after which the rider can never file a correct reading again.
      */
-    public function odometerWindow(int $userId, string $date, ?int $vehicleId = null): array
+    public function odometerWindow(int $userId, string $date, ?int $vehicleId = null,
+                                   ?int $ignoreServiceLogId = null): array
     {
         // ⭐ PHASE C: the window belongs to the MACHINE he held on that date, not
         //    to the man. Danish's first fill on DCR-799 (~24,800) must be judged
@@ -539,7 +706,7 @@ class FuelClaimRules
             if ($res->rulesEnabled()) {
                 $vid = $res->vehicleForDay($userId, $date);
                 if ($vid) {
-                    $win = (new VehicleService())->meterWindowFor($vid, $date);
+                    $win = (new VehicleService())->meterWindowFor($vid, $date, $ignoreServiceLogId);
                     if ($win !== null) return $win;
                 }
             }
@@ -603,6 +770,8 @@ class FuelClaimRules
                                 ->whereNotNull('meter')
                                 ->where('meter', '>', self::MIN_PLAUSIBLE_METER)
                                 ->whereDate('service_date', '<', $date)
+                                // ⭐ the row being corrected must not bound itself
+                                ->when($ignoreServiceLogId, fn ($q) => $q->where('id', '<>', $ignoreServiceLogId))
                                 ->orderByDesc('meter')->limit(40)
                                 ->get(['meter', 'service_date']) as $sl) {
                         $d = substr((string) $sl->service_date, 0, 10);
