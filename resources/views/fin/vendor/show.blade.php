@@ -319,7 +319,16 @@
                     style="background-color: #ea580c !important; color: white !important;">
                 <span style="color: white !important;">⚖️ Purchase by Weight</span>
             </button>
-            <a href="{{ route('fin.vendors.products', $vendor->id) }}" 
+            {{-- 🧾 Sep-2026. Photograph the bill and every line is filled in. Only on
+                 itemised vendors: a by_total vendor has no line items for a card to
+                 land in. Nothing is recorded until the card is checked and submitted,
+                 and the submit goes through the SAME weighted-purchase endpoint. --}}
+            <button onclick="rcOpen()" type="button"
+                    class="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md"
+                    style="background-color:#FEF3C7 !important; color:#B45309 !important; border:1px solid #FDE68A;">
+                <span>🧾 Scan a Bill</span>
+            </button>
+            <a href="{{ route('fin.vendors.products', $vendor->id) }}"
                class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md"
                style="background-color: #2563eb !important; color: white !important;">
                 <span style="color: white !important;">🛒 Manage Products</span>
@@ -2231,6 +2240,586 @@ function exportVendorToExcel() {
     
     window.location.href = `/finance/vendors/report/export?vendor_id={{ $vendor->id }}&date_from=${dateFrom}&date_to=${dateTo}&show_payments=${showPayments ? 1 : 0}`;
 }
+</script>
+
+{{-- ═══════════════════════════════════════════════════════════════════════════
+     🧾 SCAN A BILL (Sep-2026)
+
+     Photograph in, a card to check, then the ordinary weighted-purchase save.
+
+     ⭐⭐ Nothing here writes money. The card is a SUGGESTION; it becomes a purchase
+     only when the person presses Record, and only through
+     /finance/vendors/{id}/weighted-purchase — the same door a hand-typed purchase
+     uses. A bad read wastes a minute; it cannot book a wrong purchase.
+
+     ⚠ Inline, NOT @push — this layout stacks 'demo1_js' and a plain @push is dead
+       here, the same reason the block at the top of this file is inline.
+     ⚠ Wrapped in an IIFE: a top-level `let` in a Blade view is script-scoped, and a
+       second view declaring the same name kills this script silently.
+     ═══════════════════════════════════════════════════════════════════════════ --}}
+<div id="rcModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999; overflow-y:auto; padding:24px 12px;">
+  <div style="max-width:760px; margin:0 auto; background:#fff; border-radius:14px; padding:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+      <div>
+        <h3 style="margin:0; font-size:18px; font-weight:700; color:#111827;">🧾 Scan a bill</h3>
+        <p style="margin:2px 0 0; font-size:13px; color:#6B7280;">{{ $vendor->vendor_name }}</p>
+      </div>
+      <button type="button" onclick="rcClose()" style="border:none; background:none; font-size:22px; color:#9CA3AF; cursor:pointer;">&times;</button>
+    </div>
+
+    <div id="rcPick" style="padding:24px 0;">
+      <p style="font-size:13.5px; color:#374151; line-height:1.6; text-align:center; margin-bottom:16px;">
+        Choose a photo of the bill and every line will be filled in for you.<br>
+        Nothing is recorded until you check it and press Record.
+      </p>
+      <input type="file" id="rcFile" accept="image/*" capture="environment"
+             style="display:block; margin:0 auto;">
+    </div>
+
+    <div id="rcReading" style="display:none; padding:36px 0; text-align:center;">
+      <p style="font-size:14px; font-weight:600; color:#374151;">Reading the bill…</p>
+      <p style="font-size:12px; color:#9CA3AF;">This takes a few seconds.</p>
+    </div>
+
+    <div id="rcError" style="display:none; padding:18px 0;">
+      <p id="rcErrorText" style="font-size:13px; color:#B91C1C; text-align:center; line-height:1.6;"></p>
+    </div>
+
+    <div id="rcCard" style="display:none;">
+      <div id="rcWarnings"></div>
+      <div id="rcMeta" style="font-size:12px; color:#6B7280; margin-bottom:10px;"></div>
+      <div id="rcLines"></div>
+
+      <div style="background:#F9FAFB; border-radius:10px; padding:12px; margin-top:10px;">
+        <div style="display:flex; justify-content:space-between; font-size:13px; color:#374151;">
+          <span>Lines add up to</span><b id="rcLinesTotal">Rs 0</b>
+        </div>
+        <div id="rcPrintedRow" style="display:flex; justify-content:space-between; font-size:13px; color:#374151; margin-top:3px;">
+          <span>The bill says</span><b id="rcPrinted">—</b>
+        </div>
+        <div style="margin-top:10px;">
+          <label style="font-size:12px; color:#6B7280;">Adjustment (discount or rounding)</label>
+          <input type="number" step="0.01" id="rcAdjust" value="0"
+                 style="width:100%; padding:7px 10px; border:1px solid #D1D5DB; border-radius:8px; font-size:13px; margin-top:4px;">
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:15px; font-weight:700; color:#111827; margin-top:10px;">
+          <span>Will be recorded as</span><span id="rcGrand">Rs 0</span>
+        </div>
+      </div>
+
+      <p style="font-size:11.5px; color:#9CA3AF; margin-top:10px; text-align:center;">
+        Check every line against the paper. Nothing is saved until you press Record.
+      </p>
+    </div>
+
+    <div style="display:flex; gap:10px; margin-top:16px;">
+      <button type="button" onclick="rcClose()"
+              style="flex:1; padding:11px; border:1px solid #D1D5DB; border-radius:10px; background:#fff; color:#374151; font-weight:600; cursor:pointer;">Cancel</button>
+      <button type="button" id="rcSubmit" onclick="rcRecord()" disabled
+              style="flex:1; padding:11px; border:none; border-radius:10px; background:#B45309; color:#fff; font-weight:700; cursor:pointer; opacity:.5;">Record purchase</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+    var VENDOR = {{ (int) $vendor->id }};
+    var CSRF   = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    // ⚠ Fetched, not embedded. The show() controller does not eager-load the vendor's
+    //   purchase catalogue, and reaching for `$vendor->products` in the Blade silently
+    //   rendered an empty array — measured, not assumed. The phone reads the same
+    //   endpoint, so both pickers offer the same list.
+    var PRODUCTS = [];
+
+    // ❄ Whether this vendor deals in Frozen ingredients (the server says, off the same
+    //   product list), the ingredient list itself, and the "add a new product" form state:
+    //   which line opened it and the tag chosen for it. Kept OUTSIDE the DOM because
+    //   render() rebuilds every line from `card`.
+    var SUPPORTS_ING = false, INGREDIENTS = [];
+    var newFor = null, newIng = null;
+
+    var card = null, draftId = null, photoFile = null;
+
+    // ⚠ Minted when the sheet OPENS, kept across a failed save, so a retry after a
+    //   timeout resolves to the same purchase instead of booking a second one.
+    var clientUuid = null;
+
+    function uuid() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0;
+            return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+        });
+    }
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+        });
+    }
+
+    function money(n) { return 'Rs ' + Math.round(Number(n) || 0).toLocaleString(); }
+
+    window.rcOpen = function () {
+        card = null; draftId = null; photoFile = null;
+        clientUuid = uuid();
+        document.getElementById('rcFile').value = '';
+        document.getElementById('rcPick').style.display = 'block';
+        document.getElementById('rcReading').style.display = 'none';
+        document.getElementById('rcError').style.display = 'none';
+        document.getElementById('rcCard').style.display = 'none';
+        document.getElementById('rcSubmit').disabled = true;
+        document.getElementById('rcSubmit').style.opacity = '.5';
+        document.getElementById('rcModal').style.display = 'block';
+        loadProducts();
+    };
+
+    function loadProducts() {
+        if (PRODUCTS.length) { return; }
+        fetch('{{ route('fin.vendors.products.list', $vendor->id) }}', {
+            headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+        })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (d) {
+            if (!(d && d.success)) { return; }
+            PRODUCTS = d.products || [];
+            SUPPORTS_ING = d.supports_ingredients === true;
+            // ❄ Only a Frozen vendor gets the ingredient list; fails soft to none.
+            if (SUPPORTS_ING && !INGREDIENTS.length) {
+                fetch('{{ route('khaas.ingredients') }}', {
+                    headers: {'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'}
+                })
+                .then(function (r) { return r.json().catch(function () { return {}; }); })
+                .then(function (j) { if (j && j.success) { INGREDIENTS = j.ingredients || []; } })
+                .catch(function () {});
+            }
+            if (card) { render(); }   // the list arrived after the card: redraw the pickers
+        })
+        .catch(function () { /* the picker simply stays empty; the card still shows */ });
+    }
+
+    /** Which ingredient each of this vendor's products already stands for. */
+    function addedIngredientNames() {
+        var out = {};
+        PRODUCTS.forEach(function (p) {
+            if (p.ingredient_id && !out[p.ingredient_id]) { out[p.ingredient_id] = p.product_name; }
+        });
+        return out;
+    }
+
+    window.rcClose = function () {
+        document.getElementById('rcModal').style.display = 'none';
+    };
+
+    document.getElementById('rcFile').onchange = function () {
+        if (!this.files || !this.files[0]) { return; }
+        photoFile = this.files[0];
+        read();
+    };
+
+    function read() {
+        document.getElementById('rcPick').style.display = 'none';
+        document.getElementById('rcError').style.display = 'none';
+        document.getElementById('rcCard').style.display = 'none';
+        document.getElementById('rcReading').style.display = 'block';
+
+        var form = new FormData();
+        form.append('client_uuid', clientUuid);
+        form.append('image', photoFile);
+
+        fetch('{{ route('fin.vendors.receipt.extract', $vendor->id) }}', {
+            method: 'POST',
+            headers: {'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json'},
+            body: form
+        })
+        .then(function (r) { return r.json().catch(function () { return {success:false, message:'The server replied with something unreadable.'}; }); })
+        .then(function (d) {
+            document.getElementById('rcReading').style.display = 'none';
+            if (!d.success) { showError(d.message || 'Could not read that photo.'); return; }
+            card = d.card; draftId = d.draft_id;
+            render();
+        })
+        .catch(function () {
+            document.getElementById('rcReading').style.display = 'none';
+            showError('Could not reach the server. The photo is still on your computer — try again.');
+        });
+    }
+
+    function showError(msg) {
+        document.getElementById('rcErrorText').textContent = msg;
+        document.getElementById('rcError').style.display = 'block';
+        document.getElementById('rcPick').style.display = 'block';
+    }
+
+    /**
+     * ⭐ "Not found" is a question, not a dead end. An unmatched line's closest products
+     *   (ranked by the server) come first under "Did you mean", then the full list, then
+     *   the way out for something genuinely new.
+     */
+    function productOptions(selected, line) {
+        var sug = (line && !line.product_id && line.suggestions) ? line.suggestions : [];
+        var sugIds = sug.map(function (x) { return String(x.id); });
+        var opt = function (id, name) {
+            return '<option value="' + id + '"' + (String(id) === String(selected) ? ' selected' : '') + '>' + esc(name) + '</option>';
+        };
+        var out = '<option value="">— pick a product —</option>';
+        if (sug.length) {
+            out += '<optgroup label="Did you mean…">';
+            sug.forEach(function (x) { out += opt(x.id, x.name); });
+            out += '</optgroup>';
+            out += '<optgroup label="All products">';
+        }
+        PRODUCTS.forEach(function (p) {
+            if (sugIds.indexOf(String(p.id)) >= 0) { return; }
+            out += opt(p.id, p.product_name);
+        });
+        if (sug.length) { out += '</optgroup>'; }
+        out += '<option value="__new__">➕ None of these — add it as a new product</option>';
+        return out;
+    }
+
+    /** The inline "add a new product" form for line i, prefilled from the printed line. */
+    function newProductForm(i) {
+        var l = card.lines[i] || {};
+        var packUnit = String(l.pack_size_unit || '').toLowerCase();
+        var packValue = Number(l.pack_size_value) || 0;
+        var isPack = l.sold_by === 'pack' && packValue > 0;
+        var toBase = {l:1000, ltr:1000, litre:1000, liter:1000, kg:1000, g:1, ml:1, pcs:1};
+        var unit = isPack ? 'pack' : (l.unit || 'kg');
+        var packQty = (isPack && toBase[packUnit]) ? String(packValue * toBase[packUnit]) : '';
+        var inp = 'padding:5px 7px; border:1px solid #D1D5DB; border-radius:7px; font-size:12.5px;';
+        var html =
+            '<div class="rc-new" data-i="' + i + '" style="background:#F9FAFB; border:1px solid #D1D5DB; border-radius:10px; padding:10px; margin-top:8px;">' +
+              '<div style="font-size:12.5px; font-weight:700; color:#111827;">New product for {{ e($vendor->vendor_name) }}</div>' +
+              '<div style="font-size:11px; color:#6B7280; margin-bottom:6px;">The bill printed “' + esc(l.raw_name) + '”.</div>' +
+              '<input class="rc-new-name" data-i="' + i + '" value="' + esc(String(l.raw_name || '').trim()) + '" placeholder="Product name" list="rcIngNames" autocomplete="off" style="width:100%; ' + inp + ' margin-bottom:6px;">' +
+              '<div style="display:flex; gap:6px; margin-bottom:6px;">' +
+                '<input class="rc-new-unit" data-i="' + i + '" value="' + esc(unit) + '" placeholder="unit (kg, litre, pack…)" style="flex:1; ' + inp + '">' +
+                '<input class="rc-new-rate" data-i="' + i + '" type="number" step="0.01" value="' + (l.unit_price == null ? '' : l.unit_price) + '" placeholder="rate / unit" style="flex:1; ' + inp + '">' +
+              '</div>';
+        if (SUPPORTS_ING && INGREDIENTS.length) {
+            var added = addedIngredientNames();
+            var fresh = INGREDIENTS.filter(function (x) { return !added[x.id]; });
+            var old   = INGREDIENTS.filter(function (x) { return  added[x.id]; });
+            var o = function (x, suffix) {
+                return '<option value="' + x.id + '" data-unit="' + esc(x.base_unit) + '"' + (newIng && String(newIng.id) === String(x.id) ? ' selected' : '') + '>' + esc(x.name) + (suffix || '') + '</option>';
+            };
+            html += '<label style="font-size:11.5px; color:#374151; font-weight:600;">Frozen ingredient (optional)</label>' +
+                    '<select class="rc-new-ing" data-i="' + i + '" style="width:100%; ' + inp + ' margin:3px 0 6px;">' +
+                      '<option value="">— not an ingredient —</option>';
+            fresh.forEach(function (x) { html += o(x); });
+            if (old.length) {
+                html += '<optgroup label="Already on this vendor\'s list">';
+                old.forEach(function (x) { html += o(x, ' — already “' + esc(added[x.id]) + '”'); });
+                html += '</optgroup>';
+            }
+            html += '</select>';
+            // ⚠ A "pack" could be any size — the server refuses a tag it cannot size.
+            var needs = !!newIng && (!OBVIOUS[unit.toLowerCase()] || OBVIOUS[unit.toLowerCase()] !== newIng.base_unit);
+            html += '<div class="rc-new-packwrap" data-i="' + i + '" style="' + (needs ? '' : 'display:none;') + '">' +
+                      '<label style="font-size:11.5px; color:#374151; font-weight:600;">How many <span class="rc-new-baseword">' + (newIng ? baseWord(newIng) : 'grams') + '</span> in one <span class="rc-new-unitword">' + esc(unit) + '</span>?</label>' +
+                      '<input class="rc-new-pack" data-i="' + i + '" type="number" step="0.001" value="' + esc(packQty) + '" placeholder="e.g. 1000" style="width:100%; ' + inp + ' margin:3px 0 4px;">' +
+                      '<div style="font-size:11px; color:#6B7280; margin-bottom:6px;">Filled in from the bill when it printed a size — check it against the paper.</div>' +
+                    '</div>';
+        }
+        html += '<div style="display:flex; justify-content:flex-end; gap:8px;">' +
+                  '<button type="button" class="rc-new-cancel" data-i="' + i + '" style="border:none; background:none; color:#6B7280; font-size:12.5px; cursor:pointer;">Cancel</button>' +
+                  '<button type="button" class="rc-new-save" data-i="' + i + '" style="border:none; background:#4338CA; color:#fff; font-size:12.5px; font-weight:700; padding:6px 12px; border-radius:7px; cursor:pointer;">Add and use it</button>' +
+                '</div>' +
+              '</div>';
+        return html;
+    }
+
+    var OBVIOUS = {kg:'g', gram:'g', grams:'g', g:'g', ton:'g', liter:'ml', litre:'ml', l:'ml', ml:'ml', piece:'pcs', pcs:'pcs', dozen:'pcs'};
+    function baseWord(ing) { return ing.base_unit === 'pcs' ? 'pieces' : (ing.base_unit === 'ml' ? 'millilitres' : 'grams'); }
+    function ingById(id) { return INGREDIENTS.filter(function (x) { return String(x.id) === String(id); })[0] || null; }
+
+    function render() {
+        var w = document.getElementById('rcWarnings');
+        w.innerHTML = (card.warnings || []).map(function (x) {
+            return '<div style="font-size:12px; color:#92400E; background:#FFFBEB; border:1px solid #FDE68A; ' +
+                   'border-radius:8px; padding:8px 10px; margin-bottom:6px;">⚠ ' + esc(x) + '</div>';
+        }).join('');
+
+        document.getElementById('rcMeta').innerHTML =
+            [card.store_name, card.receipt_no ? 'Bill ' + card.receipt_no : '', card.receipt_date]
+                .filter(Boolean).map(esc).join(' · ');
+
+        document.getElementById('rcLines').innerHTML = (card.lines || []).map(function (l, i) {
+            var attention = !l.product_id;
+            return '<div style="border:1px solid ' + (attention ? '#FDE68A' : '#E5E7EB') + '; ' +
+                   'background:' + (attention ? '#FFFBEB' : '#fff') + '; border-radius:10px; padding:10px; margin-bottom:7px;">' +
+                '<div style="display:flex; gap:10px; align-items:flex-start;">' +
+                    '<div style="flex:1; min-width:0;">' +
+                        '<div style="font-size:12.5px; color:#111827;">' + esc(l.raw_name) + '</div>' +
+                        '<select class="rc-prod" data-i="' + i + '" style="margin-top:4px; width:100%; max-width:320px; padding:4px 6px; border:1px solid #D1D5DB; border-radius:6px; font-size:12px;">' +
+                            productOptions(l.product_id, l) +
+                        '</select>' +
+                        (newFor === i ? newProductForm(i) : '') +
+                        (l.ingredient_name
+                            ? '<div style="font-size:11px; color:#4F46E5; margin-top:3px;">' + esc(l.ingredient_name) +
+                              (l.qty_base_text ? ' · ' + esc(l.qty_base_text) : '') + '</div>'
+                            : '') +
+                    '</div>' +
+                    '<button type="button" class="rc-del" data-i="' + i + '" style="border:none; background:none; color:#9CA3AF; font-size:16px; cursor:pointer;">&times;</button>' +
+                '</div>' +
+                '<div style="display:flex; align-items:center; gap:6px; margin-top:6px;">' +
+                    '<input type="number" step="0.001" class="rc-qty" data-i="' + i + '" value="' + (l.qty == null ? '' : l.qty) + '" placeholder="qty" style="width:90px; padding:5px 7px; border:1px solid #D1D5DB; border-radius:7px; font-size:12.5px; text-align:right;">' +
+                    '<span style="color:#9CA3AF;">×</span>' +
+                    '<input type="number" step="0.01" class="rc-rate" data-i="' + i + '" value="' + (l.unit_price == null ? '' : l.unit_price) + '" placeholder="rate" style="width:100px; padding:5px 7px; border:1px solid #D1D5DB; border-radius:7px; font-size:12.5px; text-align:right;">' +
+                    '<span class="rc-total" data-i="' + i + '" style="flex:1; text-align:right; font-weight:700; font-size:12.5px; color:#111827;"></span>' +
+                '</div>' +
+                // ❄ Frozen vocabulary: shown only where the vendor deals in ingredients.
+                (SUPPORTS_ING
+                    ? '<label style="display:flex; align-items:center; gap:6px; margin-top:5px; font-size:11px; color:#6B7280; cursor:pointer;">' +
+                          '<input type="checkbox" class="rc-noting" data-i="' + i + '"' + (l.not_ingredient ? ' checked' : '') + '> Not an ingredient (money only)' +
+                      '</label>'
+                    : '') +
+            '</div>';
+        }).join('') +
+        // One spelling: the ingredient names suggest themselves in the new-product name box.
+        (INGREDIENTS.length
+            ? '<datalist id="rcIngNames">' + INGREDIENTS.map(function (x) { return '<option value="' + esc(x.name) + '"></option>'; }).join('') + '</datalist>'
+            : '');
+
+        bind();
+        totals();
+
+        document.getElementById('rcPrintedRow').style.display = card.grand_total ? 'flex' : 'none';
+        document.getElementById('rcPrinted').textContent = card.grand_total ? money(card.grand_total) : '—';
+        document.getElementById('rcCard').style.display = 'block';
+        document.getElementById('rcSubmit').disabled = false;
+        document.getElementById('rcSubmit').style.opacity = '1';
+    }
+
+    function bind() {
+        var box = document.getElementById('rcLines');
+        box.querySelectorAll('.rc-prod').forEach(function (el) {
+            el.onchange = function () {
+                var i = +el.getAttribute('data-i');
+                if (el.value === '__new__') {
+                    // Open the inline form under this line; the select goes back to blank.
+                    newFor = i; newIng = ingById(exactIngredientId(card.lines[i].raw_name));
+                    render();
+                    return;
+                }
+                card.lines[i].product_id = el.value ? Number(el.value) : null;
+                var p = PRODUCTS.filter(function (x) { return String(x.id) === el.value; })[0];
+                card.lines[i].product_name = p ? p.product_name : null;
+                card.lines[i].unit = p ? p.unit : null;
+                card.lines[i].ingredient_name = p ? (p.ingredient_name || null) : null;
+                if (newFor === i) { newFor = null; newIng = null; }
+                render();
+            };
+        });
+        // The inline new-product form. Its text lives in the DOM until Save — render() is
+        // only called on tag change and unit change, and those re-read the fields first.
+        box.querySelectorAll('.rc-new-cancel').forEach(function (el) {
+            el.onclick = function () { newFor = null; newIng = null; render(); };
+        });
+        box.querySelectorAll('.rc-new-save').forEach(function (el) {
+            el.onclick = function () { rcAddProduct(+el.getAttribute('data-i')); };
+        });
+        box.querySelectorAll('.rc-new-name').forEach(function (el) {
+            // ⭐ Typing an ingredient's exact spelling selects that ingredient — one name.
+            el.oninput = function () {
+                var hit = ingById(exactIngredientId(el.value));
+                var sel = box.querySelector('.rc-new-ing[data-i="' + el.getAttribute('data-i') + '"]');
+                if (hit && sel) { sel.value = String(hit.id); newIng = hit; syncPackWrap(+el.getAttribute('data-i')); }
+            };
+        });
+        box.querySelectorAll('.rc-new-ing').forEach(function (el) {
+            el.onchange = function () {
+                var i = +el.getAttribute('data-i');
+                newIng = ingById(el.value);
+                var name = box.querySelector('.rc-new-name[data-i="' + i + '"]');
+                if (newIng && name && !name.value.trim()) { name.value = newIng.name; }
+                syncPackWrap(i);
+            };
+        });
+        box.querySelectorAll('.rc-new-unit').forEach(function (el) {
+            el.oninput = function () { syncPackWrap(+el.getAttribute('data-i')); };
+        });
+        box.querySelectorAll('.rc-qty').forEach(function (el) {
+            el.oninput = function () { card.lines[+el.getAttribute('data-i')].qty = el.value; totals(); };
+        });
+        box.querySelectorAll('.rc-rate').forEach(function (el) {
+            el.oninput = function () { card.lines[+el.getAttribute('data-i')].unit_price = el.value; totals(); };
+        });
+        box.querySelectorAll('.rc-noting').forEach(function (el) {
+            el.onchange = function () { card.lines[+el.getAttribute('data-i')].not_ingredient = el.checked; };
+        });
+        box.querySelectorAll('.rc-del').forEach(function (el) {
+            el.onclick = function () {
+                card.lines.splice(+el.getAttribute('data-i'), 1);
+                render();
+            };
+        });
+        document.getElementById('rcAdjust').oninput = totals;
+    }
+
+    function totals() {
+        var sum = 0;
+        (card.lines || []).forEach(function (l, i) {
+            var t = (parseFloat(l.qty) || 0) * (parseFloat(l.unit_price) || 0);
+            sum += t;
+            var cell = document.querySelector('.rc-total[data-i="' + i + '"]');
+            if (cell) { cell.textContent = money(t); }
+        });
+        var adj = parseFloat(document.getElementById('rcAdjust').value) || 0;
+        document.getElementById('rcLinesTotal').textContent = money(sum);
+        document.getElementById('rcGrand').textContent = money(sum + adj);
+    }
+
+    /** The ingredient whose name is EXACTLY what was typed (case/space-insensitive), or null. */
+    function exactIngredientId(typed) {
+        var key = String(typed || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        if (!key) { return null; }
+        var hit = INGREDIENTS.filter(function (x) { return String(x.name).toLowerCase().replace(/\s+/g, ' ').trim() === key; })[0];
+        return hit ? hit.id : null;
+    }
+
+    /** Show the "how many in one pack?" box only when the unit cannot size itself. */
+    function syncPackWrap(i) {
+        var box  = document.getElementById('rcLines');
+        var wrap = box.querySelector('.rc-new-packwrap[data-i="' + i + '"]');
+        var unitEl = box.querySelector('.rc-new-unit[data-i="' + i + '"]');
+        if (!wrap || !unitEl) { return; }
+        var unit = (unitEl.value || '').trim().toLowerCase();
+        var needs = !!newIng && (!OBVIOUS[unit] || OBVIOUS[unit] !== newIng.base_unit);
+        wrap.style.display = needs ? '' : 'none';
+        if (needs) {
+            wrap.querySelector('.rc-new-baseword').textContent = baseWord(newIng);
+            wrap.querySelector('.rc-new-unitword').textContent = unit || 'unit';
+        }
+    }
+
+    /**
+     * ⭐ Add a genuinely new product WITHOUT leaving the bill half-entered. Posts to the
+     *   same catalogue endpoint the Manage Products page uses — one door, not a second one.
+     */
+    window.rcAddProduct = function (i) {
+        var box  = document.getElementById('rcLines');
+        var name = (box.querySelector('.rc-new-name[data-i="' + i + '"]').value || '').trim();
+        var unit = (box.querySelector('.rc-new-unit[data-i="' + i + '"]').value || 'kg').trim();
+        var rate = parseFloat(box.querySelector('.rc-new-rate[data-i="' + i + '"]').value);
+        var packEl = box.querySelector('.rc-new-pack[data-i="' + i + '"]');
+        var pack = packEl ? parseFloat(packEl.value) : 0;
+        if (!name) { alert('Give the product a name before saving it.'); return; }
+        if (!(rate > 0)) { alert('Give the product a rate per unit before saving it.'); return; }
+        var needs = !!newIng && (!OBVIOUS[unit.toLowerCase()] || OBVIOUS[unit.toLowerCase()] !== newIng.base_unit);
+        if (needs && !(pack > 0)) {
+            alert('A ' + unit + ' could be any size. Say how many ' + baseWord(newIng) + ' one holds, or untag it.');
+            return;
+        }
+
+        var body = {product_name: name, unit: unit, rate_per_unit: rate, is_default: 0};
+        if (newIng) { body.ingredient_id = newIng.id; if (needs) { body.pack_qty_base = pack; } }
+
+        var btn = box.querySelector('.rc-new-save[data-i="' + i + '"]');
+        btn.disabled = true; btn.textContent = 'Adding…';
+
+        fetch('{{ route('fin.vendors.products.store', $vendor->id) }}', {
+            method: 'POST',
+            headers: {'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json', 'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        })
+        .then(function (r) { return r.json().catch(function () { return {success:false, message:'Unexpected reply'}; }); })
+        .then(function (d) {
+            if (!d.success || !d.product || !d.product.id) {
+                btn.disabled = false; btn.textContent = 'Add and use it';
+                alert(d.message || 'Could not add that product.');
+                return;
+            }
+            // The store reply is the bare model: carry the ingredient NAME across ourselves.
+            var created = d.product;
+            created.ingredient_name = (created.ingredient_id && newIng) ? newIng.name : null;
+            PRODUCTS.push(created);
+            card.lines[i].product_id = created.id;
+            card.lines[i].product_name = created.product_name;
+            card.lines[i].unit = created.unit;
+            card.lines[i].ingredient_name = created.ingredient_name;
+            newFor = null; newIng = null;
+            render();
+        })
+        .catch(function () {
+            btn.disabled = false; btn.textContent = 'Add and use it';
+            alert('Could not reach the server. Try again in a moment.');
+        });
+    };
+
+    window.rcRecord = function () {
+        var usable = (card.lines || []).filter(function (l) { return l.product_id; });
+        if (!usable.length) {
+            alert('Every line needs a product from this vendor\'s list. Pick one for each, or remove the lines you do not want.');
+            return;
+        }
+
+        var unpicked = (card.lines || []).length - usable.length;
+        if (unpicked > 0 && !confirm(
+            unpicked + ' line' + (unpicked === 1 ? '' : 's') + ' have no product picked and will NOT be recorded.\n\nCarry on?')) {
+            return;
+        }
+
+        var btn = document.getElementById('rcSubmit');
+        btn.disabled = true;
+        btn.textContent = 'Recording…';
+
+        var form = new FormData();
+        form.append('transaction_date', card.receipt_date || new Date().toISOString().slice(0, 10));
+        form.append('description', ('Receipt ' + (card.receipt_no || '') + (card.store_name ? ' · ' + card.store_name : '')).trim());
+        form.append('adjustment_amount', String(parseFloat(document.getElementById('rcAdjust').value) || 0));
+        form.append('draft_id', String(draftId || ''));
+        form.append('client_uuid', clientUuid);
+        if (photoFile) { form.append('bill_images[]', photoFile); }
+
+        usable.forEach(function (l, i) {
+            var p = PRODUCTS.filter(function (x) { return String(x.id) === String(l.product_id); })[0];
+            form.append('items[' + i + '][product_id]', l.product_id);
+            form.append('items[' + i + '][quantity]', parseFloat(l.qty) || 0);
+            form.append('items[' + i + '][rate]', parseFloat(l.unit_price) || 0);
+            form.append('items[' + i + '][unit]', (p && p.unit) || l.unit || 'kg');
+            form.append('items[' + i + '][product_name]', (p && p.product_name) || l.raw_name);
+            // ⭐ What the slip PRINTED, so the server learns this shop's wording for the
+            //   product he just confirmed and stops asking next time.
+            if (l.raw_name) { form.append('items[' + i + '][raw_name]', String(l.raw_name)); }
+            if (l.not_ingredient) { form.append('items[' + i + '][not_ingredient]', '1'); }
+        });
+
+        // ⭐⭐ Posts at the RECEIPT route, not straight at weighted-purchase. That route
+        //    claims this draft under a row lock before it touches money, which is what
+        //    makes the retry message below true rather than hopeful.
+        fetch('{{ route('fin.vendors.receipt.record', $vendor->id) }}', {
+            method: 'POST',
+            headers: {'X-CSRF-TOKEN': CSRF, 'Accept': 'application/json'},
+            body: form
+        })
+        .then(function (r) { return r.json().catch(function () { return {success:false, message:'Unexpected reply'}; }); })
+        .then(function (d) {
+            btn.disabled = false;
+            btn.textContent = 'Record purchase';
+            if (d.success) {
+                if (d.already) {
+                    alert(d.message);
+                } else if (d.learned && d.learned.length) {
+                    // ⭐ Say what it learned, by name — a wrong lesson must be visible.
+                    alert('Recorded, and remembered. Next time this bill says:\n\n' +
+                        d.learned.map(function (x) { return '“' + x.printed + '”  →  ' + x.product; }).join('\n') +
+                        '\n\nit will fill in on its own.');
+                }
+                window.location.reload();
+            } else {
+                alert(d.message || 'Could not record that purchase.');
+            }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            btn.textContent = 'Record purchase';
+            // ⚠ Deliberately does NOT claim nothing was recorded — it cannot know.
+            alert('Could not reach the server. Press Record again in a moment; it will not book this twice.');
+        });
+    };
+})();
 </script>
 
 @endsection

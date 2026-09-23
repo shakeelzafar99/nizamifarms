@@ -78,9 +78,13 @@ class WarehouseInventoryModel extends BaseModel
     }
 
     /**
-     * Adjust quantity and log the change
+     * Adjust quantity and log the change.
+     *
+     * Returns the log row it wrote. It used to return nothing; every existing caller
+     * ignores the value, so returning it is additive — and it saves the next caller
+     * from re-finding the row by (reference_type, reference_id), which is ambiguous.
      */
-    public function adjustQuantity(int $change, string $changeType, ?string $notes = null, ?string $referenceType = null, ?int $referenceId = null): void
+    public function adjustQuantity(int $change, string $changeType, ?string $notes = null, ?string $referenceType = null, ?int $referenceId = null): WarehouseInventoryLogModel
     {
         $before = $this->quantity;
         $this->quantity += $change;
@@ -88,7 +92,7 @@ class WarehouseInventoryModel extends BaseModel
         $this->save();
 
         // Create log entry
-        WarehouseInventoryLogModel::create([
+        $log = WarehouseInventoryLogModel::create([
             'warehouse_inventory_id' => $this->id,
             'product_id' => $this->product_id,
             'business_unit_id' => $this->business_unit_id,
@@ -102,5 +106,16 @@ class WarehouseInventoryModel extends BaseModel
             'created_by' => auth()->id(),
             'created_at' => now(),
         ]);
+
+        // ⭐⭐ Recipe consumption hangs off THIS one door, so a stock_in is answered the
+        // same way whether a production plan created it or somebody typed it in by
+        // hand — which is exactly how "Made" has always been counted. See
+        // ConsumptionService. It swallows its own errors by design: costing reads the
+        // truth, it never gates it, and nothing here may stop a pack being recorded.
+        if ($changeType === 'stock_in') {
+            app(\App\Services\Khaas\ConsumptionService::class)->recordForLog($log);
+        }
+
+        return $log;
     }
 }

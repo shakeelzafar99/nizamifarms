@@ -46,6 +46,28 @@
     .mr-tile.mr-t-onetime { background: #F3F4F6; } .mr-tile.mr-t-onetime .mr-lab { color: #4B5563; } .mr-tile.mr-t-onetime .mr-big { color: #1F2937; } .mr-tile.mr-t-onetime .mr-tile-sub { color: #6B7280; }
     .mr-tile.mr-t-unknown { background: #FFFBEB; } .mr-tile.mr-t-unknown .mr-lab { color: #B45309; } .mr-tile.mr-t-unknown .mr-big { color: #78350F; } .mr-tile.mr-t-unknown .mr-tile-sub { color: #D97706; }
 
+    /* ── plan vs direct, and the ingredient panel ──────────────────────────
+       ⚠ Every class here is mr- prefixed on purpose. A bare modifier collides
+       with a Tailwind utility of the same name in the global sheet — that is
+       exactly how the Fixed-cost tile once pinned itself to the viewport. */
+    .mr-split { background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+    .mr-split.mr-split-mixed { background: #FFFBEB; border-color: #FDE68A; }
+    .mr-split-bar { height: 6px; border-radius: 3px; background: #E5E7EB; overflow: hidden; margin-bottom: 8px; }
+    .mr-split-plan { display: block; height: 100%; background: #6366F1; }
+    .mr-split-text { font-size: 13px; color: #374151; line-height: 1.5; }
+    .mr-split-hint { display: block; color: #6B7280; font-size: 12px; margin-top: 2px; }
+    .mr-split-warn { font-size: 12px; color: #92400E; margin-top: 6px; }
+
+    .mr-ing-note { font-size: 12px; color: #92400E; background: #FFFBEB; border: 1px solid #FDE68A;
+                   border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+    .mr-ing-kind { font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: .03em; }
+    .mr-ing-short { color: #B91C1C; font-weight: 600; }
+    .mr-ing-untracked { color: #9CA3AF; }
+    .mr-ing-legend { font-size: 12px; color: #6B7280; margin-top: 8px; line-height: 1.5; }
+    .mr-reapply { float: right; font-size: 12px; background: #fff; border: 1px solid #D1D5DB;
+                  border-radius: 6px; padding: 4px 10px; cursor: pointer; color: #374151; }
+    .mr-reapply:hover { background: #F3F4F6; }
+
     .mr-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; margin: 14px 0 6px; background: #F3F4F6; }
     .mr-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: #6B7280; margin-bottom: 18px; }
     .mr-dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
@@ -228,6 +250,33 @@
         @endif
     @endif
 
+    {{-- ── ⭐⭐ How the packs reached the warehouse ──────────────
+         "449 made" is two different stories: packs that went through a production
+         plan, and packs typed straight in because the batch was closed at 0 or never
+         opened. Both are real production and both are costed the same way — this only
+         tells the reader how the figure was assembled, and flags any packs whose
+         product has no recipe, because those are missing from the ingredient figures
+         below. It is NOT a complaint about direct entry: whatever number Qasim enters
+         is what was produced, and that ruling stands. --}}
+    @php $split = $review['made_split'] ?? null; @endphp
+    @if($split && $split['made'] > 0)
+        <div class="mr-split {{ $split['direct'] > 0 ? 'mr-split-mixed' : '' }}">
+            <div class="mr-split-bar">
+                <span class="mr-split-plan" style="width: {{ $split['plan_share_pct'] }}%"></span>
+            </div>
+            <div class="mr-split-text">
+                <b>How these packs came in:</b> {{ $split['note'] }}
+                @if($split['direct'] > 0)
+                    <span class="mr-split-hint">Direct entries never had a plan behind them, so the system
+                    did not watch the meat come off storage for those packs.</span>
+                @endif
+            </div>
+            @foreach($split['warnings'] as $w)
+                <div class="mr-split-warn">⚠ {{ $w }}</div>
+            @endforeach
+        </div>
+    @endif
+
     {{-- ── What happened to the packs ─────────────────────────── --}}
     <div class="mr-flow">
         Made <b>{{ number_format($made) }}</b>
@@ -242,6 +291,158 @@
             numbers, from the same code, as the Inventory Report on the phone.
         </div>
     </div>
+
+    {{-- ── ❄ Ingredients: bought, used, left ──────────────────────
+         An ESTIMATE, and it says so on the face. Quantities are open to anyone in
+         Frozen mode; the rupees need view_khaas_costing and are stripped on the
+         SERVER when it is missing, so a client is never holding money it may not show. --}}
+    @php $ing = $review['ingredients'] ?? ['rows' => [], 'totals' => [], 'notes' => []]; @endphp
+    @if(!empty($ing['rows']))
+    <details class="mr-card">
+        <summary>
+            <span>Ingredients · bought, used and left</span>
+            @if($canSeeIngredientCost)
+                <span class="mr-amt">Rs {{ number_format($ing['totals']['used_value'] ?? 0) }} used</span>
+            @else
+                <span class="mr-amt">{{ count($ing['rows']) }} tracked</span>
+            @endif
+        </summary>
+        <div class="mr-body">
+            @if($canManageRecipes)
+                <button type="button" class="mr-reapply" id="mrReapplyBtn">Re-apply recipes for this month</button>
+            @endif
+
+            @foreach($ing['notes'] as $n)
+                <div class="mr-ing-note">⚠ {{ $n }}</div>
+            @endforeach
+
+            <div class="mr-scroll">
+            <table class="mr-table">
+                <thead>
+                    <tr>
+                        <th>Ingredient</th>
+                        <th>Bought</th>
+                        <th>Used</th>
+                        <th>Left</th>
+                        @if($canSeeIngredientCost)
+                            <th>Rate</th>
+                            <th>Cost of what was used</th>
+                        @endif
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach($ing['rows'] as $row)
+                    <tr>
+                        <td>
+                            {{ $row['name'] }}
+                            <div class="mr-ing-kind">{{ $row['kind_label'] }}@if($row['is_meat']) · from storage @endif</div>
+                        </td>
+                        <td>{{ $row['bought_text'] }}</td>
+                        <td class="{{ $row['short'] ? 'mr-ing-short' : '' }}">
+                            {{ $row['used_text'] }}
+                            @if($row['short'])<br><span class="mr-ing-kind">more than was bought</span>@endif
+                        </td>
+                        <td>
+                            @if($row['tracked'])
+                                {{ $row['remaining_text'] }}
+                            @else
+                                <span class="mr-ing-untracked">not tracked</span>
+                            @endif
+                        </td>
+                        @if($canSeeIngredientCost)
+                            <td>
+                                {{ $row['rate_text'] ?? '—' }}
+                                @if(($row['rate_source'] ?? '') === 'earlier')
+                                    <div class="mr-ing-kind">last known price</div>
+                                @elseif(($row['rate_source'] ?? '') === 'storage')
+                                    <div class="mr-ing-kind">meat order price</div>
+                                @endif
+                            </td>
+                            <td>Rs {{ number_format($row['used_value'] ?? 0) }}</td>
+                        @endif
+                    </tr>
+                @endforeach
+                </tbody>
+            </table>
+            </div>
+
+            <div class="mr-ing-legend">
+                <b>This is an estimate, not a stock audit.</b>
+                Used is what the recipes say the month's packs should have taken, so it follows the recipe
+                rather than the shelf.
+                @if($canSeeIngredientCost)
+                    Cost is that quantity at the month's average purchase price, or the last price known
+                    before it.
+                @endif
+                Meat is different: it is bought and consumed through the storage ledger, so its figures are
+                the real ones. "Not tracked" means no opening stock was ever entered for that ingredient,
+                which is honest rather than a number that looks exact and is not.
+            </div>
+        </div>
+    </details>
+    @endif
+
+    {{-- ── ❄ Cost per pack, by product ────────────────────────── --}}
+    @php $pc = $review['product_costs'] ?? ['rows' => [], 'totals' => []]; @endphp
+    @if(!empty($pc['rows']))
+    <details class="mr-card">
+        <summary>
+            <span>Ingredient cost · by product</span>
+            @if($canSeeIngredientCost)
+                <span class="mr-amt">Rs {{ number_format($pc['totals']['cost_per_pack'] ?? 0, 2) }} a pack</span>
+            @else
+                <span class="mr-amt">{{ number_format($pc['totals']['made'] ?? 0) }} packs</span>
+            @endif
+        </summary>
+        <div class="mr-body">
+            <div class="mr-scroll">
+            <table class="mr-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Made</th>
+                        <th>Through a plan</th>
+                        <th>Entered directly</th>
+                        @if($canSeeIngredientCost)
+                            <th>Ingredients</th>
+                            <th>Per pack</th>
+                            <th>Overhead per pack</th>
+                        @endif
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach($pc['rows'] as $row)
+                    <tr>
+                        <td>{{ $row['product_name'] }}</td>
+                        <td>{{ number_format($row['made']) }}</td>
+                        <td>{{ number_format($row['made_plan']) }}</td>
+                        <td>{{ number_format($row['made_direct']) }}</td>
+                        @if($canSeeIngredientCost)
+                            <td>Rs {{ number_format($row['cost'] ?? 0) }}</td>
+                            <td><b>Rs {{ number_format($row['cost_per_pack'] ?? 0, 2) }}</b></td>
+                            <td>Rs {{ number_format($h['fixed_per_pack'] ?? 0, 2) }}</td>
+                        @endif
+                    </tr>
+                @endforeach
+                </tbody>
+            </table>
+            </div>
+            @if($canSeeIngredientCost)
+                <div class="mr-ing-legend">
+                    Overhead per pack is this month's fixed cost — gas, electricity, salaries — spread evenly
+                    over every pack made. Gas burned per samosa is not measured and this does not pretend to;
+                    it is the fixed base carried by the month's production.
+                    <br><br>
+                    <b>The meat in these figures is the recipe standard, not the storage ledger.</b>
+                    Storage records that the meat left the freezer, not which pack it became, so a per-product
+                    cost can only use what the recipe says. The Ingredients panel above reports meat from the
+                    ledger, which is exact for the month — so the two will differ whenever production ran off
+                    recipe, and that difference is worth looking at rather than explaining away.
+                </div>
+            @endif
+        </div>
+    </details>
+    @endif
 
     {{-- ── Made by product ────────────────────────────────────── --}}
     <details class="mr-card" open>
@@ -450,6 +651,55 @@
         .catch(function () {
             sel.disabled = false;
             alert('Could not save that change. Check your connection and try again.');
+        });
+    };
+})();
+</script>
+@endif
+
+@if($canManageRecipes)
+<script>
+// ── Re-apply recipes for this month ────────────────────────────────────────
+// The one deliberate way consumption history is rewritten. It exists because a
+// product's first recipe is usually typed AFTER some packs were already made. It
+// says what it will do before it does it, and what it did afterwards.
+(function () {
+    var btn = document.getElementById('mrReapplyBtn');
+    if (!btn) { return; }
+
+    btn.onclick = function () {
+        var month = @json($selectedMonth);
+        var ok = confirm(
+            'Re-apply recipes for ' + month + '?\n\n' +
+            'Every pack that entered the warehouse this month is re-read against the recipe that ' +
+            'was in force on its own date. Packs whose product still has no recipe are left alone.\n\n' +
+            'Nothing about money changes.'
+        );
+        if (!ok) { return; }
+
+        btn.disabled = true;
+        btn.textContent = 'Working…';
+
+        fetch(@json(route('khaas.consumption.reapply')), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({month: month})
+        })
+        .then(function (r) { return r.json().catch(function () { return {success: false, message: 'Unexpected reply'}; }); })
+        .then(function (d) {
+            btn.disabled = false;
+            btn.textContent = 'Re-apply recipes for this month';
+            alert((d && d.message) ? d.message : 'Done.');
+            if (d && d.success) { window.location.reload(); }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            btn.textContent = 'Re-apply recipes for this month';
+            alert('Could not reach the server. Nothing was changed.');
         });
     };
 })();

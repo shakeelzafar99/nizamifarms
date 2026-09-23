@@ -35,7 +35,53 @@ class LedgerModel extends BaseModel
             if (empty($model->business_unit_id)) {
                 $model->business_unit_id = self::DEFAULT_BUSINESS_UNIT_ID;
             }
+
+            // ⭐⭐ WHOSE HAND POSTED THIS ROW (Sep-2026).
+            //
+            // `created_by` cannot answer that question: on an expense row
+            // LedgerPostingService sets it to `$request->requester_user_id` — the person
+            // the expense BELONGS to, not the person who pressed the button. On the
+            // replica that is 628 rows naming the wrong person, e.g. Haider's petrol
+            // posted by Shabib reads "Haider". `entered_by` is the logged-in actor.
+            //
+            // One engine: every ledger writer goes through Eloquent create()/save()
+            // (the same fact LedgerAuditObserver relies on), so this hook is the only
+            // place it needs to be set. The two raw insertGetId calls in
+            // EmployeeLoanController bypass Eloquent and pass the column themselves.
+            //
+            // ⚠ Wrapped: this runs inside live money transactions. A console command or
+            // a request with no session must never be able to fail a payment — a row
+            // with no actor simply reads as "System".
+            //
+            // ⚠⚠ DEPLOY-ORDER GUARD. Production is uploaded by hand, and the one way this
+            // column can break the ledger is the web files landing BEFORE the SQL: every
+            // INSERT would then carry an unknown column and every delivery, expense and
+            // settlement would fail. So the hook first asks whether the column exists —
+            // once per process, memoised — and stays silent until it does.
+            try {
+                if ($model->entered_by === null && self::hasEnteredByColumn()) {
+                    $model->entered_by = auth()->id();
+                }
+            } catch (\Throwable $e) {
+                // no auth context (console/queue) — leave it null
+            }
         });
+    }
+
+    /** Memoised once per process: does t_fin_ledger.entered_by exist yet? (see boot()) */
+    private static ?bool $hasEnteredBy = null;
+
+    /** Public so the few readers that name the column in raw SQL can degrade the same way. */
+    public static function hasEnteredByColumn(): bool
+    {
+        if (self::$hasEnteredBy === null) {
+            try {
+                self::$hasEnteredBy = \Schema::hasColumn('t_fin_ledger', 'entered_by');
+            } catch (\Throwable $e) {
+                self::$hasEnteredBy = false;
+            }
+        }
+        return self::$hasEnteredBy;
     }
 
     protected $fillable = [
@@ -72,6 +118,7 @@ class LedgerModel extends BaseModel
         'posted_date',
         'balance_updated', // Tracks whether account balances were applied (for L1-early-balance flow)
         'created_by',
+        'entered_by', // ⭐ the logged-in ACTOR (created_by is the requester on expense rows)
         'updated_by'
     ];
 
@@ -229,6 +276,83 @@ class LedgerModel extends BaseModel
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(UserModel::class, 'created_by', 'id');
+    }
+
+    /** ⭐ The logged-in person who actually posted this row (null on pre-Sep-2026 / system rows). */
+    public function enteredBy(): BelongsTo
+    {
+        return $this->belongsTo(UserModel::class, 'entered_by', 'id');
+    }
+
+    /**
+     * ⭐⭐ THE ONE "WHOSE HAND" RULE — every reader must come through here.
+     *
+     * The actor is `entered_by`, falling back to `created_by` for rows written before
+     * Sep-2026. NULL means nobody was signed in (console, cron, webhook) — that reads
+     * as "System" and counts as somebody else's hand, because it is certainly not the
+     * viewer's own.
+     */
+    public function actorId(): ?int
+    {
+        $v = $this->entered_by ?? $this->created_by;
+        return $v ? (int) $v : null;
+    }
+
+    /** The name to show for the hand that posted this row. */
+    public function actorName(): string
+    {
+        $u = $this->entered_by ? $this->enteredBy : ($this->created_by ? $this->createdBy : null);
+        return $u->fullname ?? 'System';
+    }
+
+    /**
+     * Is this row somebody ELSE's doing, from $viewerId's point of view?
+     *
+     * ⭐ Owner's ruling (Sep-22-2026): "my hand" means I ENTERED it **or** I APPROVED it.
+     * Without the approver half, every rider settlement Shabib waved through would come
+     * back at him as somebody else's entry — which is exactly the noise that makes a
+     * notification useless.
+     */
+    public function isSomeoneElsesHand(int $viewerId): bool
+    {
+        if ($viewerId <= 0) {
+            return false;
+        }
+        if ($this->actorId() === $viewerId) {
+            return false;
+        }
+        if ((int) ($this->approved_by ?? 0) === $viewerId) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * What this row did to $accountId's stored balance, signed.
+     *
+     * ⚠ Mirrors BalancePostingService::move() exactly — asset/expense/income accounts are
+     * debit-arithmetic (TO +, FROM −) and `vendor_purchase` is stored with its sides
+     * reversed. Every till-facing screen must agree with the engine that moved the money,
+     * or the page contradicts the balance it is printed next to.
+     */
+    public function effectOnAccount(int $accountId): float
+    {
+        $reversed = $this->transaction_type === self::TYPE_VENDOR_PURCHASE;
+        $creditsAccount = $reversed
+            ? (int) $this->from_account_id === $accountId
+            : (int) $this->to_account_id === $accountId;
+        return $creditsAccount ? (float) $this->amount : -(float) $this->amount;
+    }
+
+    /** How many days earlier than the day it was typed does this row claim to be? */
+    public function daysBackdated(): int
+    {
+        if (!$this->created_at || !$this->transaction_date) {
+            return 0;
+        }
+        $typed = \Carbon\Carbon::parse($this->created_at)->startOfDay();
+        $shows = \Carbon\Carbon::parse($this->transaction_date)->startOfDay();
+        return max(0, $shows->diffInDays($typed, false));
     }
 
     public function updatedBy(): BelongsTo

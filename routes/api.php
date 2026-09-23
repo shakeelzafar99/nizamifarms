@@ -327,6 +327,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/attendance/check-in', [\App\Http\Controllers\API\RiderController::class, 'checkIn']);
         Route::post('/attendance/check-out', [\App\Http\Controllers\API\RiderController::class, 'checkOut']);
         Route::post('/attendance/confirm-cash', [\App\Http\Controllers\API\RiderController::class, 'confirmCash']);
+        // 🏦 The till keeper's count of a COMPANY account (sibling of confirm-cash, which is
+        // about the rider's own float). Gated inside the controller on the keeper tag.
+        Route::post('/till/count', [\App\Http\Controllers\API\RiderController::class, 'tillCount']);
         Route::post('/attendance/upload-meter-picture', [\App\Http\Controllers\API\RiderController::class, 'uploadMeterPicture']);
         Route::post('/attendance/home-meter', [\App\Http\Controllers\API\RiderController::class, 'submitHomeMeter']); // U4 going-home meter
         Route::get('/attendance/home-journey', [\App\Http\Controllers\API\RiderController::class, 'getHomeJourneyStatus']); // U4 banner poll
@@ -950,10 +953,29 @@ Route::middleware('auth:sanctum')->group(function () {
         // so this static path isn't captured by the {id} wildcard. Reuses the same
         // VendorController@getReport used by the web report modal — identical KPIs.
         Route::get('/report', [\App\Http\Controllers\FIN\VendorController::class, 'getReport']);
+
+        // 🧾 ⚠⚠ MUST STAY ABOVE `GET /{id}`. Laravel matches in registration order, so
+        //    below it these would resolve as a vendor whose id is "receipt-drafts".
+        Route::get('/receipt-drafts', [\App\Http\Controllers\Khaas\ReceiptController::class, 'drafts']);
+        Route::get('/receipt-drafts/{id}', [\App\Http\Controllers\Khaas\ReceiptController::class, 'show']);
+
         Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show']);
         Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase']);
         Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment']);
         Route::post('/{id}/weighted-purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordWeightedPurchase']);
+
+        // 🧾 Sep-2026 RECEIPT CAPTURE — photo in, a card to confirm out.
+        // ⚠ None of these write money. The card becomes a purchase only through
+        //   /weighted-purchase above, which stays the single writer.
+        // ⚠⚠ The two GET routes live ABOVE `GET /{id}` (see below) — registered here
+        //    they would be swallowed by it and resolve as vendor id "receipt-drafts".
+        Route::post('/{id}/receipt/extract', [\App\Http\Controllers\Khaas\ReceiptController::class, 'extract']);
+        // ⭐⭐ A card becomes a purchase HERE, not by posting straight at
+        //    /weighted-purchase. This claims the draft under a row lock first, so a
+        //    retry after a timeout cannot book the same bill twice — which is exactly
+        //    what the screen promises the person pressing Record.
+        Route::post('/{id}/receipt/record', [\App\Http\Controllers\Khaas\ReceiptController::class, 'record']);
+        Route::post('/receipt-drafts/{id}/discard', [\App\Http\Controllers\Khaas\ReceiptController::class, 'discard']);
         Route::post('/transaction/{id}/delete', [\App\Http\Controllers\FIN\VendorController::class, 'deleteTransaction']);
         Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\VendorController::class, 'updateTransaction']);
         
@@ -1090,6 +1112,25 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/recipes/delete', [\App\Http\Controllers\CRM\WarehouseController::class, 'deleteProductRecipe']);
         Route::get('/custom-materials', [\App\Http\Controllers\CRM\WarehouseController::class, 'getCustomMaterials']);
         Route::post('/custom-materials', [\App\Http\Controllers\CRM\WarehouseController::class, 'saveCustomMaterial']);
+
+        // ❄🧾 Sep-2026 RECIPES + INGREDIENT COSTING.
+        // Deliberately NOT folded into the legacy /recipes endpoints above: those keep
+        // driving the storage deduction when a production plan is accepted, and must
+        // not change shape under an installed APK. These are the new, quantified ones.
+        // ⚠ This group has no permission middleware (a known, accepted gap), so every
+        //   write below checks its own permission inside the controller.
+        Route::get('/ingredients', [\App\Http\Controllers\Khaas\RecipeController::class, 'ingredients']);
+        Route::post('/ingredients', [\App\Http\Controllers\Khaas\RecipeController::class, 'saveIngredient']);
+        Route::post('/ingredients/{id}/deactivate', [\App\Http\Controllers\Khaas\RecipeController::class, 'deactivateIngredient']);
+        Route::get('/ingredients/month', [\App\Http\Controllers\Khaas\RecipeController::class, 'ingredientMonth']);
+        Route::post('/ingredients/opening', [\App\Http\Controllers\Khaas\RecipeController::class, 'saveOpening']);
+        Route::get('/recipe', [\App\Http\Controllers\Khaas\RecipeController::class, 'show']);
+        Route::post('/recipe', [\App\Http\Controllers\Khaas\RecipeController::class, 'save']);
+        Route::get('/recipe/coverage', [\App\Http\Controllers\Khaas\RecipeController::class, 'coverage']);
+        Route::get('/consumption', [\App\Http\Controllers\Khaas\RecipeController::class, 'consumption']);
+        Route::get('/product-cost', [\App\Http\Controllers\Khaas\RecipeController::class, 'productCost']);
+        Route::get('/product-costs', [\App\Http\Controllers\Khaas\RecipeController::class, 'productCosts']);
+        Route::post('/consumption/reapply', [\App\Http\Controllers\Khaas\RecipeController::class, 'reapply']);
 
         Route::get('/khaas-badges', [\App\Http\Controllers\CRM\WarehouseController::class, 'getKhaasBadges']);
 

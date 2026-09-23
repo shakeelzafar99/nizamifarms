@@ -8299,6 +8299,29 @@ class RiderController extends Controller
                 ]);
             }
 
+            // 🏦 TILL COUNT (Sep-2026). If this person HOLDS a company till — Shabib and
+            // NF Cash — ask him what is physically in it as he closes the day, the same way
+            // a rider is asked what cash he is carrying. The answer becomes a sealed
+            // checkpoint in the ledger; see TillCountService.
+            //
+            // ⚠ Non-fatal, like every other bolt-on here: a keeper lookup must never be able
+            // to fail a check-out. Null for everybody who is not a keeper, which is everybody
+            // but one person today, so this costs an ordinary rider one indexed lookup.
+            $tillCount = null;
+            try {
+                $tillCount = app(\App\Services\FIN\TillCountService::class)->askContext($user->id);
+                if ($tillCount) {
+                    // Which attendance row this count belongs to, so the two records can be
+                    // read together later.
+                    $tillCount['attendance_id'] = (int) $existing->id;
+                }
+            } catch (\Throwable $tcErr) {
+                \Log::warning('Till-count context failed on check-out (non-fatal)', [
+                    'user_id' => $user->id,
+                    'error' => $tcErr->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'success' => true,
                 // ⭐ NAME THE DAY HE JUST CLOSED. At 00:27 "Checked out successfully at 12:27 AM"
@@ -8314,6 +8337,8 @@ class RiderController extends Controller
                 'location_captured' => $locationData ? true : false,
                 'road_distance' => $roadDistanceResult, // ⭐ Include calculated road distance
                 'cash_held' => $cashHeld, // ⭐ null when zero balance or on compute failure
+                // 🏦 null unless this person holds a company till. An old APK simply ignores it.
+                'till_count' => $tillCount,
                 'home_journey' => $homeJourney, // ⭐ U4: null unless a company-bike home journey armed
             ]);
         } catch (\Exception $e) {
@@ -9181,6 +9206,74 @@ class RiderController extends Controller
         } catch (\Exception $e) {
             \Log::error('Failed to confirm cash held', ['error' => $e->getMessage()]);
             return response()->json(['success' => false, 'message' => 'Failed to confirm: ' . $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * 🏦 The TILL KEEPER's own count of a company till (mobile door, Sep-2026).
+     *
+     * Sibling of confirmCash() above, deliberately separate: that one is about the rider's
+     * OWN float and lives on his attendance row; this one is about a company account, and it
+     * needs a seal (`last_ledger_id`) the attendance row has no place for. Same charter
+     * though — a record, never money.
+     *
+     * The web door is HubController::tillCount. Both land in TillCountService::record so the
+     * seal can only ever be taken one way.
+     */
+    public function tillCount(Request $request)
+    {
+        try {
+            $user = Auth::user();
+
+            $validated = $request->validate([
+                'account_id'     => 'required|integer',
+                'counted_amount' => 'required|numeric|min:0|max:99999999',
+                'note'           => 'nullable|string|max:200',
+                'attendance_id'  => 'nullable|integer',
+            ]);
+
+            $tills = app(\App\Services\FIN\TillCountService::class);
+
+            // ⚠ Authorisation is the keeper tag on THIS account, re-checked server-side. The
+            // app only ever offers the account the server named, but an app is not a gate.
+            if (!$tills->isKeeper((int) $user->id, (int) $validated['account_id'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only the person who holds this till can count it.',
+                ], 403);
+            }
+
+            $account = \App\Models\FIN\AccountModel::find($validated['account_id']);
+            if (!$account) {
+                return response()->json(['success' => false, 'message' => 'Account not found'], 404);
+            }
+
+            $count = $tills->record(
+                $account,
+                (int) $user->id,
+                (float) $validated['counted_amount'],
+                \App\Models\FIN\CashCountModel::SOURCE_CHECKOUT,
+                $validated['attendance_id'] ?? null,
+                $validated['note'] ?? null
+            );
+
+            return response()->json([
+                'success'    => true,
+                'matched'    => $count->matches(),
+                'difference' => (float) $count->difference,
+                'system'     => (float) $count->system_balance,
+                'counted'    => (float) $count->counted_amount,
+                'message'    => $count->matches()
+                    ? 'Ginti mil gayi — Rs. ' . number_format((float) $count->counted_amount, 0)
+                    : ($count->shortBy() > 0
+                        ? 'Record ho gaya. Kitaab se Rs. ' . number_format(abs($count->shortBy()), 0) . ' KAM hai.'
+                        : 'Record ho gaya. Kitaab se Rs. ' . number_format(abs($count->shortBy()), 0) . ' ZYADA hai.'),
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            throw $ve;
+        } catch (\Exception $e) {
+            \Log::error('Failed to record till count', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not record the count'], 500);
         }
     }
 

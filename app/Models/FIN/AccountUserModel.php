@@ -41,6 +41,10 @@ class AccountUserModel extends BaseModel
         'account_id',
         'user_id',
         'is_default',
+        // ⭐ Sep-2026: this person physically HOLDS this till, so they are the one asked to
+        // count it. Deliberately NOT is_default — that means "their default payment source",
+        // which Taimur legitimately is on accounts he does not keep the cash for.
+        'is_keeper',
         'can_expense',
         'can_vendor',
         'can_advance',
@@ -51,6 +55,7 @@ class AccountUserModel extends BaseModel
 
     protected $casts = [
         'is_default'  => 'boolean',
+        'is_keeper'   => 'boolean',
         'can_expense' => 'boolean',
         'can_vendor'  => 'boolean',
         'can_advance' => 'boolean',

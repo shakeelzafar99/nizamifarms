@@ -1445,6 +1445,20 @@ Route::middleware(['auth'])->group(function () {
         Route::post('/inventory/recipe/{id}/delete', [\App\Http\Controllers\KhaasController::class, 'deleteRecipe'])->name('inventory.recipe.delete');
         Route::post('/inventory/custom-material', [\App\Http\Controllers\KhaasController::class, 'saveCustomMaterialWeb'])->name('inventory.custom-material.save');
         Route::post('/inventory/storage-config', [\App\Http\Controllers\KhaasController::class, 'updateStorageConfig'])->name('inventory.storage-config');
+
+        // ❄🧾 Sep-2026 RECIPES + INGREDIENT COSTING — the same controller the phone
+        // calls, so the Planning tab and the app cannot show different recipes.
+        Route::get('/ingredients', [\App\Http\Controllers\Khaas\RecipeController::class, 'ingredients'])->name('ingredients');
+        Route::post('/ingredients', [\App\Http\Controllers\Khaas\RecipeController::class, 'saveIngredient'])->name('ingredients.save');
+        Route::post('/ingredients/{id}/deactivate', [\App\Http\Controllers\Khaas\RecipeController::class, 'deactivateIngredient'])->name('ingredients.deactivate');
+        Route::get('/ingredients/month', [\App\Http\Controllers\Khaas\RecipeController::class, 'ingredientMonth'])->name('ingredients.month');
+        Route::post('/ingredients/opening', [\App\Http\Controllers\Khaas\RecipeController::class, 'saveOpening'])->name('ingredients.opening');
+        Route::get('/recipe', [\App\Http\Controllers\Khaas\RecipeController::class, 'show'])->name('recipe.show');
+        Route::post('/recipe', [\App\Http\Controllers\Khaas\RecipeController::class, 'save'])->name('recipe.save');
+        Route::get('/recipe/coverage', [\App\Http\Controllers\Khaas\RecipeController::class, 'coverage'])->name('recipe.coverage');
+        Route::get('/consumption', [\App\Http\Controllers\Khaas\RecipeController::class, 'consumption'])->name('consumption');
+        Route::get('/product-costs', [\App\Http\Controllers\Khaas\RecipeController::class, 'productCosts'])->name('product-costs');
+        Route::post('/consumption/reapply', [\App\Http\Controllers\Khaas\RecipeController::class, 'reapply'])->name('consumption.reapply');
     });
 
     // 📦 Storage (Supplies) — packaging bought in bulk, charged to expenses one packet
@@ -1574,6 +1588,12 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/report', [\App\Http\Controllers\FIN\VendorController::class, 'getReport'])->name('report');
             Route::get('/create', [\App\Http\Controllers\FIN\VendorController::class, 'create'])->name('create');
             Route::post('/', [\App\Http\Controllers\FIN\VendorController::class, 'store'])->name('store');
+
+            // 🧾 ⚠⚠ MUST STAY ABOVE `GET /{id}` — Laravel matches in registration
+            //    order, so below it these resolve as a vendor named "receipt-drafts".
+            Route::get('/receipt-drafts', [\App\Http\Controllers\Khaas\ReceiptController::class, 'drafts'])->name('receipt.drafts');
+            Route::get('/receipt-drafts/{id}', [\App\Http\Controllers\Khaas\ReceiptController::class, 'show'])->name('receipt.show');
+
             Route::get('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'show'])->name('show');
             Route::get('/{id}/edit', [\App\Http\Controllers\FIN\VendorController::class, 'edit'])->name('edit');
             Route::put('/{id}', [\App\Http\Controllers\FIN\VendorController::class, 'update'])->name('update');
@@ -1582,6 +1602,16 @@ Route::middleware(['auth'])->group(function () {
             Route::post('/{id}/purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordPurchase'])->name('purchase');
             Route::post('/{id}/payment', [\App\Http\Controllers\FIN\VendorController::class, 'recordPayment'])->name('payment');
             Route::post('/{id}/weighted-purchase', [\App\Http\Controllers\FIN\VendorController::class, 'recordWeightedPurchase'])->name('weighted-purchase');
+
+            // 🧾 Sep-2026 receipt capture — the same controller the phone calls.
+            // ⚠ None of these write money; the card is saved through the route above.
+            // ⚠⚠ The GET halves are registered ABOVE `GET /{id}` (further up this
+            //    group) — here they would resolve as a vendor id of "receipt-drafts".
+            Route::post('/{id}/receipt/extract', [\App\Http\Controllers\Khaas\ReceiptController::class, 'extract'])->name('receipt.extract');
+            // ⭐⭐ The card's save door — claims the draft under a row lock, then replays
+            //    into recordWeightedPurchase, so a retry cannot book the bill twice.
+            Route::post('/{id}/receipt/record', [\App\Http\Controllers\Khaas\ReceiptController::class, 'record'])->name('receipt.record');
+            Route::post('/receipt-drafts/{id}/discard', [\App\Http\Controllers\Khaas\ReceiptController::class, 'discard'])->name('receipt.discard');
             Route::post('/transaction/{id}/delete', [\App\Http\Controllers\FIN\VendorController::class, 'deleteTransaction'])->name('transaction.delete');
             Route::post('/transaction/{id}/update', [\App\Http\Controllers\FIN\VendorController::class, 'updateTransaction'])->name('transaction.update');
             Route::post('/toggle-expand', [\App\Http\Controllers\FIN\VendorController::class, 'toggleExpandAll'])->name('toggle-expand');
@@ -1681,6 +1711,16 @@ Route::middleware(['auth'])->group(function () {
             Route::get('/account/{id}/users', [\App\Http\Controllers\FIN\Hub\HubController::class, 'accountUsers'])->name('account-users');
             Route::post('/account/{id}/users', [\App\Http\Controllers\FIN\Hub\HubController::class, 'saveAccountUser'])->name('account-users.save');
             Route::delete('/account/{id}/users/{userId}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'deleteAccountUser'])->name('account-users.delete');
+            // 🏦 The keeper's own count of the till he holds (web door; the mobile door is
+            // POST /rider/till/count). Gated inside the controller on is_keeper so it can
+            // return JSON the modal shows rather than an HTML redirect.
+            Route::post('/account/{id}/count', [\App\Http\Controllers\FIN\Hub\HubController::class, 'tillCount'])
+                ->whereNumber('id')->name('account-count');
+            // 💵 The floating cash pill. No permission gate — the service scopes to the
+            // accounts the caller is tagged on, so it answers 0 for everyone else.
+            Route::get('/watch/count', [\App\Http\Controllers\FIN\Hub\HubController::class, 'watchCount'])->name('watch.count');
+            Route::get('/watch/list', [\App\Http\Controllers\FIN\Hub\HubController::class, 'watchList'])->name('watch.list');
+            Route::post('/watch/seen', [\App\Http\Controllers\FIN\Hub\HubController::class, 'watchSeen'])->name('watch.seen');
             Route::get('/data/transfer-accounts', [\App\Http\Controllers\FIN\Hub\HubController::class, 'transferAccountsData'])->name('transfer-accounts');
             Route::get('/vendors', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendors'])->name('vendors');
             Route::get('/vendor/{id}', [\App\Http\Controllers\FIN\Hub\HubController::class, 'vendorDetail'])->name('vendor');

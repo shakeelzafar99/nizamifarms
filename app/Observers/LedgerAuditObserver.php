@@ -27,6 +27,11 @@ class LedgerAuditObserver
         'approval_status',
         'mode',
         'settlement_status',
+        // ⭐ Sep-2026. Its absence was a real hole: re-dating a row moved `updated_at`
+        // but wrote NO audit entry, so "someone changed the date" — the exact thing the
+        // owner suspected during the Sep-21 NF Cash investigation — left no trace to
+        // find. A date IS the story a money row tells; a change to it is auditable.
+        'transaction_date',
     ];
 
     public function created(LedgerModel $l): void

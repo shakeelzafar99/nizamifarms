@@ -463,10 +463,32 @@ class KhaasController extends Controller
 
         $canFulfilRequests = optional(auth()->user())->hasMobilePermission('access_khaas_mode') ?? false;
 
+        // ❄ Sep-2026 — this month's estimated ingredient cost per pack, plus how the
+        // packs arrived. One query for the whole page, not one per card. It fails soft:
+        // a costing problem must never take the Products page down with it.
+        $recipeCosts = [];
+        $recipeCoverage = [];
+        try {
+            $month = now()->format('Y-m');
+            $costing = new \App\Services\Khaas\FrozenCostingService();
+            foreach ($costing->productMonth((int) $khaasBU->id, $month)['rows'] as $row) {
+                $recipeCosts[(int) $row['product_id']] = $row;
+            }
+            foreach ((new \App\Services\Khaas\RecipeService())->coverage((int) $khaasBU->id) as $row) {
+                $recipeCoverage[(int) $row['product_id']] = $row;
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('Khaas products: recipe cost chip failed', ['error' => $e->getMessage()]);
+        }
+
+        $canSeeIngredientCost = $this->canSeeIngredientCost();
+        $canManageRecipes     = $this->canManageRecipes();
+
         return view('khaas.products', compact(
             'khaasBU', 'products', 'warehouseInventory', 'pendingTransfers', 'pendingTransferRecords', 'categories',
             'countedByUsers', 'orderDemand', 'pendingRequestsByProduct', 'pendingRequestRecords',
-            'declinedRequestRecords', 'canFulfilRequests'
+            'declinedRequestRecords', 'canFulfilRequests',
+            'recipeCosts', 'recipeCoverage', 'canSeeIngredientCost', 'canManageRecipes'
         ));
     }
 
@@ -2921,6 +2943,75 @@ class KhaasController extends Controller
             }
         }
 
+        // ⭐ The ingredient panel has its OWN gate, deliberately narrower than the one
+        // above. Owner ruling 21-Sep: Qasim sees the QUANTITIES — bought, used, what is
+        // left on the shelf — and not the rupees. So the panel is never hidden; only
+        // its money columns are stripped, here on the server, so no client can leak
+        // what it was not sent.
+        //
+        // ⚠⚠ Note this is narrower than canSeeMonthCosts(), which today is
+        //    (view_khaas_month_review OR view_khaas_sales_report) and therefore already
+        //    includes Qasim. Nothing he sees today changes; only the NEW rupees are
+        //    withheld. Tick view_khaas_costing for role 17 to give them to him.
+        $data['can_see_ingredient_cost'] = $this->canSeeIngredientCost();
+
+        if (!$data['can_see_ingredient_cost']) {
+            $data = $this->stripIngredientMoney($data);
+        }
+
+        return $data;
+    }
+
+    /** Who may see the estimated ingredient cost in rupees. */
+    private function canSeeIngredientCost(): bool
+    {
+        $user = auth()->user();
+        return $user ? $user->hasMobilePermission('view_khaas_costing') : false;
+    }
+
+    /** Who may add ingredients and edit the recipe behind a product. */
+    private function canManageRecipes(): bool
+    {
+        $user = auth()->user();
+        return $user ? $user->hasMobilePermission('manage_khaas_recipes') : false;
+    }
+
+    /**
+     * Remove every rupee the recipe half produced, leaving the quantities intact.
+     * Keys stay present and null so a client never has to guess whether a figure is
+     * missing or simply zero.
+     */
+    private function stripIngredientMoney(array $data): array
+    {
+        if (!empty($data['ingredients']['rows'])) {
+            foreach ($data['ingredients']['rows'] as $i => $row) {
+                foreach (['bought_cost', 'used_value', 'rate_per_base', 'rate_text'] as $k) {
+                    $data['ingredients']['rows'][$i][$k] = null;
+                }
+            }
+        }
+
+        foreach (['bought_cost', 'used_value', 'meat_used_value', 'other_used_value'] as $k) {
+            if (isset($data['ingredients']['totals'][$k])) {
+                $data['ingredients']['totals'][$k] = null;
+            }
+        }
+
+        if (!empty($data['product_costs']['rows'])) {
+            foreach ($data['product_costs']['rows'] as $i => $row) {
+                $data['product_costs']['rows'][$i]['cost'] = null;
+                $data['product_costs']['rows'][$i]['cost_per_pack'] = null;
+                foreach (($row['lines'] ?? []) as $j => $line) {
+                    $data['product_costs']['rows'][$i]['lines'][$j]['cost'] = null;
+                }
+            }
+        }
+
+        $data['product_costs']['totals']['cost'] = null;
+        $data['product_costs']['totals']['cost_per_pack'] = null;
+        $data['headline']['ingredient_cost'] = null;
+        $data['headline']['ingredient_per_pack'] = null;
+
         return $data;
     }
 
@@ -2956,6 +3047,8 @@ class KhaasController extends Controller
             'availableMonths' => $availableMonths,
             'basis'           => $data['basis'],
             'canSeeCosts'     => $data['can_see_costs'],
+            'canSeeIngredientCost' => $data['can_see_ingredient_cost'],
+            'canManageRecipes'     => $this->canManageRecipes(),
             'costTypes'       => \App\Models\FIN\CostTypeMapModel::types(),
         ]);
     }

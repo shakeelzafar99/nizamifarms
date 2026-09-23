@@ -755,6 +755,14 @@
   .nfhub .type-chip.tc-payment{background:var(--in-soft);color:var(--in)}
 
   /* placeholder */
+  /* ⭐ Sep-2026 — whose hand posted a row, and whether it carries a date it was not typed on.
+     Both are small, quiet and always on: they teach the page rather than interrupt it. */
+  .nfhub .hand-chip{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;
+    background:var(--info-soft);color:var(--info);font-size:10.5px;font-weight:700;white-space:nowrap}
+  .nfhub .back-chip{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:99px;
+    background:var(--owe-soft);color:var(--owe);font-size:10.5px;font-weight:700;white-space:nowrap}
+  .nfhub tr.txn-hit td{animation:nfhubHit 2.4s ease-out 1}
+  @keyframes nfhubHit{0%{background:var(--owe-soft)}100%{background:transparent}}
   .nfhub .ph{background:var(--surface);border:1px dashed var(--line);border-radius:var(--radius);
     padding:40px 24px;text-align:center;box-shadow:var(--shadow)}
   .nfhub .ph h2{margin:0 0 6px;font-size:18px}

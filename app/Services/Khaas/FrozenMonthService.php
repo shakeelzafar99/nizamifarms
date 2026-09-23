@@ -926,16 +926,32 @@ class FrozenMonthService
         $perPackVar = $made > 0 ? $product / $made : 0.0;
         $margin     = $avgPrice - $perPackVar;
 
+        // ── the recipe half ────────────────────────────────────────────────
+        // Estimate only, and labelled as one everywhere it is shown. It sits BESIDE the
+        // money above and never changes it: `product`, `fixed`, `total_spend` and every
+        // figure HQ reconciles against are untouched by anything below this line.
+        $costing     = new FrozenCostingService();
+        $ingredients = $costing->ingredientMonth($businessUnitId, $month);
+        $productCost = $costing->productMonth($businessUnitId, $month);
+
+        $madeBatch  = (int) $production['totals']['made_batch'];
+        $madeManual = (int) $production['totals']['made_manual'];
+
         return [
-            'month'      => $month,
-            'basis'      => $basis,
-            'production' => $production,
-            'costs'      => $costs,
-            'meat'       => $meat,
+            'month'        => $month,
+            'basis'        => $basis,
+            'production'   => $production,
+            'costs'        => $costs,
+            'meat'         => $meat,
+            'ingredients'  => $ingredients,
+            'product_costs' => $productCost,
+            'made_split'   => $this->madeSplit($made, $madeBatch, $madeManual, $productCost),
             'headline'   => [
                 'made'            => $made,
-                'made_batch'      => (int) $production['totals']['made_batch'],
-                'made_manual'     => (int) $production['totals']['made_manual'],
+                'made_batch'      => $madeBatch,
+                'made_manual'     => $madeManual,
+                'ingredient_cost'     => (float) $productCost['totals']['cost'],
+                'ingredient_per_pack' => (float) $productCost['totals']['cost_per_pack'],
                 'made_value'      => round($madeValue, 2),
                 'avg_price'       => round($avgPrice, 2),
                 'product'         => $product,
@@ -955,6 +971,63 @@ class FrozenMonthService
                 'breakeven_packs'  => $margin > 0 ? (int) ceil($fixed / $margin) : null,
                 'meat_adjustment'  => $meatAdjustment,
             ],
+        ];
+    }
+
+    /**
+     * How the month's packs reached the warehouse, said out loud.
+     *
+     * ⭐⭐ "449 made" is two different stories. Some packs went through a production
+     * plan — their meat came off storage, a batch was opened and closed, and the system
+     * watched it happen. The rest were typed straight into the warehouse because the
+     * batch was closed at 0 or never opened. Both are real production and both are
+     * costed identically here; what differs is how much the system actually saw.
+     *
+     * So the number is shown split rather than blended, and a line of plain English
+     * says which is which. Owner's ask, 21-Sep: "we can have an alert text in the month
+     * review to flag how many were made through plan and how many direct inputs."
+     *
+     * ⚠ This is NOT a complaint about direct entry. The standing ruling is that
+     *   whatever number Qasim enters is what was produced; the batch-end guard was
+     *   deliberately dropped and must not come back. This only tells the reader how the
+     *   figure was assembled.
+     */
+    private function madeSplit(int $made, int $madeBatch, int $madeManual, array $productCost): array
+    {
+        $uncosted = max(0, $made - (int) ($productCost['totals']['made'] ?? 0));
+
+        $planShare = $made > 0 ? round($madeBatch * 100 / $made, 1) : 0.0;
+
+        if ($made === 0) {
+            $note = 'Nothing was made this month.';
+        } elseif ($madeManual === 0) {
+            $note = sprintf('All %d packs came through a production plan.', $made);
+        } elseif ($madeBatch === 0) {
+            $note = sprintf('All %d packs were entered straight into the warehouse, with no production plan behind them.', $made);
+        } else {
+            $note = sprintf(
+                '%d of %d packs came through a production plan; %d were entered directly into the warehouse.',
+                $madeBatch, $made, $madeManual
+            );
+        }
+
+        $warnings = [];
+        if ($uncosted > 0) {
+            $warnings[] = sprintf(
+                '%d of the %d packs have no recipe behind them, so their ingredients are not in the figures below.',
+                $uncosted, $made
+            );
+        }
+
+        return [
+            'made'            => $made,
+            'plan'            => $madeBatch,
+            'direct'          => $madeManual,
+            'plan_share_pct'  => $planShare,
+            'costed'          => (int) ($productCost['totals']['made'] ?? 0),
+            'uncosted'        => $uncosted,
+            'note'            => $note,
+            'warnings'        => $warnings,
         ];
     }
 }

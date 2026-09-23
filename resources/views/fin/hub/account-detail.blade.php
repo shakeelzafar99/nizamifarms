@@ -40,6 +40,32 @@
             @else
                 <div class="stat-chip">Opening balance<b class="num">Rs. {{ number_format($account->opening_balance, 0) }}</b></div>
                 <div class="stat-chip">Category<b style="text-transform:capitalize">{{ $account->account_category }}</b></div>
+                {{-- 🏦 WHEN WAS THIS LAST KNOWN TO BE RIGHT? The single most useful fact about
+                     a till, and until Sep-2026 nothing on this page could answer it. --}}
+                @if($isKeeper || $lastCount)
+                    @php
+                        $lcToday = $lastCount && \Carbon\Carbon::parse($lastCount['counted_at'])->isToday();
+                        $lcOk = $lastCount && $lastCount['matched'];
+                        $lcColor = !$lastCount ? 'var(--ink3)' : ($lcOk ? 'var(--in)' : 'var(--out)');
+                    @endphp
+                    <div class="stat-chip" title="A count is a record only — it never moves money.">
+                        Last counted
+                        <b style="color:{{ $lcColor }}">
+                            @if(!$lastCount)
+                                never
+                            @else
+                                {{ \Carbon\Carbon::parse($lastCount['counted_at'])->format('M d, H:i') }} ·
+                                {{ $lastCount['who'] }} ·
+                                {{ $lcOk ? 'matched' : ($lastCount['difference'] < 0
+                                    ? 'short Rs. ' . number_format(abs($lastCount['difference']), 0)
+                                    : 'over Rs. ' . number_format(abs($lastCount['difference']), 0)) }}
+                            @endif
+                        </b>
+                        @if($lastCount && !$lcToday)
+                            <span style="font-size:11px;color:var(--owe);font-weight:700">· not counted today</span>
+                        @endif
+                    </div>
+                @endif
             @endif
         </div>
         <div class="bal-actions">
@@ -48,6 +74,7 @@
                 <a class="btn" href="{{ $oldUrl }}">Deposit / more ↗</a>
             @else
                 @if(!auth()->user()?->isReadOnly())<button class="btn primary" type="button" onclick="hubOpenTransfer()">⇄ Transfer</button>@endif
+                @if($isKeeper)<button class="btn" type="button" onclick="tcOpen()" title="Count what is physically in the till">🏦 Count the till</button>@endif
                 <a class="btn" href="{{ $oldUrl }}">More ↗</a>
             @endif
         </div>
@@ -157,6 +184,13 @@
                 '<b style="font-size:13.5px;">' + auEsc(r.name) + '</b>' +
                 (r.is_default ? '<span class="type-chip" style="margin-left:6px;">their default</span>' : '') +
                 '<div style="margin-top:3px;">' + tick('can_expense','Expenses') + tick('can_vendor','Vendor payments') + tick('can_advance','Advances') + '</div>' +
+                // 🏦 Cash: holds the drawer → asked to count it, and told when others move it.
+                //    Bank: answers for the account → told when others move it, never asked to count.
+                (auState.is_cash
+                    ? '<div style="margin-top:3px;">' + tick('is_keeper','🏦 Holds the cash (asked to count it · told when others move it)') + '</div>'
+                    : (auState.is_bank
+                        ? '<div style="margin-top:3px;">' + tick('is_keeper','🏦 Answers for this account (told when others move it)') + '</div>'
+                        : '')) +
                 bank +
             '</div>' +
             (auState.can_manage
@@ -181,12 +215,15 @@
     function auSave(userId){
         const bankSel = document.getElementById('au_bank_' + userId);
         const row = (auState.rows || []).find(r => r.user_id === userId) || {};
+        const keeperBox = document.getElementById('au_is_keeper_' + userId);
         auPost({
             user_id: userId,
             can_expense: document.getElementById('au_can_expense_' + userId).checked,
             can_vendor:  document.getElementById('au_can_vendor_'  + userId).checked,
             can_advance: document.getElementById('au_can_advance_' + userId).checked,
             is_default:  !!row.is_default,
+            // Absent on bank accounts, where the box is never rendered.
+            is_keeper:   keeperBox ? keeperBox.checked : !!row.is_keeper,
             preferred_bank_id: bankSel && bankSel.value ? parseInt(bankSel.value, 10) : null
         });
     }
@@ -198,7 +235,7 @@
         auPost({
             user_id: userId,
             can_expense: !!row.can_expense, can_vendor: !!row.can_vendor, can_advance: !!row.can_advance,
-            is_default: !row.is_default,
+            is_default: !row.is_default, is_keeper: !!row.is_keeper,
             preferred_bank_id: bankSel && bankSel.value ? parseInt(bankSel.value, 10) : null
         });
     }
@@ -206,7 +243,8 @@
     function auAdd(){
         const sel = document.getElementById('auUser');
         if (!sel.value) return;
-        auPost({user_id: parseInt(sel.value, 10), can_expense: true, can_vendor: true, can_advance: true, is_default: false});
+        // A new person is never silently made the keeper — that is a deliberate tick.
+        auPost({user_id: parseInt(sel.value, 10), can_expense: true, can_vendor: true, can_advance: true, is_default: false, is_keeper: false});
     }
 
     function auRemove(userId){
@@ -231,10 +269,38 @@
                 <span class="meta">{{ $daysLabel }} · {{ $ledger['count'] }} entries @if($isEmployee)· running balance is the calculated one in the header @endif</span>
                 <div class="row-actions">
                     @foreach(['30' => '30d', '90' => '90d', '365' => '1yr', 'all' => 'All'] as $d => $lbl)
-                        <a class="mini-btn {{ $daysSel === $d ? 'on' : '' }}" href="{{ route('fin.hub.account', ['id' => $account->id, 'scope' => $scope, 'days' => $d]) }}">{{ $lbl }}</a>
+                        <a class="mini-btn {{ $daysSel === $d ? 'on' : '' }}" href="{{ route('fin.hub.account', ['id' => $account->id, 'scope' => $scope, 'days' => $d, 'who' => $who]) }}">{{ $lbl }}</a>
                     @endforeach
                 </div>
             </div>
+        </div>
+        {{-- ⭐ WHOSE HAND (Sep-2026). The owner's question was "what was done by people other
+             than me" — "Not me" is that chip; the rest fall out of the same switch.
+             "My hand" means I entered it OR I approved it, so waving a rider's settlement
+             through does not make it somebody else's entry. See LedgerModel::isSomeoneElsesHand.
+             ⚠ This filters what is LISTED. The Balance column is still accumulated over every
+             row, so it keeps agreeing with the figure at the top of the page. --}}
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 2px 10px;">
+            <span class="meta" style="font-weight:700;">Who:</span>
+            <div class="row-actions" style="justify-content:flex-start;">
+                @foreach(['all' => 'Everyone', 'others' => 'Not me', 'me' => 'Only me'] as $w => $lbl)
+                    <a class="mini-btn {{ $who === $w ? 'on' : '' }}"
+                       href="{{ route('fin.hub.account', ['id' => $account->id, 'scope' => $scope, 'days' => $daysSel, 'who' => $w]) }}">{{ $lbl }}</a>
+                @endforeach
+            </div>
+            @if(!empty($whoOptions))
+                <select class="kt-select" style="padding:4px 8px;border:1px solid var(--line);border-radius:7px;font-size:12px;max-width:190px;"
+                        onchange="if(this.value)window.location=this.value;">
+                    <option value="">— a person —</option>
+                    @foreach($whoOptions as $opt)
+                        <option value="{{ route('fin.hub.account', ['id' => $account->id, 'scope' => $scope, 'days' => $daysSel, 'who' => $opt['id']]) }}"
+                                {{ (string) $who === (string) $opt['id'] ? 'selected' : '' }}>{{ $opt['name'] }}</option>
+                    @endforeach
+                </select>
+            @endif
+            @if(($ledger['hidden'] ?? 0) > 0)
+                <span class="meta">{{ $ledger['hidden'] }} {{ $ledger['hidden'] === 1 ? 'entry' : 'entries' }} hidden by this filter · day totals below count only what is shown</span>
+            @endif
         </div>
         @forelse($ledger['groups'] as $g)
             @php
@@ -261,6 +327,62 @@
                         </tr></thead>
                         <tbody>
                         @foreach($g['items'] as $it)
+                            {{-- 🏦 THE CHECKPOINT LINE. Not a transaction — a statement by the
+                                 person who holds the cash that on this day, at this time, the
+                                 drawer held this much. Everything below it on the page was
+                                 already inside that figure; anything listed ABOVE it but dated
+                                 on/before it arrived afterwards, and is named right here. --}}
+                            @if(($it['kind'] ?? 'row') === 'count')
+                                @php
+                                    $c = $it['count'];
+                                    $cOk = $c['matched'];
+                                    $cDrift = ($c['late_count'] ?? 0) > 0 || ($c['touched_count'] ?? 0) > 0;
+                                @endphp
+                                <tr>
+                                    <td class="cell-date num">{{ \Carbon\Carbon::parse($c['counted_at'])->format('H:i') }}</td>
+                                    <td colspan="{{ 4 + ($ledger['has_running'] ? 1 : 0) + 1 }}"
+                                        style="background:{{ $cOk ? 'var(--in-soft)' : 'var(--out-soft)' }};border-left:3px solid {{ $cOk ? 'var(--in)' : 'var(--out)' }};">
+                                        <div style="font-size:12.5px;font-weight:700;color:{{ $cOk ? 'var(--in)' : 'var(--out)' }}">
+                                            {{ $cOk ? '✓' : '⚠' }} {{ $c['who'] }} counted Rs. {{ number_format($c['counted_amount'], 2) }}
+                                            <span style="font-weight:600;color:var(--ink3)">
+                                                · books said Rs. {{ number_format($c['system_balance'], 2) }} ·
+                                                @if($cOk)
+                                                    match
+                                                @elseif($c['difference'] < 0)
+                                                    short Rs. {{ number_format(abs($c['difference']), 2) }}
+                                                @else
+                                                    over Rs. {{ number_format(abs($c['difference']), 2) }}
+                                                @endif
+                                                · {{ $c['source'] === 'checkout' ? 'at check-out' : 'on the Hub' }}
+                                            </span>
+                                        </div>
+                                        @if($c['note'])
+                                            <div style="font-size:11.5px;color:var(--ink3);margin-top:2px;">“{{ $c['note'] }}”</div>
+                                        @endif
+                                        @if($cDrift)
+                                            {{-- ⭐⭐ This is the sentence the whole feature exists to be able to
+                                                 print: the balance moved after he counted, and here is exactly
+                                                 what moved it. --}}
+                                            <div style="font-size:11.5px;color:var(--owe);font-weight:700;margin-top:3px;">
+                                                @if(($c['late_count'] ?? 0) > 0)
+                                                    ⚠ {{ $c['late_count'] }} {{ $c['late_count'] === 1 ? 'entry' : 'entries' }}
+                                                    dated on/before this count {{ $c['late_count'] === 1 ? 'was' : 'were' }} added afterwards
+                                                    (net {{ $c['late_net'] < 0 ? '−' : '+' }} Rs. {{ number_format(abs($c['late_net']), 2) }})
+                                                    — #{{ implode(', #', $c['late_ids']) }}{{ ($c['late_more'] ?? 0) > 0 ? ' +' . $c['late_more'] . ' more' : '' }}
+                                                @endif
+                                                @if(($c['touched_count'] ?? 0) > 0)
+                                                    {{-- ⚠ No inline @if here: Blade does not recognise a directive
+                                                         glued to the preceding word ("count@if(" is a parse error). --}}
+                                                    <br>⚠ {{ $c['touched_count'] }} earlier {{ $c['touched_count'] === 1 ? 'entry was' : 'entries were' }}
+                                                    changed after this count{{ ($c['touched_deleted'] ?? 0) > 0 ? ' (' . $c['touched_deleted'] . ' deleted)' : '' }}
+                                                    — #{{ implode(', #', $c['touched_ids']) }}{{ ($c['touched_more'] ?? 0) > 0 ? ' +' . $c['touched_more'] . ' more' : '' }}
+                                                @endif
+                                            </div>
+                                        @endif
+                                    </td>
+                                </tr>
+                                @continue
+                            @endif
                             @php
                                 $r = $it['row'];
                                 $type = $r->transaction_type;
@@ -285,15 +407,43 @@
                                     'date' => \Carbon\Carbon::parse($r->transaction_date)->format('M d, Y'),
                                     // Which of OUR banks — only tagged on rows touching an online account.
                                     'bank' => optional($r->receivingAccount)->short_code ?: optional($r->receivingAccount)->name,
+                                    // ⭐ The ACTOR, not created_by — on an expense row created_by is the
+                                    // REQUESTER (LedgerPostingService), so it names whose expense it was,
+                                    // not who posted it. 628 rows on the replica disagree between the two.
                                     // fullname, not name — UserModel has no `name` (always NULL otherwise)
-                                    'by' => optional($r->createdBy)->fullname ?? '—',
+                                    'by' => $it['actor'] ?? ($r->createdBy->fullname ?? '—'),
+                                    'requestedBy' => optional($r->createdBy)->fullname,
+                                    'approvedByName' => optional($r->approvedBy)->fullname,
+                                    // Feeds the drawer's existing "Entered" row. Spelling out the gap
+                                    // here rather than in JS keeps the one wording in one place.
+                                    'entered' => $r->created_at
+                                        ? $r->created_at->format('M d, Y H:i')
+                                            . (($it['backdated'] ?? 0) > 0
+                                                ? '  ·  ' . $it['backdated'] . ' day' . ($it['backdated'] === 1 ? '' : 's') . ' after the date it carries'
+                                                : '')
+                                        : null,
+                                    'backdated' => $it['backdated'] ?? 0,
                                     'pending' => in_array($st, ['pending', 'pending_l1', 'pending_l2'], true),
                                 ];
                             @endphp
-                            <tr class="t-row" data-d='{{ json_encode($d, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'>
+                            {{-- id = the deep-link target the cash pill jumps to (#txn-123). --}}
+                            <tr class="t-row" id="txn-{{ $r->id }}" data-d='{{ json_encode($d, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP) }}'>
                                 <td class="cell-date num">{{ $r->created_at ? $r->created_at->format('H:i') : '' }}</td>
                                 <td><span class="type-chip">{{ $typeLabel }}</span></td>
-                                <td class="desc" title="{{ $desc }}">{{ $desc !== '' ? \Illuminate\Support\Str::limit($desc, 40) : '—' }}@if($other) <span style="color:var(--ink3)">· {{ \Illuminate\Support\Str::limit($other, 18) }}</span>@endif</td>
+                                <td class="desc" title="{{ $desc }}">{{ $desc !== '' ? \Illuminate\Support\Str::limit($desc, 40) : '—' }}@if($other) <span style="color:var(--ink3)">· {{ \Illuminate\Support\Str::limit($other, 18) }}</span>@endif
+                                    {{-- ⭐ Whose hand — shown on EVERY row, filter on or off, so the eye
+                                         learns the page instead of having to go looking. --}}
+                                    @if($it['others'] ?? false)
+                                        <span class="hand-chip" title="Posted by someone other than you">👤 {{ $it['actor'] }}</span>
+                                    @endif
+                                    {{-- ⚠ Informational, NOT an alarm. Backdating is routine here (10–50 rows
+                                         a day carry yesterday's date, and a 26-day-old petrol claim was
+                                         perfectly legitimate). What is worth a look is backdated AND someone
+                                         else's hand AND large — which is what "Not me" sorted by amount shows. --}}
+                                    @if(($it['backdated'] ?? 0) > 0)
+                                        <span class="back-chip" title="Entered {{ $it['backdated'] }} day(s) after the date it carries">dated {{ \Carbon\Carbon::parse($r->transaction_date)->format('M d') }} · typed {{ $r->created_at?->format('M d') }}</span>
+                                    @endif
+                                </td>
                                 <td class="r">@if($it['is_in'])<span class="amt in num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
                                 <td class="r">@if(!$it['is_in'])<span class="amt out num">{{ number_format($r->amount, 2) }}</span>@else <span style="color:var(--ink3)">–</span>@endif</td>
                                 @if($ledger['has_running'])<td class="r num" style="color:{{ $it['running'] < 0 ? 'var(--out)' : 'var(--ink2)' }}">{{ $it['running'] !== null ? number_format($it['running'], 2) : '' }}</td>@endif
@@ -356,6 +506,23 @@
     @endif
 
     @include('fin.hub.partials.settle-modal')
+    {{-- 🏦 Only the person who holds this cash is offered the count. --}}
+    @if($isKeeper)@include('fin.hub.partials.till-count-modal')@endif
     @include('fin.hub.partials.drawer')
+
+    <script>
+    // 💵 Deep link from the cash pill: /finance/hub/account/1#txn-22190 — scroll the row into
+    // view and flash it, so "which payment was that?" lands on the actual line rather than
+    // somewhere near it. Silent when the row is outside the current period window.
+    (function () {
+        var m = (window.location.hash || '').match(/^#txn-(\d+)$/);
+        if (!m) { return; }
+        var row = document.getElementById('txn-' + m[1]);
+        if (!row) { return; }
+        row.scrollIntoView({behavior: 'smooth', block: 'center'});
+        row.classList.add('txn-hit');
+        setTimeout(function () { row.classList.remove('txn-hit'); }, 2600);
+    })();
+    </script>
 </div>
 @endsection

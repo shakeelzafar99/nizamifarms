@@ -591,7 +591,35 @@ class HubController extends Controller
             $days = max(7, min((int) $daysParam, 3650));
             $daysLabel = 'last ' . $days . ' days';
         }
-        $ledger = $this->buildAccountLedger($account, $days, $isEmployee, $isAsset);
+        // ⭐ "Whose hand" filter (Sep-2026). `others` is the one the owner actually asked for
+        // — "what was done by people other than me" — the rest fall out of the same switch.
+        $whoRaw = (string) $request->get('who', 'all');
+        $who = in_array($whoRaw, ['all', 'others', 'me', 'system'], true) || ctype_digit($whoRaw)
+            ? $whoRaw : 'all';
+
+        // 🏦 Till counts inside the same window, each already carrying the drift behind it.
+        //
+        // ⚠ Degrades, never fails: if the web files land on prod before the SQL (manual
+        // deploy), the count tables do not exist yet. The account page — which people use
+        // all day — must still open, minus the checkpoint lines, rather than 500.
+        $tills = app(\App\Services\FIN\TillCountService::class);
+        $counts = [];
+        $isKeeper = false;
+        $lastCount = null;
+        try {
+            if ($isAsset && !$isEmployee) {
+                $counts = $tills->withDrift($account->id, \Carbon\Carbon::today()->subDays($days)->startOfDay())->all();
+            }
+            $isKeeper = $tills->isKeeper((int) (auth()->id() ?? 0), (int) $account->id)
+                        && !auth()->user()?->isReadOnly();
+            $lastCount = $tills->latest($account->id);
+        } catch (\Throwable $e) {
+            \Log::warning('Till-count panels unavailable on the Hub account page (SQL not run yet?)', [
+                'account' => $account->id, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        $ledger = $this->buildAccountLedger($account, $days, $isEmployee, $isAsset, $who, $counts);
 
         // Rider extras: open invoices + last deposit.
         $riderMeta = null;
@@ -644,11 +672,173 @@ class HubController extends Controller
             'days'        => $days,
             'daysLabel'   => $daysLabel,
             'daysSel'     => $daysParam,
+            // ⭐ Whose-hand filter + the people who could have moved this account, for the chips.
+            'who'         => $who,
+            'whoOptions'  => $this->accountActors($account),
+            // 🏦 Count-the-till: only offered to the person who actually holds this cash.
+            'isKeeper'    => $isKeeper,
+            'lastCount'   => $lastCount,
             'expenseCategories' => $this->expenseCategories(),
             'oldUrl'      => $isEmployee || in_array($account->account_code, ['NF_CASH', 'EXP_FUND', 'ONLINE'], true)
                                 ? route('fin.employee.show', $account->id)
                                 : route('fin.accounts.show', $account->id),
         ]);
+    }
+
+    /**
+     * The people who have actually moved this account recently, for the "Person" chip.
+     *
+     * ⭐ Read from the LEDGER, not from t_fin_account_users. The tag list says who is
+     * *allowed* to spend from the account; this question is who *did*, and the two differ
+     * — a rider who never had the tag still appears here through his settlements, and that
+     * is precisely the row someone would be hunting for.
+     */
+    private function accountActors(AccountModel $account): array
+    {
+        $since = \Carbon\Carbon::today()->subDays(180)->startOfDay();
+
+        // ⚠ Raw SQL names the column, so it must degrade if the web files land before the SQL
+        // (manual deploy) — the same guard the model's creating hook uses.
+        $actorExpr = LedgerModel::hasEnteredByColumn() ? 'COALESCE(entered_by, created_by)' : 'created_by';
+
+        $ids = LedgerModel::query()
+            ->where(function ($q) use ($account) {
+                $q->where('from_account_id', $account->id)->orWhere('to_account_id', $account->id);
+            })
+            ->where('transaction_date', '>=', $since)
+            ->selectRaw("DISTINCT {$actorExpr} AS actor_id")
+            ->pluck('actor_id')
+            ->filter()
+            ->map(fn ($v) => (int) $v)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        return \App\Models\SysAdmin\UserModel::whereIn('id', $ids)
+            ->orderBy('fullname')
+            ->get(['id', 'fullname'])
+            ->map(fn ($u) => ['id' => (int) $u->id, 'name' => $u->fullname])
+            ->all();
+    }
+
+    /**
+     * 🏦 The keeper types what he is actually holding (web door).
+     *
+     * The mobile door is RiderController::tillCount — both land in the same service so the
+     * seal can only ever be taken one way.
+     */
+    public function tillCount(Request $request, $id)
+    {
+        $account = AccountModel::findOrFail($id);
+        $this->guardAccountVisible($account);
+
+        $userId = (int) (auth()->id() ?? 0);
+        $tills = app(\App\Services\FIN\TillCountService::class);
+
+        if (!$tills->isKeeper($userId, (int) $account->id) || auth()->user()?->isReadOnly()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only the person who holds this till can count it.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'counted_amount' => 'required|numeric|min:0|max:99999999',
+            'note'           => 'nullable|string|max:200',
+        ]);
+
+        try {
+            $count = $tills->record(
+                $account,
+                $userId,
+                (float) $data['counted_amount'],
+                \App\Models\FIN\CashCountModel::SOURCE_HUB,
+                null,
+                $data['note'] ?? null
+            );
+
+            return response()->json([
+                'success'    => true,
+                'matched'    => $count->matches(),
+                'difference' => (float) $count->difference,
+                'system'     => (float) $count->system_balance,
+                'counted'    => (float) $count->counted_amount,
+                'message'    => $count->matches()
+                    ? 'Counted and matched — Rs. ' . number_format((float) $count->counted_amount, 2)
+                    : ($count->shortBy() > 0
+                        ? 'Recorded. You are SHORT Rs. ' . number_format(abs($count->shortBy()), 2) . ' against the books.'
+                        : 'Recorded. You are holding Rs. ' . number_format(abs($count->shortBy()), 2) . ' MORE than the books say.'),
+            ]);
+        } catch (\Throwable $e) {
+            \Log::error('till count failed', ['account' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Could not record the count. Please try again.'], 500);
+        }
+    }
+
+    // ── 💵 The cash pill (Sep-2026) ───────────────────────────────────────────
+    //
+    // Three tiny JSON endpoints behind the floating bulb. No permission gate: the
+    // service scopes to accounts the caller is TAGGED on, so someone tagged on
+    // nothing gets 0 and the pill never renders — the same self-hiding contract as
+    // the day-review bulb, and the reason this ships without a permission seed.
+
+    /** Polled once a minute. Deliberately the count only — the list costs more. */
+    public function watchCount()
+    {
+        $userId = (int) (auth()->id() ?? 0);
+        if ($userId <= 0) {
+            return response()->json(['success' => true, 'count' => 0]);
+        }
+
+        // ⚠ Polled once a minute by every tagged manager. If the SQL has not been run yet
+        // (manual deploy) this must answer 0 quietly, not write a 500 to the log every minute.
+        try {
+            $svc = app(\App\Services\FIN\LedgerWatchService::class);
+            return response()->json([
+                'success' => true,
+                'count'   => $svc->unreadCount($userId),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => true, 'count' => 0]);
+        }
+    }
+
+    /** The drawer's contents — last N entries on my tills that were not my own hand. */
+    public function watchList(Request $request)
+    {
+        $userId = (int) (auth()->id() ?? 0);
+        if ($userId <= 0) {
+            return response()->json(['success' => true, 'items' => [], 'unread' => 0]);
+        }
+
+        $limit = max(1, min((int) $request->get('limit', \App\Services\FIN\LedgerWatchService::LIST_LIMIT), 50));
+        try {
+            return response()->json(['success' => true] + app(\App\Services\FIN\LedgerWatchService::class)->recent($userId, $limit));
+        } catch (\Throwable $e) {
+            \Log::warning('cash pill list unavailable (SQL not run yet?)', ['error' => $e->getMessage()]);
+            return response()->json(['success' => true, 'items' => [], 'unread' => 0, 'latest_id' => 0, 'watching' => 0]);
+        }
+    }
+
+    /** "He looked at it" — move the watermark. Sent when the drawer opens. */
+    public function watchSeen(Request $request)
+    {
+        $userId = (int) (auth()->id() ?? 0);
+        if ($userId <= 0) {
+            return response()->json(['success' => true, 'count' => 0]);
+        }
+
+        $upto = $request->filled('last_seen_ledger_id') ? (int) $request->get('last_seen_ledger_id') : null;
+        try {
+            app(\App\Services\FIN\LedgerWatchService::class)->markSeen($userId, $upto);
+        } catch (\Throwable $e) {
+            // table not there yet — nothing to mark; the pill is hidden anyway
+        }
+
+        return response()->json(['success' => true, 'count' => 0]);
     }
 
     // ── "Who uses this account" (Aug-2026) ────────────────────────────────────
@@ -678,6 +868,8 @@ class HubController extends Controller
                     'user_id'           => $t->user_id,
                     'name'              => $t->user->fullname ?? ('User #' . $t->user_id),
                     'is_default'        => (bool) $t->is_default,
+                    // 🏦 Holds the physical cash → gets asked to count it at check-out.
+                    'is_keeper'         => (bool) $t->is_keeper,
                     'can_expense'       => (bool) $t->can_expense,
                     'can_vendor'        => (bool) $t->can_vendor,
                     'can_advance'       => (bool) $t->can_advance,
@@ -696,6 +888,9 @@ class HubController extends Controller
             'can_manage' => (bool) auth()->user()?->hasPermission('manage_account_users')
                             && !auth()->user()?->isReadOnly(),
             'is_bank'    => $account->account_category === AccountModel::CATEGORY_BANK,
+            // Counting only makes sense for a drawer you can physically open — see
+            // TillCountService::keeperAccounts for why banks are excluded.
+            'is_cash'    => $account->account_category === AccountModel::CATEGORY_CASH,
             'bu_name'    => optional(\App\Models\FIN\BusinessUnitModel::find($account->business_unit_id))->name,
             'rows'       => $rows,
             'banks'      => app(\App\Services\FIN\PaymentSourceService::class)->banks(),
@@ -724,6 +919,7 @@ class HubController extends Controller
             'can_vendor'        => 'nullable|boolean',
             'can_advance'       => 'nullable|boolean',
             'is_default'        => 'nullable|boolean',
+            'is_keeper'         => 'nullable|boolean',
             'preferred_bank_id' => 'nullable|integer|exists:t_fin_online_receiving_accounts,id',
         ]);
 
@@ -735,6 +931,12 @@ class HubController extends Controller
             $tag->can_expense = (bool) ($data['can_expense'] ?? false);
             $tag->can_vendor  = (bool) ($data['can_vendor'] ?? false);
             $tag->can_advance = (bool) ($data['can_advance'] ?? false);
+            // 🏦 "Holds / answers for this account". Cash AND bank: a bank keeper is WATCHED
+            // (cash pill) but never asked to COUNT — see TillCountService::keeperAccounts.
+            // Forced off on any other category so the flag cannot outlive a re-categorisation.
+            $tag->is_keeper   = in_array($account->account_category, [AccountModel::CATEGORY_CASH, AccountModel::CATEGORY_BANK], true)
+                ? (bool) ($data['is_keeper'] ?? false)
+                : false;
             // A bank preference is meaningless on a cash account and would be a
             // confusing leftover if the account were ever re-categorised.
             $tag->preferred_bank_id = $account->account_category === AccountModel::CATEGORY_BANK
@@ -880,11 +1082,18 @@ class HubController extends Controller
      * balance column (opening_balance + applied rows, asset sign); employee accounts do NOT (their
      * truth is the calculated header — running balance on the stored column is the retired D10 bug).
      */
-    private function buildAccountLedger(AccountModel $account, int $days, bool $isEmployee, bool $isAsset): array
-    {
+    private function buildAccountLedger(
+        AccountModel $account,
+        int $days,
+        bool $isEmployee,
+        bool $isAsset,
+        string $who = 'all',
+        array $counts = []
+    ): array {
         $start = \Carbon\Carbon::today()->subDays($days)->startOfDay();
+        $viewerId = (int) (auth()->id() ?? 0);
 
-        $rowsQuery = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'order.customer', 'receivingAccount'])
+        $rowsQuery = LedgerModel::with(['fromAccount', 'toAccount', 'createdBy', 'enteredBy', 'approvedBy', 'order.customer', 'receivingAccount'])
             ->where(function ($q) use ($account) {
                 $q->where('from_account_id', $account->id)->orWhere('to_account_id', $account->id);
             })
@@ -905,6 +1114,11 @@ class HubController extends Controller
         }
 
         // Build per-row view models with direction + optional running balance, then group by day.
+        //
+        // ⚠⚠ The running balance is accumulated over EVERY row, before any "whose hand"
+        // filter is applied. Filtering first would make the Balance column count only the
+        // rows on screen and quietly contradict the real balance printed at the top of the
+        // page — the exact class of bug the Aug-2026 In/Out fix was about.
         $items = [];
         foreach ($rows as $r) {
             $isIn = (int) $r->to_account_id === (int) $account->id;
@@ -913,10 +1127,35 @@ class HubController extends Controller
                 $running += $signed;
             }
             $items[] = [
+                'kind' => 'row',
                 'row' => $r,
                 'is_in' => $isIn,
                 'running' => $running,
+                // Resolved once here so the blade never re-derives the rule per row.
+                'others' => $viewerId > 0 && $r->isSomeoneElsesHand($viewerId),
+                'actor' => $r->actorName(),
+                'backdated' => $r->daysBackdated(),
             ];
+        }
+
+        // ⭐ "Who" filter — applied to DISPLAY only (see the running-balance note above).
+        $hidden = 0;
+        if ($who !== 'all' && $viewerId > 0) {
+            $before = count($items);
+            $items = array_values(array_filter($items, function ($it) use ($who, $viewerId) {
+                if ($who === 'others') {
+                    return $it['others'];
+                }
+                if ($who === 'me') {
+                    return !$it['others'];
+                }
+                // A specific person: match the ACTOR, and treat "system" as the no-actor rows.
+                if ($who === 'system') {
+                    return $it['row']->actorId() === null;
+                }
+                return ctype_digit($who) && $it['row']->actorId() === (int) $who;
+            }));
+            $hidden = $before - count($items);
         }
 
         // Group by date (DESC), each group carries in/out/net.
@@ -945,6 +1184,7 @@ class HubController extends Controller
             if (!isset($groups[$d])) {
                 $groups[$d] = ['date' => $d, 'in' => 0.0, 'out' => 0.0, 'pending' => 0.0, 'items' => []];
             }
+            $groups[$d]['counted'] = $groups[$d]['counted'] ?? false;
 
             $amount = (float) $it['row']->amount;
             $awaiting = in_array($it['row']->approval_status, $awaitingStatuses, true)
@@ -964,7 +1204,56 @@ class HubController extends Controller
         }
         unset($g);
 
-        return ['groups' => array_values($groups), 'has_running' => $running !== null, 'count' => count($items)];
+        // ⭐⭐ THE CHECKPOINT LINES. A count is woven into the day it was taken, in its right
+        // place among that day's entries, so reading down the page you pass "Shabib counted
+        // Rs 55,157 and it matched" and everything below it is already accounted for.
+        //
+        // ⚠ A count is NEVER filtered out by the "who" chips. It is the anchor the filtered
+        // rows are being judged against — hiding it because Shabib took it while you are
+        // looking at "not me" would remove the one line that makes the rest mean anything.
+        foreach ($counts as $c) {
+            if (!($c['counted_at'] ?? null)) {
+                continue;
+            }
+            $d = $c['counted_at']->toDateString();
+            if (!isset($groups[$d])) {
+                // A day whose only event was the count itself still deserves its row.
+                $groups[$d] = ['date' => $d, 'in' => 0.0, 'out' => 0.0, 'pending' => 0.0,
+                               'net' => 0.0, 'items' => [], 'counted' => true];
+            }
+            $groups[$d]['counted'] = true;
+            $groups[$d]['items'][] = ['kind' => 'count', 'count' => $c, 'running' => null];
+        }
+
+        // Newest day first; inside a day, newest event first. The time key is when a thing
+        // HAPPENED (created_at / counted_at), not the date it claims — which is what puts a
+        // backdated row visibly above the count it slipped in behind.
+        krsort($groups);
+        foreach ($groups as &$g) {
+            usort($g['items'], function ($a, $b) {
+                return $this->ledgerItemTime($b) <=> $this->ledgerItemTime($a);
+            });
+        }
+        unset($g);
+
+        return [
+            'groups' => array_values($groups),
+            'has_running' => $running !== null,
+            'count' => count($items),
+            'hidden' => $hidden,
+            'who' => $who,
+        ];
+    }
+
+    /** Sort key for one ledger-page item: when it actually happened. */
+    private function ledgerItemTime(array $item): int
+    {
+        if (($item['kind'] ?? 'row') === 'count') {
+            return optional($item['count']['counted_at'] ?? null)->getTimestamp() ?? 0;
+        }
+        $r = $item['row'];
+        $t = $r->created_at ?: $r->transaction_date;
+        return $t ? \Carbon\Carbon::parse($t)->getTimestamp() : 0;
     }
 
     /** Tab 3 — Vendors: what NF owes each supplier, scope-aware, with a period pulse. */

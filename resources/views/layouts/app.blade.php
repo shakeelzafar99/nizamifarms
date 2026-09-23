@@ -78,6 +78,9 @@
          alert partials, because the days it lists arrive while the manager is doing
          something else. Renders nothing for anyone without `manage_payroll`. --}}
     @include('partials.day-review-pill')
+    {{-- 💵 Money moved on your tills by somebody else. Self-hiding: the endpoint answers 0
+         for anyone not tagged on a cash/bank account, so this costs them nothing. --}}
+    @include('partials.cash-pill')
     @include('layouts.partials.scripts')
     <script src="{{ asset('assets/js/layouts/demo1.js') }}">
     </script>

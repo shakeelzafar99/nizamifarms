@@ -69,7 +69,14 @@
                      for rows that don't carry it (e.g. overview rows built elsewhere). --}}
                 <dt id="nfhubDEnteredT" style="display:none">Entered</dt><dd id="nfhubDEntered" style="display:none">—</dd>
                 <dt id="nfhubDAdjT" style="display:none">Adjustment</dt><dd id="nfhubDAdj" style="display:none">—</dd>
-                <dt>Created by</dt><dd id="nfhubDBy">—</dd>
+                {{-- ⭐ WHO — three separate facts that used to be collapsed into one wrong one.
+                     "Posted by" is the hand that pressed the button (LedgerModel::actorId).
+                     "Requested by" is created_by, which on an expense row is the person the
+                     expense BELONGS to — it was labelled "Created by" and read as the actor,
+                     which named the wrong person on 628 rows. Shown only when the two differ. --}}
+                <dt>Posted by</dt><dd id="nfhubDBy">—</dd>
+                <dt id="nfhubDReqT" style="display:none">Requested by</dt><dd id="nfhubDReq" style="display:none">—</dd>
+                <dt id="nfhubDAppT" style="display:none">Approved by</dt><dd id="nfhubDApp" style="display:none">—</dd>
             </dl>
         </div>
         {{-- Quick edit, in place. Only ever shown for rows flagged `editable` (vendor statement
@@ -363,6 +370,10 @@
             entD.textContent = d.entered || '—';
         }
         set('nfhubDBy', d.by || '—');
+        // Requested by — shown only when it is somebody OTHER than the hand that posted it,
+        // otherwise it is the same name printed twice.
+        pair('nfhubDReqT', 'nfhubDReq', d.requestedBy && d.requestedBy !== d.by ? d.requestedBy : null);
+        pair('nfhubDAppT', 'nfhubDApp', d.approvedByName || null);
         // 🏦 The bank's own date / reference. Only bank-statement rows send bankAt; on every other
         // Hub page the block stays hidden, exactly as before this existed.
         var bankWrap = document.getElementById('nfhubDBankWrap');

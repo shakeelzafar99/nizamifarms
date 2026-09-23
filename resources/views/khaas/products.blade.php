@@ -333,6 +333,45 @@
                     <span class="text-xs text-gray-600">Combined Total</span>
                     <span class="text-sm font-bold text-gray-800">{{ $storeQty + $warehouseQty }} {{ $unit }}</span>
                 </div>
+
+                {{-- ❄ This month's recipe picture: what was made, how it came in, and
+                     roughly what the ingredients cost. An ESTIMATE, labelled as one.
+                     Quantities show to anyone in Frozen mode; the rupees need
+                     view_khaas_costing. A product with no recipe says so and offers
+                     the way to write one, rather than showing a confident zero. --}}
+                @php
+                    $rc  = $recipeCosts[$product->id] ?? null;
+                    $cov = $recipeCoverage[$product->id] ?? null;
+                @endphp
+                @if($cov && !$cov['has_recipe'])
+                    <div class="mt-1 rounded-lg px-3 py-2 flex items-center justify-between"
+                         style="background-color:#F9FAFB; border:1px solid #E5E7EB;">
+                        <span class="text-[11px] text-gray-500">No recipe yet</span>
+                        @if($canManageRecipes)
+                            <a href="{{ route('khaas.inventory', ['tab' => 'ingredients']) }}"
+                               class="text-[10px] font-bold px-2 py-0.5 rounded"
+                               style="background-color:#FEF3C7;color:#B45309;border:1px solid #FDE68A;">Write one</a>
+                        @endif
+                    </div>
+                @elseif($rc && $rc['made'] > 0)
+                    <div class="mt-1 rounded-lg px-3 py-2"
+                         style="background-color:#EEF2FF; border:1px solid #C7D2FE;">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[11px]" style="color:#4338CA;">Made this month</span>
+                            <span class="text-xs font-bold" style="color:#312E81;">{{ number_format($rc['made']) }} {{ $unit }}</span>
+                        </div>
+                        <div class="text-[10px] mt-0.5" style="color:#4F46E5;">
+                            {{ number_format($rc['made_plan']) }} through a plan ·
+                            {{ number_format($rc['made_direct']) }} entered directly
+                        </div>
+                        @if($canSeeIngredientCost && $rc['cost_per_pack'] !== null)
+                            <div class="flex items-center justify-between mt-1 pt-1" style="border-top:1px solid #C7D2FE;">
+                                <span class="text-[11px]" style="color:#4338CA;">Ingredients, estimated</span>
+                                <span class="text-xs font-bold" style="color:#312E81;">Rs {{ number_format($rc['cost_per_pack'], 2) }} / {{ Str::singular($unit) }}</span>
+                            </div>
+                        @endif
+                    </div>
+                @endif
                 {{-- In-transit: a pending transfer has ALREADY left the warehouse but has not yet
                      been accepted into the store, so it is in neither tile and NOT in the
                      Combined Total above. Shown explicitly rather than silently missing. --}}

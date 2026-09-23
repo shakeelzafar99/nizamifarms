@@ -386,7 +386,10 @@ class EmployeeLoanController extends Controller
                         'external_ref_id' => $loan->loan_number,
                         'comments' => 'Loan cancellation refund - ' . $validated['cancellation_reason'],
                         'created_at' => now(),
-                        'created_by' => auth()->id()
+                        'created_by' => auth()->id(),
+                        // ⭐ Raw insert — bypasses LedgerModel::creating, so the actor is
+                        // stamped by hand here (same value; loans have no separate requester).
+                        'entered_by' => auth()->id(),
                     ]);
 
                     // Apply via the canonical engine (source +; stamps balance_updated). The
@@ -514,7 +517,10 @@ class EmployeeLoanController extends Controller
                 'external_ref_id' => $loan->loan_number,
                 'comments' => 'Loan disbursement from: ' . $sourceAccount->account_name,
                 'created_at' => now(),
-                'created_by' => auth()->id()
+                'created_by' => auth()->id(),
+                // ⭐ Raw insert — bypasses LedgerModel::creating, so the actor is
+                // stamped by hand here (same value; loans have no separate requester).
+                'entered_by' => auth()->id(),
             ]);
 
             // Apply the row via the canonical engine (source −; stamps balance_updated). The

@@ -15,6 +15,14 @@ class VendorProductModel extends Model
         // Category Report to compare purchases against sales. Values come
         // from t_crm_prod_product.attribute_1 so both sides line up.
         'category_level_1',
+        // ❄ Sep-2026: what this catalogue product IS, and how much of it one unit
+        // holds — "a 1 L canola pack is 1000 ml of canola oil". Tagging the catalogue
+        // once turns every future purchase of it into a quantity the Frozen recipes can
+        // draw against. Nullable: an untagged product behaves exactly as before.
+        // ⚠ A missed entry here is silently dropped by Eloquent, which is why this
+        //   comment exists rather than a bare pair of strings.
+        'ingredient_id',
+        'pack_qty_base',
         'unit',
         'rate_per_unit',
         'is_active',

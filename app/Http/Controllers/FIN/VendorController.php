@@ -1052,15 +1052,27 @@ class VendorController extends Controller
 
             // Create line items
             foreach ($request->items as $item) {
-                \App\Models\FIN\VendorPurchaseItemModel::create([
+                // ❄ Sep-2026: stamp what this line was in ingredient terms, so Frozen
+                // can later say "we bought 5 L of oil and used 3.2". Nulls when the
+                // catalogue product is untagged or the line is not an ingredient —
+                // which is every line that exists today, so nothing changes for them.
+                // Returns an EMPTY array when the migration has not run yet, so the two
+                // new keys are simply absent and the insert is byte-identical to the one
+                // that has always run here.
+                $ingredient = \App\Models\FIN\VendorPurchaseItemModel::supportsIngredients()
+                    ? \App\Models\FIN\VendorPurchaseItemModel::ingredientColumnsFor(
+                        $item['product_id'] ?? null, (float) $item['quantity'], $item)
+                    : [];
+
+                \App\Models\FIN\VendorPurchaseItemModel::create(array_merge([
                     'ledger_id' => $ledger->id,
                     'vendor_product_id' => $item['product_id'],
                     'product_name' => $item['product_name'],
                     'quantity' => $item['quantity'],
                     'unit' => $item['unit'],
                     'rate_per_unit' => $item['rate'],
-                    'line_total' => $item['quantity'] * $item['rate']
-                ]);
+                    'line_total' => $item['quantity'] * $item['rate'],
+                ], $ingredient));
             }
 
             // Apply via the canonical engine (vendor_purchase: purchases +, vendor owed +), row-locked;
@@ -1414,15 +1426,23 @@ class VendorController extends Controller
                     $itemsTotal += $lineTotal;
                     
                     // Create new line item
-                    \App\Models\FIN\VendorPurchaseItemModel::create([
+                    // ❄ Same ingredient stamp as the create path. An edit re-resolves
+                    // from the catalogue as it stands NOW, because the person editing
+                    // is correcting what the line should have said all along.
+                    $ingredient = \App\Models\FIN\VendorPurchaseItemModel::supportsIngredients()
+                        ? \App\Models\FIN\VendorPurchaseItemModel::ingredientColumnsFor(
+                            $item['product_id'] ?? null, (float) $item['quantity'], $item)
+                        : [];
+
+                    \App\Models\FIN\VendorPurchaseItemModel::create(array_merge([
                         'ledger_id' => $transaction->id,
                         'vendor_product_id' => $item['product_id'],
                         'product_name' => $item['product_name'],
                         'quantity' => $item['quantity'],
                         'unit' => $item['unit'],
                         'rate_per_unit' => $item['rate'],
-                        'line_total' => $lineTotal
-                    ]);
+                        'line_total' => $lineTotal,
+                    ], $ingredient));
                 }
                 
                 // Apply adjustment amount (can be positive or negative)
